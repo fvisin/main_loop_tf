@@ -7,7 +7,7 @@ import dataset_loaders
 import numpy as np
 import tensorflow as tf
 from tensorflow import nn
-from tensorflow.contribs import slim
+from tensorflow.contrib import slim
 from tensorflow.python.training import training
 import tqdm
 
