@@ -3,7 +3,12 @@ from gflags import DEFINE, FLAGS
 
 
 class ListOfListParser(BaseListParser):
-    """Parser for a comma-separated list of strings."""
+    """Parser for a comma or white space-separated list of strings.
+
+    This parser will return a list of lists of numbers or a list of
+    numbers, depending on the input. The number will be converted in int
+    or float depending on the out_type.
+    """
 
     def __init__(self, out_type=int):
         self.out_type = out_type
@@ -18,14 +23,16 @@ class ListOfListParser(BaseListParser):
         else:
             argument = argument.replace(' ', '')  # remove spaces
             argument = argument.replace('[', '').split('],')
-            return [map(self.out_type, s.replace(']', '').split(','))
-                    for s in argument]
+            if len(argument) == 1:
+                argument = argument[0].replace(']', '').split(',')
+                return [self.out_type(s) for s in argument]
+            else:
+                return [map(self.out_type, s.replace(']', '').split(','))
+                        for s in argument]
 
 
 def DEFINE_intlist(name, default, help, flag_values=FLAGS, **args):
-    """Registers a flag whose value is a comma-separated list of strings.
-
-    The flag value is parsed with a CSV parser.
+    """Parses a list of lists of ints
 
     Args:
       name: A string, the flag name.
@@ -40,7 +47,7 @@ def DEFINE_intlist(name, default, help, flag_values=FLAGS, **args):
 
 
 def DEFINE_floatlist(name, default, help, flag_values=FLAGS, **args):
-    """Registers a flag whose value is a comma-separated list of strings.
+    """Parses a list of lists of floats
 
     The flag value is parsed with a CSV parser.
 
