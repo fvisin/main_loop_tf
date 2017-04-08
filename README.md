@@ -27,7 +27,9 @@ them in your model file with the usual gflags syntax:
 
     gflags.DEFINE_integer('my_custom_param', 0, 'This sets up a custom param')
 
-    def build_model(my_custom_param):
+    def build_model():
+        cfg = gflags.cfg
+        print('This is your param value {}'.format(cfg.my_custom_param))
         pass
 ```
 
