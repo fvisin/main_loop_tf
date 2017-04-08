@@ -30,3 +30,12 @@ them in your model file with the usual gflags syntax:
     def build_model(my_custom_param):
         pass
 ```
+
+You can find a list of DEFINE* methods 
+[here](https://github.com/google/python-gflags/blob/master/gflags/__init__.py)
+
+You can also flag some options as required with:
+```python
+    gflags.mark_flag_as_required('required1')
+    gflags.mark_flags_as_required(['required1', 'required2])
+```
