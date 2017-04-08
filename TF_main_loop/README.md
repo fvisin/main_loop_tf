@@ -6,6 +6,9 @@ To use the main loop, simply create a file with this code and call it.
 ``` python
 if __name__ == '__main__':
     import sys
+
+    from TF_main_loop.main import run
+
     from model import build_model
 
     argv = sys.argv
