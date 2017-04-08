@@ -253,8 +253,8 @@ def __run(build_model):
                     model_name='')
 
 
-def build_graph(placeholders, input_shape, optimizer, model_args, weight_decay,
-                loss_fn, is_training):
+def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
+                is_training):
     cfg = gflags.cfg
     num_gpus = cfg.num_gpus
     devices = cfg.devices
@@ -280,10 +280,7 @@ def build_graph(placeholders, input_shape, optimizer, model_args, weight_decay,
                                    reuse=reuse_variables) as scope:
 
                 # Build inference Graph.
-                net_out = build_model(inputs,
-                                      nclasses,
-                                      is_training,
-                                      **model_args)
+                net_out = build_model(inputs, nclasses, is_training)
 
                 # Add regularization losses to Graph losses collection
                 # TODO metti in slim
