@@ -60,6 +60,7 @@ def __parse_config(argv=None):
     except AttributeError:
         Dataset = getattr(dataset_loaders, cfg.dataset.capitalize() +
                           'Dataset')
+    cfg.Dataset = Dataset
     dataset_params = {}
     dataset_params['batch_size'] = cfg.batch_size
     dataset_params['data_augm_kwargs'] = {}
