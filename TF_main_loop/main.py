@@ -51,6 +51,7 @@ def __parse_config(argv=None):
     gflags.cfg = cfg
 
     # ============ A bunch of derived params
+    cfg._FLOATX = 'float32'
     cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
 
     # Dataset
