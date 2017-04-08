@@ -184,11 +184,11 @@ def __run(build_model):
 
         train_outs, _, _ = build_graph(placeholders, cfg.input_shape,
                                        cfg.optimizer, cfg.weight_decay,
-                                       cfg.loss_fn, True)
+                                       cfg.loss_fn, build_model, True)
         _, eval_outs, summary_outs = build_graph(placeholders, cfg.input_shape,
                                                  cfg.optimizer,
                                                  cfg.weight_decay, cfg.loss_fn,
-                                                 False)
+                                                 build_model, False)
 
         # Add the variables initializer Op.
         init = tf.group(tf.global_variables_initializer(),
@@ -254,7 +254,7 @@ def __run(build_model):
 
 
 def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
-                is_training):
+                build_model, is_training):
     cfg = gflags.cfg
     num_gpus = cfg.num_gpus
     devices = cfg.devices
