@@ -36,12 +36,12 @@ def __parse_config(argv=None):
         FLAGS(argv)  # parse flags
     except gflags.FlagsError, e:
         print('Usage: %s ARGS\n%s\n\nError: %s' % (argv[0], FLAGS, e))
-        return 0
+        sys.exit(0)
 
     # Show help message
     if FLAGS.help:
         print('%s' % FLAGS)
-        return 0
+        sys.exit(0)
 
     # Convert FLAGS to namespace, so we can modify it
     from argparse import Namespace
