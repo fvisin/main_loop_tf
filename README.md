@@ -41,3 +41,17 @@ You can also flag some options as required with:
     gflags.mark_flag_as_required('required1')
     gflags.mark_flags_as_required(['required1', 'required2])
 ```
+
+### How to add lists of lists
+To add list of lists (e.g. [[10, 10], [20, 20]]) you can use the gflags
+extensions in gflags_ext:
+
+``` python
+import gflags
+import sys
+from TF_main_loop import gflags_ext
+
+gflags_ext.DEFINE_intlist('a', [[10, 10], [20, 20]], 'A list of ints')
+```
+
+See `gflags_ext` for the other DEFINEs.
