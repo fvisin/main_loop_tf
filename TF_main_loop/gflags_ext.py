@@ -3,7 +3,7 @@ from gflags import DEFINE, FLAGS
 
 
 class ListOfListParser(BaseListParser):
-    """Parser for a comma or white space-separated list of strings.
+    """Parser for a comma or white space-separated list or tuple of strings.
 
     This parser will return a list of lists of numbers or a list of
     numbers, depending on the input. The number will be converted in int
@@ -21,6 +21,8 @@ class ListOfListParser(BaseListParser):
         elif not argument:
             return []
         else:
+            # Make all brakets square brakets
+            argument = argument.replace('(', '[').replace(')', ']')
             argument = argument.replace(' ', '')  # remove spaces
             argument = argument.replace('[', '').split('],')
             if len(argument) == 1:
