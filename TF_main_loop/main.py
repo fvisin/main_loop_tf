@@ -521,7 +521,7 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 mean_iou = {}
                 from validate import validate
                 for s in val_on_sets:
-                    print('Starting validation on %s set' % s)
+                    print('\nStarting validation on %s set' % s)
                     mean_iou[s] = validate(
                         placeholders,
                         eval_outs,
