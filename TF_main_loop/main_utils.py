@@ -1,3 +1,4 @@
+from subprocess import check_output
 import sys
 
 # Force matplotlib not to use any Xwindows backend.
@@ -10,13 +11,17 @@ import tensorflow as tf
 # from validate import evaluate_generator, cat_masked_accuracy, dice_coef_loss
 
 
-cfg = gflags.FLAGS
-
 sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
 
 def compute_chunk_size(batch_size, npixels):
+    '''Return the splits per gpu
+
+    Return
+        * the number of batches per gpu
+        * the number of labels elements per gpu
+    '''
     cfg = gflags.cfg
 
     # Compute the shape of the input chunk for each GPU
@@ -33,8 +38,18 @@ def compute_chunk_size(batch_size, npixels):
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
                return_mean_loss=False, mask_voids=True, scope=None):
+    '''Applies the user-specified loss function and returns the loss
+
+    Note:
+        SoftmaxCrossEntropyWithLogits expects labels NOT to be one-hot
+        and net_out to be one-hot.
+    '''
+
+    cfg = gflags.cfg
 
     if mask_voids and len(cfg.void_labels):
+        # TODO Check this
+        print('Masking the void labels')
         mask = tf.not_equal(labels, cfg.void_labels)
         labels *= tf.to_int32(mask)
         mask_out = tf.cast(tf.expand_dims(tf.reshape(
@@ -54,7 +69,10 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
 
     # Return the mean loss (over pixels *and* batches)
     if return_mean_loss:
-        return tf.reduce_sum(loss) / tf.reduce_sum(mask_out)
+        if mask_voids and len(cfg.void_labels):
+            return tf.reduce_sum(loss) / tf.reduce_sum(mask_out)
+        else:
+            return tf.reduce_mean(loss)
     else:
         return loss
 
