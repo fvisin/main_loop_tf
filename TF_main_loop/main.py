@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 import os
 import sys
 import time
@@ -58,6 +59,24 @@ def __parse_config(argv=None):
     fl = FLAGS.FlagDict()
     cfg.__dict__ = {k: el.value for (k, el) in fl.iteritems()}
     gflags.cfg = cfg
+
+    # ============ gsheet
+    # Save params for log, excluding non JSONable and not interesting objects
+    exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
+                    'debug', 'devices', 'do_validation_only', 'help',
+                    'min_epochs', 'max_epochs', 'nthreads', 'num_gpus',
+                    'patience', 'restore_model', 'use_threads', 'val_on_sets',
+                    'val_skip_first', 'val_every_epochs' 'vgg_weights_file']
+    param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
+                  if k not in exclude_list}
+    h = hashlib.md5()
+    h.update(str(param_dict))
+    h = h.hexdigest()
+    cfg.hash = h
+    save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
+                                                 'dataset_loaders',
+                                                 'TF_main_loop'])
+    cfg.checkpoints_file = cfg.model_name + '_' + h + '.ckpt'
 
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
@@ -135,21 +154,6 @@ def __run(build_model):
     cfg = gflags.cfg
     cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                   dtype=cfg._FLOATX)
-
-    # if not os.path.exists('./models'):
-    #     os.makedirs('./models')
-
-    # ============ gsheet
-    # Save params for log, excluding non JSONable and not interesting objects
-    # exclude_list = ['predict', 'dim_ordering', 'ipdb', 'validate',
-    #                 'reload_weights', 'debug', 'Dataset', 'batch_size',
-    #                 'seq_length', 'of', 'set_dict_default', 'expand_param',
-    #                 'exclude_list']
-    # exp_param_dict = {k: copy.deepcopy(v) for (k, v) in locals().iteritems()
-    #                   if k not in exclude_list}
-    # exp_param_dict['dataset'] = Dataset.name
-    # save_repos_hash(exp_param_dict, 'reconvnet', ['tensorflow',
-    #                                               'dataset_loaders'])
 
     # ============ Class balance
     # assert class_balance in [None, 'median_freq_cost', 'rare_freq_cost'], (

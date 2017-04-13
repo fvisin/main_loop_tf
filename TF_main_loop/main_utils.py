@@ -105,3 +105,16 @@ def average_gradients(tower_grads):
         average_grads.append(grad_and_var)
 
     return average_grads
+
+
+def save_repos_hash(params_dict, this_repo_name, packages=['theano']):
+    # Repository hash and diff
+    params_dict[this_repo_name + '_hash'] = check_output('git rev-parse HEAD',
+                                                         shell=True)[:-1]
+    diff = check_output('git diff', shell=True)
+    if diff != '':
+        params_dict[this_repo_name + '_diff'] = diff
+    # packages
+    for p in packages:
+        this_pkg = __import__(p)
+        params_dict[p + '_hash'] = this_pkg.__version__
