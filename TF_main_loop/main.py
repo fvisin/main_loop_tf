@@ -414,7 +414,6 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
 
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
-    val_on_sets = cfg.val_on_sets
 
     # Prepare the summary objects
     train_summaries = tf.get_collection_ref(key='train_summaries')
@@ -425,8 +424,8 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
 
     # TRAIN
     dataset_params['batch_size'] *= cfg.num_gpus
-    print('Dataset params:\n{}\n'.format(dataset_params))
-    print('validation:\n{}'.format(valid_params))
+    print('\nTrain dataset params:\n{}\n'.format(dataset_params))
+    print('Validation dataset params:\n{}\n\n'.format(valid_params))
     train = Dataset(
         which_set='train',
         return_list=False,
@@ -523,7 +522,7 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 # Validate
                 mean_iou = {}
                 from validate import validate
-                for s in val_on_sets:
+                for s in cfg.val_on_sets:
                     print('\nStarting validation on %s set' % s)
                     mean_iou[s] = validate(
                         placeholders,
