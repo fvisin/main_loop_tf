@@ -9,8 +9,6 @@ gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
                       'to keep', lower_bound=0)
 gflags.DEFINE_string('checkpoints_dir', './checkpoints', 'The path where '
                      'the model checkpoints are stored')
-gflags.DEFINE_string('checkpoints_file', None, 'The filename of the '
-                     'checkpoint')
 gflags.DEFINE_string('tmp_path', './models/tmp_', 'Where to save temporary '
                      'stuff')
 gflags.DEFINE_integer('val_every_epochs', 1, 'Validation frequency, in epochs',

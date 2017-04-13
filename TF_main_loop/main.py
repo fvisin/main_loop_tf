@@ -76,7 +76,9 @@ def __parse_config(argv=None):
     save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                  'dataset_loaders',
                                                  'TF_main_loop'])
-    cfg.checkpoints_file = cfg.model_name + '_' + h + '.ckpt'
+    cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
+                                       cfg.hash)
+    cfg.checkpoints_file = 'best.ckpt'
 
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
