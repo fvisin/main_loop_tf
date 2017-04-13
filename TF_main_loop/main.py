@@ -315,12 +315,10 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
-            with tf.name_scope('tower_%d' % device_idx) as scope:
+            with tf.variable_scope(cfg.model_name,
+                                   reuse=reuse_variables) as scope:
 
-                # The variables in build_model should be set in a
-                # variable_scope with the assigned reuse_variables flag
-                net_out = build_model(inputs, is_training,
-                                      reuse_variables=reuse_variables)
+                net_out = build_model(inputs, is_training)
 
                 # Add regularization losses to Graph losses collection
                 # TODO metti in slim
