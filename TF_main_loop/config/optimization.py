@@ -1,4 +1,5 @@
 import gflags
+from TF_main_loop import gflags_ext
 
 
 # ============ Learning
@@ -7,6 +8,8 @@ import gflags
 # gflags.DEFINE_integer('BN_mode', 2, 'The batch normalization mode')
 gflags.DEFINE_float('weight_decay', 0, 'The weight decay')
 gflags.DEFINE_string('optimizer', 'adam', 'The optimizer')
+gflags_ext.DEFINE_multidict('optimizer_params', {}, 'The params for the '
+                            'optimizer')
 gflags.DEFINE_string('loss_fn', 'sparse_softmax_cross_entropy_with_logits',
                      'The loss function')
 gflags.DEFINE_float('dropout', 0, 'The dropout probability')

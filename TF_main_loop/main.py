@@ -139,7 +139,7 @@ def __parse_config(argv=None):
         Optimizer = getattr(training, cfg.optimizer)
     except AttributeError:
         Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
-    cfg.optimizer = Optimizer()
+    cfg.optimizer = Optimizer(**cfg.optimizer_params)
     try:
         loss_fn = getattr(nn, cfg.loss_fn)
     except AttributeError:
