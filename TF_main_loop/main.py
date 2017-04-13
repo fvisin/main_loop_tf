@@ -1,4 +1,4 @@
-import copy
+from copy import deepcopy
 import os
 import sys
 import time
@@ -9,16 +9,25 @@ import tensorflow as tf
 from tensorflow import nn
 from tensorflow.contrib import slim
 from tensorflow.python.training import training
-import tqdm
+from tqdm import tqdm
 
 import gflags
 
-from main_utils import apply_loss, average_gradients, compute_chunk_size
+from main_utils import (apply_loss, average_gradients, compute_chunk_size,
+                        save_repos_hash)
 from config import dataset, flow, optimization, misc  # noqa
 
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
+gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
+gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
+                   'the first and last frame of each video to allow for '
+                   'middle frame prediction')
+gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
+                   'the middle frame segmentation mask only for each sequence')
+gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
+                     'for the checkpoint file')
 
 
 def run(argv, build_model):
@@ -68,18 +77,33 @@ def __parse_config(argv=None):
     dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
     dataset_params['return_one_hot'] = False
     dataset_params['return_01c'] = True
+    if cfg.seq_per_subset:
+        dataset_params['seq_per_subset'] = cfg.seq_per_subset
+    if cfg.overlap:
+        dataset_params['overlap'] = cfg.overlap
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
         cfg.input_shape = [None, cfg.seq_length, None, None, 3]
+        ret_ext_seq = cfg.return_extended_sequences
+        ret_middle_frame = cfg.return_middle_frame_only
+        dataset_params['return_extended_sequences'] = ret_ext_seq
+        dataset_params['return_middle_frame_only'] = ret_middle_frame
     else:
         cfg.input_shape = [None, None, None, 3]
+    dataset_params['use_threads'] = cfg.use_threads
+    dataset_params['nthreads'] = cfg.nthreads
+    dataset_params['remove_per_img_mean'] = cfg.remove_per_img_mean
+    dataset_params['divide_by_per_img_std'] = cfg.divide_by_per_img_std
+    dataset_params['remove_mean'] = cfg.remove_mean
+    dataset_params['divide_by_std'] = cfg.divide_by_std
     cfg.dataset_params = dataset_params
-    cfg.valid_params = copy.deepcopy(cfg.dataset_params)
+    cfg.valid_params = deepcopy(cfg.dataset_params)
     cfg.valid_params.update({
         'seq_per_subset': 0,
         'overlap': cfg.val_overlap if cfg.val_overlap else None,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
+        'return_middle_frame_only': False,
         'use_threads': False,  # prevent shuffling
         # prevent crop
         'data_augm_kwargs': {'return_optical_flow': cfg.of}})
@@ -158,9 +182,15 @@ def __run(build_model):
 
     # BUILD GRAPH
     graph = tf.Graph()
+    # TODO consider CPU case as well
     config = tf.ConfigProto(allow_soft_placement=True,
                             device_count={'GPU': cfg.num_gpus})
     sess = tf.Session(config=config)
+
+    if cfg.debug:
+        from tensorflow.python import debug as tf_debug
+        sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+        sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
 
     with graph.as_default(), sess, tf.device(cfg.devices[0]):
         # Model compilation
@@ -186,6 +216,7 @@ def __run(build_model):
         train_outs, _, _ = build_graph(placeholders, cfg.input_shape,
                                        cfg.optimizer, cfg.weight_decay,
                                        cfg.loss_fn, build_model, True)
+
         _, eval_outs, summary_outs = build_graph(placeholders, cfg.input_shape,
                                                  cfg.optimizer,
                                                  cfg.weight_decay, cfg.loss_fn,
@@ -203,12 +234,12 @@ def __run(build_model):
 
         if cfg.restore_model:
             print("Restoring model from checkpoint ...")
-            if cfg.checkpoint_file is None:  # default: last saved checkpoint
+            if cfg.checkpoints_file is None:  # default: last saved checkpoint
                 checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
                 print(checkpoint)
             else:
                 checkpoint = os.path.join(cfg.checkpoints_dir,
-                                          cfg.checkpoint_file)
+                                          cfg.checkpoints_file)
                 print(checkpoint)
             saver = tf.train.Saver()
             saver.restore(sess, checkpoint)
@@ -277,11 +308,12 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
-            with tf.variable_scope('tower_%d' % device_idx,
-                                   reuse=reuse_variables) as scope:
+            with tf.name_scope('tower_%d' % device_idx) as scope:
 
-                # Build inference Graph.
-                net_out = build_model(inputs, nclasses, is_training)
+                # The variables in build_model should be set in a
+                # variable_scope with the assigned reuse_variables flag
+                net_out = build_model(inputs, is_training,
+                                      reuse_variables=reuse_variables)
 
                 # Add regularization losses to Graph losses collection
                 # TODO metti in slim
@@ -343,9 +375,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     # Compute the mean IoU
     # TODO would it be better to use less precision here?
     sym_mask = tf.cast(tf.less_equal(sym_labels, nclasses), tf.int32)
-    preds_flat = tf.reshape(sym_preds, [-1])
+    sym_preds_flat = tf.reshape(sym_preds, [-1])
     sym_m_iou, sym_cm_update_op = tf.metrics.mean_iou(sym_labels,
-                                                      preds_flat,
+                                                      sym_preds_flat,
                                                       nclasses,
                                                       sym_mask)
     sym_avg_tower_loss = tf.reduce_mean(tower_losses)
@@ -373,13 +405,11 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
 
     # TRAIN
     dataset_params['batch_size'] *= cfg.num_gpus
-    dataset_params['use_threads'] = False
+    print('Dataset params:\n{}\n'.format(dataset_params))
+    print('validation:\n{}'.format(valid_params))
     train = Dataset(
         which_set='train',
-        return_one_hot=False,
         return_list=False,
-        return_extended_sequences=True,
-        return_middle_frame_only=True,
         **dataset_params)
 
     # Setup loop parameters
@@ -402,14 +432,14 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
             tot_batches = epoch_id * train.nbatches + batch_id
 
             # inputs and labels
+            # TODO time
             minibatch = train.next()
             x_batch, y_batch = minibatch['data'], minibatch['labels']
             # sh = inputs.shape  # do NOT provide a list of shapes
             x_in = x_batch
-            y_in = y_batch
+            y_in = y_batch.flatten()
             # if cfg.use_second_path:
             #    x_in = [x_batch[..., :3], x_in[..., 3:]]
-            y_in = y_in.flatten()
             # reset_states(model, sh)
 
             # TODO evaluate if it's possible to pass num_gpus inputs in
@@ -435,7 +465,8 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
             summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
             summary_writer.add_summary(summary_str, epoch_id)
             summary_writer.flush()
-            checkpoint_path = os.path.join(cfg.checkpoints_dir, 'model.ckpt')
+            checkpoint_path = os.path.join(cfg.checkpoints_dir,
+                                           cfg.checkpoints_file)
             saver.save(sess, checkpoint_path, global_step=cfg.global_step)
 
             pbar.set_description('Time: %f, Loss: %f' % (iter_el_time,
@@ -496,10 +527,11 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 best_hist = np.array(history_acc).max()
                 if (len(history_acc) == 0 or
                    mean_iou.get('valid') >= best_hist):
-                    print('##Best model found##')
+                    print('## Best model found! ##')
                     print('Saving the checkpoint ...')
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
-                                                   'bestmodel.ckpt')
+                                                   cfg.checkpoints_file)
+                                                   # 'bestmodel.ckpt')
                     saver.save(sess, checkpoint_path,
                                global_step=cfg.global_step)
 
