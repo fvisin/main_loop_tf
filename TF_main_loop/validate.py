@@ -204,8 +204,6 @@ def save_animations(animations, save_basedir):
 def validate(placeholders,
              eval_outs,
              summary_outs,
-             Dataset,
-             dataset_kwargs,
              sess,
              epoch_id,
              which_set='valid',
@@ -213,21 +211,21 @@ def validate(placeholders,
              stateful_validation=True,
              save_samples=True,
              save_heatmap=True,
-             save_raw_predictions=False,
-             model_name=''):
+             save_raw_predictions=False):
         # from rec_conv_deconv import reset_states
         import tensorflow as tf
 
         cfg = gflags.cfg
-        if getattr(dataset_kwargs, 'resize_images', False):
+        if getattr(cfg.valid_params, 'resize_images', False):
             warn('Forcing resize_images to False in evaluation.')
-            dataset_kwargs.update({'resize_images': False})
+            cfg.valid_params.update({'resize_images': False})
 
-        dataset_kwargs['batch_size'] *= cfg.num_gpus
-        this_set = Dataset(
+        cfg.valid_params['batch_size'] *= cfg.num_gpus
+        this_set = cfg.Dataset(
             which_set=which_set,
-            **dataset_kwargs)
-        save_basedir = os.path.join('samples', model_name, this_set.which_set)
+            **cfg.valid_params)
+        save_basedir = os.path.join('samples', cfg.model_name,
+                                    this_set.which_set)
 
         # Begin loop over dataset samples
         eval_cost = 0

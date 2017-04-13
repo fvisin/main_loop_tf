@@ -280,16 +280,13 @@ def __run(build_model):
                     placeholders,
                     eval_outs,
                     summary_outs,
-                    cfg.Dataset,
-                    cfg.valid_params,
                     sess,
                     0,
                     which_set=s,
                     stateful_validation=cfg.stateful_validation,
                     save_samples=True,
                     save_heatmap=True,
-                    save_raw_predictions=False,
-                    model_name='')
+                    save_raw_predictions=False)
 
 
 def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
