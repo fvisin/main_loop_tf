@@ -378,11 +378,16 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             if grad is not None:
                 train_summaries.append(
                     tf.summary.histogram(var.op.name + '/gradients', grad))
-        loss_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
-                                            global_step=global_step)
+
+        # Impose graph dependency so that update operations are computed
+        # even if they're are not explicit in the outputs os session.run
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            train_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
+                                                 global_step=global_step)
     else:
         grads_and_vars = []
-        loss_op = None
+        train_op = None
 
     # Convert from list of Tensors to Tensor and average
     sym_preds = tf.concat(tower_preds, axis=0)
@@ -397,7 +402,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                       sym_mask)
     sym_avg_tower_loss = tf.reduce_mean(tower_losses)
 
-    train_outs = [sym_avg_tower_loss, loss_op]
+    train_outs = [sym_avg_tower_loss, train_op]
     eval_outs = [sym_preds, sym_m_iou, sym_avg_tower_loss, sym_cm_update_op]
     summary_outs = [tower_losses, sym_m_iou, sym_avg_tower_loss]
 
