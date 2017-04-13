@@ -43,7 +43,7 @@ def __parse_config(argv=None):
     # Parse FLAGS
     try:
         FLAGS(argv)  # parse flags
-    except gflags.FlagsError, e:
+    except gflags.FlagsError as e:
         print('Usage: %s ARGS\n%s\n\nError: %s' % (argv[0], FLAGS, e))
         sys.exit(0)
 
@@ -112,12 +112,13 @@ def __parse_config(argv=None):
     cfg.nclasses_w_void = Dataset.nclasses
     print('{} classes ({} non-void):'.format(cfg.nclasses_w_void,
                                              cfg.nclasses))
+
     # Optimization
     try:
         Optimizer = getattr(training, cfg.optimizer)
     except AttributeError:
         Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
-    cfg.optimizer = Optimizer
+    cfg.optimizer = Optimizer()
     try:
         loss_fn = getattr(nn, cfg.loss_fn)
     except AttributeError:
@@ -338,13 +339,23 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                 #                                            l2_loss)
                 #     summaries.append(vgg_l2_sum)
 
+                # Compute distribution over the classes
+                # Note that this is used to output the prediction and
+                # only in some cases for the loss
+                softmax_pred = slim.softmax(net_out)
+
+                # Use softmax if not using tf.nn.sparse_softmax_cross_entropy
+                # function that internally applied it
+                if (loss_fn is not
+                        tf.nn.sparse_softmax_cross_entropy_with_logits):
+                    net_out = softmax_pred
+
                 loss = apply_loss(labels, net_out, loss_fn,
                                   weight_decay, is_training,
                                   return_mean_loss=True,
                                   scope=scope)
 
                 # Compute prediction
-                softmax_pred = slim.softmax(net_out)
                 sym_pred = tf.argmax(softmax_pred, axis=-1)
 
                 # Compute gradients
@@ -417,12 +428,13 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
     val_skip = cfg.val_skip
     patience_counter = 0
     estop = False
-    last = False
+    end_of_epoch = False
+    last_epoch = False
     history_acc = np.array([]).tolist()
 
     # Start the training loop.
     start = time.time()
-    print("Training model ...")
+    print("Beginning main loop...")
     for epoch_id in range(init_step, max_epochs):
         pbar = tqdm(total=train.nbatches)
         epoch_start = time.time()
@@ -485,21 +497,20 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 estop = True
 
             # Validate if last epoch and last batch
-            if epoch_id == max_epochs - 1 and batch_id == train.nbatches - 1:
-                last = True
+            if batch_id == train.nbatches - 1:
+                end_of_epoch = True
+            if epoch_id == max_epochs - 1:
+                last_epoch = True
 
             # Last batch of epoch
-            if batch_id == train.nbatches - 1:
+            if end_of_epoch:
                 # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
                 patience_counter += 1
                 pbar.clear()
 
-                if val_skip:
-                    val_skip -= 1
-
             # TODO use tf.contrib.learn.monitors.ValidationMonitor?
             # Validate if last iteration, early stop or we reached valid_every
-            if last or estop or val_skip == 0:
+            if last_epoch or estop or (end_of_epoch and not val_skip):
                 # Validate
                 mean_iou = {}
                 from validate import validate
@@ -544,6 +555,9 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 if estop:
                     print('Early Stop!')
                     break
+            elif end_of_epoch:
+                # We skipped validation, decrease the counter
+                val_skip -= 1
 
         # exit epochs loop
         if estop:
