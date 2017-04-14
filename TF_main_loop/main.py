@@ -491,21 +491,22 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 loss_value))
             pbar.update(1)
 
-            # Early stop if patience is over
-            if epoch_id >= cfg.min_epochs and patience_counter >= cfg.patience:
-                estop = True
-
-            # Validate if last epoch and last batch
+            # Verify if it's the end of the epoch
             if batch_id == train.nbatches - 1:
                 end_of_epoch = True
-            if epoch_id == max_epochs - 1:
-                last_epoch = True
-
-            # Last batch of epoch
-            if end_of_epoch:
                 # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
                 t_epoch = time() - epoch_start
+
+                # Is it also the last epoch?
+                if epoch_id == max_epochs - 1:
+                    last_epoch = True
+
+                # Early stop if patience is over
                 patience_counter += 1
+                if (epoch_id >= cfg.min_epochs and
+                        patience_counter >= cfg.patience):
+                    estop = True
+
                 pbar.clear()
                 # TODO replace with logger
                 print('Epoch time: {}s, Epoch {}/{}, Loss: {}'.format(
