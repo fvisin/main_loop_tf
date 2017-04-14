@@ -205,31 +205,31 @@ def __run(build_model):
         sess = tf_debug.LocalCLIDebugWrapperSession(sess)
         sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
 
+    print("Building the model ...")
+    sym_inputs = tf.placeholder(shape=cfg.input_shape,
+                                dtype=cfg._FLOATX, name='inputs')
+    sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
+                                    dtype=cfg._FLOATX, name='val_inputs')
+    sym_labels = tf.placeholder(shape=[None], dtype='int32',
+                                name='labels')
+
+    # TODO is there another way to split the input in chunks when
+    # batchsize is not a multiple of num_gpus?
+    # Split in chunks, the size of each is provided in sym_input_split_dim
+    sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_gpus],
+                                          dtype='int32',
+                                          name='inputs_split_dim')
+    sym_labels_split_dim = tf.placeholder(shape=[cfg.num_gpus],
+                                          dtype='int32',
+                                          name='label_split_dim')
+    placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
+                    sym_labels_split_dim]
+    val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
+                        sym_labels_split_dim]
+
     with graph.as_default(), sess, tf.device(cfg.devices[0]):
         # Model compilation
         # -----------------
-        print("Building the model ...")
-        sym_inputs = tf.placeholder(shape=cfg.input_shape,
-                                    dtype=cfg._FLOATX, name='inputs')
-        sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
-                                        dtype=cfg._FLOATX, name='val_inputs')
-        sym_labels = tf.placeholder(shape=[None], dtype='int32',
-                                    name='labels')
-
-        # TODO is there another way to split the input in chunks when
-        # batchsize is not a multiple of num_gpus?
-        # Split in chunks, the size of each is provided in sym_input_split_dim
-        sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_gpus],
-                                              dtype='int32',
-                                              name='inputs_split_dim')
-        sym_labels_split_dim = tf.placeholder(shape=[cfg.num_gpus],
-                                              dtype='int32',
-                                              name='label_split_dim')
-        placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
-                        sym_labels_split_dim]
-        val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
-                            sym_labels_split_dim]
-
         train_outs, _, _ = build_graph(placeholders, cfg.input_shape,
                                        cfg.optimizer, cfg.weight_decay,
                                        cfg.loss_fn, build_model, True)
