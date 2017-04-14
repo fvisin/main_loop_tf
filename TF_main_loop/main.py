@@ -2,7 +2,7 @@ from copy import deepcopy
 import hashlib
 import os
 import sys
-import time
+from time import time
 
 import dataset_loaders
 import numpy as np
@@ -432,25 +432,26 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
     init_step = 0  # TODO do we need this? Can we get it out of the checkpoints
     val_skip = cfg.val_skip
     patience_counter = 0
+    cum_iter = 0
     estop = False
     end_of_epoch = False
     last_epoch = False
     history_acc = np.array([]).tolist()
 
     # Start the training loop.
-    start = time.time()
+    start = time()
     print("Beginning main loop...")
     for epoch_id in range(init_step, max_epochs):
         pbar = tqdm(total=train.nbatches)
-        epoch_start = time.time()
+        epoch_start = time()
 
         for batch_id in range(train.nbatches):
-            iter_start = time.time()
-            tot_batches = epoch_id * train.nbatches + batch_id
+            cum_iter += 1
+            iter_start = time()
 
             # inputs and labels
-            # TODO time
             minibatch = train.next()
+            t_data_load = time() - iter_start
             x_batch, y_batch = minibatch['data'], minibatch['labels']
             # sh = inputs.shape  # do NOT provide a list of shapes
             x_in = x_batch
@@ -475,8 +476,7 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
             # train_op does not return anything, but must be in the
             # outputs to update the gradient
             loss_value, _ = sess.run(train_outs, feed_dict=feed_dict)
-            epoch_el_time = time.time() - epoch_start
-            iter_el_time = time.time() - iter_start
+            t_iter = time() - iter_start
 
             # Upgrade the summaries and do checkpointing
             summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
@@ -486,16 +486,10 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                                            cfg.checkpoints_file)
             saver.save(sess, checkpoint_path, global_step=cfg.global_step)
 
-            pbar.set_description('Time: %f, Loss: %f' % (iter_el_time,
-                                                         loss_value))
+            pbar.set_description('Batch {}/{}({}) {}s (D {}s), Loss {}'.format(
+                batch_id + 1, train.nbatches, cum_iter, t_iter, t_data_load,
+                loss_value))
             pbar.update(1)
-
-            if batch_id == train.nbatches - 1:
-                # TODO replace with logger
-                print('Total time: {}, Epoch {}/{} Batch {}/{}({}),'
-                      'Loss: {}'.format(epoch_el_time, epoch_id+1, max_epochs,
-                                        batch_id+1, train.nbatches,
-                                        tot_batches+1, loss_value))
 
             # Early stop if patience is over
             if epoch_id >= cfg.min_epochs and patience_counter >= cfg.patience:
@@ -510,8 +504,12 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
             # Last batch of epoch
             if end_of_epoch:
                 # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
+                t_epoch = time() - epoch_start
                 patience_counter += 1
                 pbar.clear()
+                # TODO replace with logger
+                print('Epoch time: {}s, Epoch {}/{}, Loss: {}'.format(
+                    t_epoch, epoch_id + 1, max_epochs, loss_value))
 
             # TODO use tf.contrib.learn.monitors.ValidationMonitor?
             # Validate if last iteration, early stop or we reached valid_every
@@ -544,7 +542,6 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                     print('Saving the checkpoint ...')
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
                                                    cfg.checkpoints_file)
-                                                   # 'bestmodel.ckpt')
                     saver.save(sess, checkpoint_path,
                                global_step=cfg.global_step)
 
@@ -573,7 +570,7 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
     print('Best: Mean Class iou - Valid {:.5f}'.format(valid_mean_iou))
     print("")
 
-    end = time.time()
+    end = time()
     m, s = divmod(end - start, 60)
     h, m = divmod(m, 60)
     print("Total time elapsed: %d:%02d:%02d" % (h, m, s))
