@@ -525,16 +525,13 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                         placeholders,
                         eval_outs,
                         summary_outs,
-                        Dataset,
-                        valid_params,
                         sess,
                         epoch_id,
                         which_set=s,
                         stateful_validation=cfg.stateful_validation,
                         save_samples=True,
                         save_heatmap=True,
-                        save_raw_predictions=False,
-                        model_name='')
+                        save_raw_predictions=False)
 
                 # TODO gsheet
                 history_acc.append([mean_iou.get('valid')])
