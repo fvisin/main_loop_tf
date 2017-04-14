@@ -105,12 +105,18 @@ def __parse_config(argv=None):
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
         cfg.input_shape = [None, cfg.seq_length, None, None, 3]
+        cfg.val_input_shape = [None, cfg.seq_length, None, None, 3]
+        if cfg.crop_size:
+            cfg.input_shape[2:4] = cfg.crop_size
         ret_ext_seq = cfg.return_extended_sequences
         ret_middle_frame = cfg.return_middle_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
         dataset_params['return_middle_frame_only'] = ret_middle_frame
     else:
         cfg.input_shape = [None, None, None, 3]
+        cfg.val_input_shape = [None, None, None, 3]
+        if cfg.crop_size:
+            cfg.input_shape[1:3] = cfg.crop_size
     dataset_params['use_threads'] = cfg.use_threads
     dataset_params['nthreads'] = cfg.nthreads
     dataset_params['remove_per_img_mean'] = cfg.remove_per_img_mean
@@ -205,6 +211,8 @@ def __run(build_model):
         print("Building the model ...")
         sym_inputs = tf.placeholder(shape=cfg.input_shape,
                                     dtype=cfg._FLOATX, name='inputs')
+        sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
+                                        dtype=cfg._FLOATX, name='val_inputs')
         sym_labels = tf.placeholder(shape=[None], dtype='int32',
                                     name='labels')
 
@@ -219,12 +227,15 @@ def __run(build_model):
                                               name='label_split_dim')
         placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
                         sym_labels_split_dim]
+        val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
+                            sym_labels_split_dim]
 
         train_outs, _, _ = build_graph(placeholders, cfg.input_shape,
                                        cfg.optimizer, cfg.weight_decay,
                                        cfg.loss_fn, build_model, True)
 
-        _, eval_outs, summary_outs = build_graph(placeholders, cfg.input_shape,
+        _, eval_outs, summary_outs = build_graph(val_placeholders,
+                                                 cfg.val_input_shape,
                                                  cfg.optimizer,
                                                  cfg.weight_decay, cfg.loss_fn,
                                                  build_model, False)
@@ -261,6 +272,7 @@ def __run(build_model):
         if not cfg.do_validation_only:
             # Start training loop
             main_loop_kwags = {'placeholders': placeholders,
+                               'val_placeholders': val_placeholders,
                                'train_outs': train_outs,
                                'eval_outs': eval_outs,
                                'summary_outs': summary_outs,
@@ -277,7 +289,7 @@ def __run(build_model):
                 print('Starting validation on %s set' % s)
                 from validate import validate
                 mean_iou[s] = validate(
-                    placeholders,
+                    val_placeholders,
                     eval_outs,
                     summary_outs,
                     sess,
@@ -406,8 +418,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     return train_outs, eval_outs, summary_outs
 
 
-def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
-              Dataset, dataset_params, valid_params, sess):
+def main_loop(placeholders, val_placeholders, train_outs, eval_outs,
+              summary_outs, loss_fn, Dataset, dataset_params, valid_params,
+              sess):
 
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
@@ -521,7 +534,7 @@ def main_loop(placeholders, train_outs, eval_outs, summary_outs, loss_fn,
                 for s in cfg.val_on_sets:
                     print('\nStarting validation on %s set' % s)
                     mean_iou[s] = validate(
-                        placeholders,
+                        val_placeholders,
                         eval_outs,
                         summary_outs,
                         sess,
