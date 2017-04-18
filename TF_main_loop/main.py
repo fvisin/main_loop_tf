@@ -426,7 +426,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         # Add validation summaries
         val_summary_ops = {}
         for s in cfg.val_on_sets:
-            val_summaries = tf.get_collection_ref(key=s + '_summaries')
+            val_summaries = tf.get_collection_ref(key='val_' + s +
+                                                      '_summaries')
 
             # Add loss summaries
             for device_idx, loss in enumerate(tower_losses):
