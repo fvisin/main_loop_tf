@@ -203,7 +203,7 @@ def save_animations(animations, save_basedir):
 
 def validate(placeholders,
              eval_outs,
-             summary_outs,
+             val_summary_op,
              sess,
              epoch_id,
              which_set='valid',
@@ -257,25 +257,6 @@ def validate(placeholders,
             split_dim, lab_split_dim = compute_chunk_size(
                 x_batch.shape[0], np.prod(this_set.data_shape[:2]))
 
-            [tower_losses, sym_m_iou, sym_avg_tower_loss] = summary_outs
-            val_summaries = tf.get_collection_ref(key=which_set + '_summaries')
-            for device_idx, loss in enumerate(tower_losses):
-                # Save this GPU's summary (thanks to scope)
-                with tf.name_scope('tower_%d' % device_idx) as scope:
-                    val_summaries.append(
-                        tf.summary.scalar('Loss_' + scope + '_' + which_set,
-                                          loss))
-            val_summaries.append(tf.summary.scalar('Mean_IoU_' + which_set,
-                                                   sym_m_iou))
-            val_summaries.append(tf.summary.scalar('Mean_tower_loss_' +
-                                                   which_set,
-                                                   sym_avg_tower_loss))
-            # Add histograms for trainable variables.
-            for var in tf.trainable_variables():
-                val_summaries.append(tf.summary.histogram(var.op.name + '_' +
-                                                          which_set,
-                                                          var))
-
             if cfg.seq_length and cfg.seq_length > 1:
                 x_in = x_batch
                 y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
@@ -297,13 +278,16 @@ def validate(placeholders,
                 #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
 
                 # Create dictionary to feed the input placeholders:
-                #   sym_inputs, sym_labels, sym_input_split_dim,
-                #   sym_labels_split_dim
                 # and get batch pred, mIoU so far, batch loss
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
                 y_pred_batch, mIoU, loss, _ = sess.run(eval_outs,
                                                        feed_dict=feed_dict)
+                summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
+                summary_writer = tf.summary.FileWriter(
+                    logdir=cfg.checkpoints_dir, graph=sess.graph)
+                summary_writer.add_summary(summary_str, epoch_id)
+                summary_writer.flush()
                 # TODO valuta come fare aggregati sul loop in modo
                 # simbolico per metterlo nei summary (o come mettere
                 # robe nei summary a runtime)
@@ -318,6 +302,14 @@ def validate(placeholders,
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
                 y_pred_batch = sess.run([eval_outs[0]], feed_dict=feed_dict)
+                # TODO is the summary working in this case? I might not
+                # be able to compute the e.g., metrics. Should I remove
+                # that computation from the graph in build_graph?
+                summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
+                summary_writer = tf.summary.FileWriter(
+                    logdir=cfg.checkpoints_dir, graph=sess.graph)
+                summary_writer.add_summary(summary_str, epoch_id)
+                summary_writer.flush()
                 pbar.set_description('Time: %f' % (eval_iter_el_time))
                 pbar.update(1)
 
@@ -326,13 +318,5 @@ def validate(placeholders,
             #                          raw_data_batch, animations, save_basedir,
             #                          save_heatmap, save_samples,
             #                          save_raw_predictions)
-        # TODO save eval_cost somewhere
-        print('Saving the validation summaries ...')
-        val_summary_op = tf.summary.merge(val_summaries)
-        summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
-        summary_writer = tf.summary.FileWriter(logdir=cfg.checkpoints_dir,
-                                               graph=sess.graph)
-        summary_writer.add_summary(summary_str, epoch_id)
-        summary_writer.flush()
         # Once all the batches have been processed, save animations
         # save_animations(animations, save_basedir)

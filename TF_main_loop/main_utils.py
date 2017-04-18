@@ -60,12 +60,8 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
     loss = loss_fn(labels=labels,
                    logits=tf.reshape(net_out, [-1, cfg.nclasses]))
 
-    # Add L2 penalty only if we are training
-    # loss = tf.cond(is_training,
-    #                lambda: get_l2_penalty(loss, weight_decay),
-    #                lambda: tf.identity(loss))
     if is_training:
-        loss = get_l2_penalty(loss, weight_decay)
+        loss = apply_l2_penalty(loss, weight_decay)
 
     # Return the mean loss (over pixels *and* batches)
     if return_mean_loss:
@@ -77,13 +73,13 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
         return loss
 
 
-def get_l2_penalty(loss, weight_decay):
+def apply_l2_penalty(loss, weight_decay):
     reg_losses = tf.losses.get_regularization_losses()
     if len(reg_losses):
         l2_penalty = tf.add_n(reg_losses)
         loss += l2_penalty * weight_decay
 
-    return tf.identity(loss)
+    return loss
 
 
 def average_gradients(tower_grads):
