@@ -105,7 +105,10 @@ def __parse_config(argv=None):
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
         cfg.input_shape = [None, cfg.seq_length, None, None, 3]
-        cfg.val_input_shape = [None, cfg.seq_length, None, None, 3]
+        if Dataset.data_shape:
+            cfg.val_input_shape = (None, cfg.seq_length) + Dataset.data_shape
+        else:
+            cfg.val_input_shape = [None, cfg.seq_length, None, None, 3]
         if cfg.crop_size:
             cfg.input_shape[2:4] = cfg.crop_size
         ret_ext_seq = cfg.return_extended_sequences
@@ -114,7 +117,10 @@ def __parse_config(argv=None):
         dataset_params['return_middle_frame_only'] = ret_middle_frame
     else:
         cfg.input_shape = [None, None, None, 3]
-        cfg.val_input_shape = [None, None, None, 3]
+        if Dataset.data_shape:
+            cfg.val_input_shape = (None,) + Dataset.data_shape
+        else:
+            cfg.val_input_shape = [None, None, None, 3]
         if cfg.crop_size:
             cfg.input_shape[1:3] = cfg.crop_size
     dataset_params['use_threads'] = cfg.use_threads
