@@ -100,7 +100,7 @@ def __parse_config(argv=None):
     dataset_params['return_01c'] = True
     if cfg.seq_per_subset:
         dataset_params['seq_per_subset'] = cfg.seq_per_subset
-    if cfg.overlap:
+    if cfg.overlap is not None:
         dataset_params['overlap'] = cfg.overlap
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
@@ -127,7 +127,7 @@ def __parse_config(argv=None):
     cfg.valid_params = deepcopy(cfg.dataset_params)
     cfg.valid_params.update({
         'seq_per_subset': 0,
-        'overlap': cfg.val_overlap if cfg.val_overlap else None,
+        'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
         'return_middle_frame_only': False,
