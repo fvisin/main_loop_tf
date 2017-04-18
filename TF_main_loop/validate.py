@@ -6,7 +6,6 @@ from warnings import warn
 import gflags
 from tqdm import tqdm
 
-from helpers import fig2array
 from main_utils import compute_chunk_size
 
 
@@ -320,3 +319,28 @@ def validate(placeholders,
             #                          save_raw_predictions)
         # Once all the batches have been processed, save animations
         # save_animations(animations, save_basedir)
+
+
+def fig2array(fig):
+    """Convert a Matplotlib figure to a 4D numpy array
+
+    Params
+    ------
+    fig:
+        A matplotlib figure
+
+    Return
+    ------
+        A numpy 3D array of RGBA values
+
+    Modified version of: http://www.icare.univ-lille1.fr/node/1141
+    """
+    # draw the renderer
+    fig.canvas.draw()
+
+    # Get the RGBA buffer from the figure
+    w, h = fig.canvas.get_width_height()
+    buf = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    buf.shape = (h, w, 3)
+
+    return buf
