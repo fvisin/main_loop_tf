@@ -568,12 +568,16 @@ def main_loop(placeholders, val_placeholders, train_outs, eval_outs,
                 if estop:
                     print('Early Stop!')
                     break
+                if last_epoch:
+                    print('Last epoch!')
+                    break
+
             elif end_of_epoch:
                 # We skipped validation, decrease the counter
                 val_skip -= 1
 
         # exit epochs loop
-        if estop:
+        if estop or last_epoch:
             break
 
     max_valid_idx = np.argmax(np.array(history_acc))
