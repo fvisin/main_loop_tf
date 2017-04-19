@@ -132,6 +132,7 @@ def __parse_config(argv=None):
     cfg.dataset_params = dataset_params
     cfg.valid_params = deepcopy(cfg.dataset_params)
     cfg.valid_params.update({
+        'batch_size': cfg.val_batch_size,
         'seq_per_subset': 0,
         'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
