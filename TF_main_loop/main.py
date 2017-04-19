@@ -557,6 +557,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             # TODO use tf.contrib.learn.monitors.ValidationMonitor?
             # Validate if last iteration, early stop or we reached valid_every
             if last_epoch or estop or (end_of_epoch and not val_skip):
+                end_of_epoch = False
                 # Validate
                 mean_iou = {}
                 from validate import validate
@@ -602,6 +603,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     break
 
             elif end_of_epoch:
+                end_of_epoch = False
                 # We skipped validation, decrease the counter
                 val_skip -= 1
 
