@@ -160,9 +160,8 @@ def __parse_config(argv=None):
     cfg.loss_fn = loss_fn
 
     # TODO Add val_every_iter?
-    cfg.val_every = cfg.val_every_epochs if cfg.val_every_epochs > 0 else 1
     cfg.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
-                    cfg.val_every - 1)
+                    max(1, cfg.val_every_epochs) - 1)
 
 
 def __run(build_model):
@@ -589,7 +588,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     patience_counter = 0
                     estop = False
                 # Start skipping again
-                val_skip = cfg.val_every
+                val_skip = max(1, cfg.val_every_epochs)
 
                 # exit minibatches loop
                 if estop:
