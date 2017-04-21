@@ -320,12 +320,12 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     else:
         for k in cfg.val_on_sets:
             summaries[k] = tf.get_collection_ref(key='val_' + k + '_summaries')
+    tower_suffix = 'train' if is_training else 'val'
 
     for device_idx, (inputs, labels) in enumerate(zip(sym_inputs_per_gpu,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
-            tower_suffix = 'train' if is_training else 'val'
             with tf.name_scope('towr{}_{}'.format(device_idx,
                                                   tower_suffix)) as scope:
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
@@ -398,7 +398,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     #############
     # SUMMARIES #
     #############
-    with tf.name_scope('summaries'):
+    with tf.name_scope('summaries_{}'.format(tower_suffix)):
         for k, s in summaries.iteritems():
             s.append(tf.summary.scalar('Mean_tower_loss_' + k,
                                        sym_avg_tower_loss))
