@@ -546,8 +546,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         val_summary_ops[s],
                         sess,
                         epoch_id,
-                        which_set=s,
-                        model_name='')
+                        which_set=s)
 
                 # TODO gsheet
                 history_acc.append([mean_iou.get('valid')])
