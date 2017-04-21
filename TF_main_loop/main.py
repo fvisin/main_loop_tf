@@ -80,7 +80,6 @@ def __parse_config(argv=None):
                                        cfg.hash)
     cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
     cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
-    cfg.checkpoints_file = 'best.ckpt'
 
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
@@ -257,27 +256,13 @@ def __run(build_model):
         # Initialize the variables (we might restore a subset of them..)
         sess.run(init)
 
-        # for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES):
-        #     print(v)
-
         if cfg.restore_model:
-            print("Restoring model from checkpoint ...")
-            if cfg.checkpoints_file is None:  # default: last saved checkpoint
-                checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-                print(checkpoint)
-            else:
-                checkpoint = os.path.join(cfg.checkpoints_dir,
-                                          cfg.checkpoints_file)
-                print(checkpoint)
+            # TODO add option to restore best rather than last?
+            checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
+            print("Restoring model from checkpoint {}...".format(checkpoint))
             saver = tf.train.Saver()
             saver.restore(sess, checkpoint)
             print("Model restored.")
-        # elif cfg.pretrained_vgg:
-        #     print("Loading VGG16 weights ...")
-        #     load_vgg_weights(file=cfg.vgg_weights_file,
-        #                      vgg_var_to_load=cfg.vgg_var_to_load,
-        #                      sess=sess)
-        #     print("VGG16 pretrained weights loaded.")
 
         if not cfg.do_validation_only:
             # Start training loop
