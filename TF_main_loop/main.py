@@ -440,8 +440,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     if is_training:
         return [sym_avg_tower_loss, train_op], train_summary_op
     else:
-        return ([sym_preds, softmax_preds, sym_m_iou, sym_avg_tower_loss, sym_cm_update_op],
-                val_summary_ops)
+        return ([sym_preds, softmax_preds, sym_m_iou, sym_avg_tower_loss,
+                 sym_cm_update_op], val_summary_ops)
 
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
