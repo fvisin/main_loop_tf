@@ -318,23 +318,31 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     [sym_inputs, sym_labels, sym_input_split_dim,
      sym_labels_split_dim] = placeholders
 
+    # Split the input among the GPUs (batchwise)
     sym_inputs_per_gpu = tf.split(sym_inputs, sym_input_split_dim, 0)
     sym_labels_per_gpu = tf.split(sym_labels, sym_labels_split_dim, 0)
-
     for dev_idx in range(num_gpus):
         sym_inputs_per_gpu[dev_idx].set_shape(input_shape)
 
-    # Compute the gradients for each model tower
+    # Init variables
     tower_grads = []
     tower_preds = []
     tower_soft_preds = []
     tower_losses = []
+    summaries = {}
+    if is_training:
+        summaries['training'] = tf.get_collection_ref(key='train_summaries')
+    else:
+        for k in cfg.val_on_sets:
+            summaries[k] = tf.get_collection_ref(key='val_' + k + '_summaries')
+
     for device_idx, (inputs, labels) in enumerate(zip(sym_inputs_per_gpu,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
             tower_suffix = 'train' if is_training else 'val'
-            with tf.name_scope('towr{}_{}'.format(device_idx, tower_suffix)):
+            with tf.name_scope('towr{}_{}'.format(device_idx,
+                                                  tower_suffix)) as scope:
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
                     net_out = build_model(inputs, is_training)
@@ -356,6 +364,11 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                       weight_decay, is_training,
                                       return_mean_loss=True)
                     tower_losses.append(loss)
+                    # Save this GPU's summary (thanks to scope)
+                    with tf.name_scope('tower_loss_summaries'):
+                        for k, s in summaries.iteritems():
+                            s.append(tf.summary.scalar(
+                                'Loss_tower_{}_{}'.format(scope, k), loss))
 
                     # Gradients
                     if is_training:
@@ -390,53 +403,32 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         with tf.control_dependencies(update_ops):
             train_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
                                                  global_step=global_step)
+        # Add the histograms of the gradients
+        with tf.name_scope('grad_summaries'):
+            for grad, var in grads_and_vars:
+                if grad is not None:
+                    summaries['training'].append(
+                        tf.summary.histogram(var.op.name + '/gradients', grad))
 
     #############
     # SUMMARIES #
     #############
-    if is_training:
-        train_summaries = tf.get_collection_ref(key='train_summaries')
+    with tf.name_scope('summaries'):
+        for k, s in summaries.iteritems():
+            s.append(tf.summary.scalar('Mean_tower_loss_' + k,
+                                       sym_avg_tower_loss))
+            s.append(tf.summary.scalar('Mean_IoU_' + k, sym_m_iou))
 
-        # Add the histograms of the gradients
-        for grad, var in grads_and_vars:
-            if grad is not None:
-                train_summaries.append(
-                    tf.summary.histogram(var.op.name + '/gradients', grad))
-
-        # Add the histograms for trainable variables
-        for var in tf.trainable_variables():
-            train_summaries.append(tf.summary.histogram(var.op.name, var))
-
-        # Add loss summaries
-        for device_idx, loss in enumerate(tower_losses):
-            # Save this GPU's summary (thanks to scope)
-            with tf.name_scope('tower_%d' % device_idx) as scope:
-                train_summaries.append(
-                    tf.summary.scalar('Loss_tower_{}'.format(scope), loss))
-        train_summaries.append(tf.summary.scalar('Mean_tower_loss',
-                                                 sym_avg_tower_loss))
-        # Add metrics
-        train_summaries.append(tf.summary.scalar('Mean_IoU', sym_m_iou))
-        train_summary_op = tf.summary.merge(train_summaries)
-    else:
-        # Add validation summaries
-        val_summary_ops = {}
-        for s in cfg.val_on_sets:
-            val_summaries = tf.get_collection_ref(key='val_' + s +
-                                                      '_summaries')
-
-            # Add loss summaries
-            for device_idx, loss in enumerate(tower_losses):
-                # Save this GPU's summary (thanks to scope)
-                with tf.name_scope('tower_%d' % device_idx) as scope:
-                    val_summaries.append(
-                        tf.summary.scalar('Loss_tower_{}_{}'.format(scope, s),
-                                          loss))
-            val_summaries.append(tf.summary.scalar('Mean_tower_loss_' + s,
-                                                   sym_avg_tower_loss))
-            # Add metrics
-            val_summaries.append(tf.summary.scalar('Mean_IoU_' + s, sym_m_iou))
-            val_summary_ops[s] = tf.summary.merge(val_summaries)
+        if is_training:
+            # Add the histograms for trainable variables
+            for var in tf.trainable_variables():
+                summaries['training'].append(tf.summary.histogram(var.op.name,
+                                                                  var))
+            train_summary_op = tf.summary.merge(summaries['training'])
+        else:
+            val_summary_ops = {}
+            for k, s in summaries.iteritems():
+                val_summary_ops[k] = tf.summary.merge(s)
 
     if is_training:
         return [sym_avg_tower_loss, train_op], train_summary_op
