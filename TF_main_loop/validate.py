@@ -287,7 +287,7 @@ def validate(placeholders,
         save_basedir = os.path.join('samples', cfg.model_name,
                                     this_set.which_set)
 
-        summary_writer = tf.summary.FileWriter(logdir=cfg.checkpoints_dir,
+        summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
                                                graph=sess.graph)
 
         # Begin loop over dataset samples

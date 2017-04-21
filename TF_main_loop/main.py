@@ -78,6 +78,8 @@ def __parse_config(argv=None):
                                                  'TF_main_loop'])
     cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
                                        cfg.hash)
+    cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
+    cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
     cfg.checkpoints_file = 'best.ckpt'
 
     # ============ A bunch of derived params
@@ -451,7 +453,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     max_epochs = cfg.max_epochs
 
     # Prepare the summary objects
-    summary_writer = tf.summary.FileWriter(logdir=cfg.checkpoints_dir,
+    summary_writer = tf.summary.FileWriter(logdir=cfg.train_checkpoints_dir,
                                            graph=sess.graph)
     saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
 
@@ -514,10 +516,11 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             loss_value, _ = sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
-            # Upgrade the summaries and do checkpointing
+            # Upgrade the summaries
             summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
             summary_writer.add_summary(summary_str, epoch_id)
             summary_writer.flush()
+            # Save the checkpoint
             checkpoint_path = os.path.join(cfg.checkpoints_dir,
                                            cfg.checkpoints_file)
             saver.save(sess, checkpoint_path, global_step=cfg.global_step)
