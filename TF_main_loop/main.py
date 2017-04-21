@@ -340,40 +340,36 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                        reuse=reuse_variables) as scope:
 
                     net_out = build_model(inputs, is_training)
-
-                    # Compute the distribution over the classes
-                    # Note that this is used to output the prediction and
-                    # only in some cases for the loss
                     softmax_pred = slim.softmax(net_out)
 
+                    # Prediction
+                    sym_pred = tf.argmax(softmax_pred, axis=-1)
+                    tower_preds.append(sym_pred)
+
+                    # Loss
                     # Use softmax, unless using the
                     # tf.nn.sparse_softmax_cross_entropy function that
                     # internally applies it already
                     if (loss_fn is not
                             tf.nn.sparse_softmax_cross_entropy_with_logits):
                         net_out = softmax_pred
-
                     loss = apply_loss(labels, net_out, loss_fn,
                                       weight_decay, is_training,
                                       return_mean_loss=True,
                                       scope=scope)
+                    tower_losses.append(loss)
 
-                    # Compute prediction
-                    sym_pred = tf.argmax(softmax_pred, axis=-1)
-
-                    # Compute gradients
+                    # Gradients
                     if is_training:
                         grads = optimizer.compute_gradients(loss)
                         tower_grads.append(grads)
-                    tower_losses.append(loss)
-                    tower_preds.append(sym_pred)
 
                     # Print regularization
                     for v in tf.get_collection(
                             tf.GraphKeys.REGULARIZATION_LOSSES):
                         print('Regularization losses:\n{}'.format(v))
 
-    # Convert from list of Tensors to Tensor and average
+    # Convert from list of tensors to tensor, and average
     sym_preds = tf.concat(tower_preds, axis=0)
 
     # Compute the mean IoU
