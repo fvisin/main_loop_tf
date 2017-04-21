@@ -51,14 +51,16 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
         # TODO Check this
         print('Masking the void labels')
         mask = tf.not_equal(labels, cfg.void_labels)
-        labels *= tf.to_int32(mask)
-        mask_out = tf.cast(tf.expand_dims(tf.reshape(
-            mask, tf.shape(net_out)[:3]), -1), cfg._FLOATX)
-        net_out *= mask_out
-
-    # Train loss
-    loss = loss_fn(labels=labels,
-                   logits=tf.reshape(net_out, [-1, cfg.nclasses]))
+        labels *= tf.cast(mask, 'int32')  # void_class --> 0 (random class)
+        # Train loss
+        loss = loss_fn(labels=labels,
+                       logits=tf.reshape(net_out, [-1, cfg.nclasses]))
+        mask = tf.cast(mask, 'float32')
+        loss *= mask
+    else:
+        # Train loss
+        loss = loss_fn(labels=labels,
+                       logits=tf.reshape(net_out, [-1, cfg.nclasses]))
 
     if is_training:
         loss = apply_l2_penalty(loss, weight_decay)
@@ -66,7 +68,7 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
     # Return the mean loss (over pixels *and* batches)
     if return_mean_loss:
         if mask_voids and len(cfg.void_labels):
-            return tf.reduce_sum(loss) / tf.reduce_sum(mask_out)
+            return tf.reduce_sum(loss) / tf.reduce_sum(mask)
         else:
             return tf.reduce_mean(loss)
     else:
