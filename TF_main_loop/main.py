@@ -493,15 +493,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             loss_value, _ = sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
-            # Upgrade the summaries
-            summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
-            summary_writer.add_summary(summary_str, epoch_id)
-            summary_writer.flush()
-            # Save the checkpoint
-            checkpoint_path = os.path.join(cfg.checkpoints_dir,
-                                           cfg.checkpoints_file)
-            saver.save(sess, checkpoint_path, global_step=cfg.global_step)
-
             pbar.set_description('Batch {}/{}({}) {}s (D {}s), Loss {}'.format(
                 batch_id + 1, train.nbatches, cum_iter, t_iter, t_data_load,
                 loss_value))
@@ -511,7 +502,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             if batch_id == train.nbatches - 1:
                 end_of_epoch = True
                 # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
-                t_epoch = time() - epoch_start
+                epoch_end = time()
 
                 # Is it also the last epoch?
                 if epoch_id == max_epochs - 1:
@@ -523,10 +514,22 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         patience_counter >= cfg.patience):
                     estop = True
 
+                # Upgrade the summaries
+                summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
+                summary_writer.add_summary(summary_str, cum_iter)
+                summary_writer.flush()
+                # Save the checkpoint
+                checkpoint_path = os.path.join(
+                    cfg.checkpoints_dir, '{}.ckpt'.format(cfg.model_name))
+                saver.save(sess, checkpoint_path, global_step=cfg.global_step)
+                t_epoch = time() - epoch_start
+                t_save = time() - epoch_end
+
                 pbar.clear()
                 # TODO replace with logger
-                print('Epoch time: {}s, Epoch {}/{}, Loss: {}'.format(
-                    t_epoch, epoch_id + 1, max_epochs, loss_value))
+                print('Epoch time: {}s (save {}s), Epoch {}/{}, '
+                      'Loss: {}'.format(t_epoch, t_save, epoch_id + 1,
+                                        max_epochs, loss_value))
 
             # TODO use tf.contrib.learn.monitors.ValidationMonitor?
             # Validate if last iteration, early stop or we reached valid_every
@@ -556,7 +559,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     print('## Best model found! ##')
                     print('Saving the checkpoint ...')
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
-                                                   cfg.checkpoints_file)
+                                                   '{}_best.ckpt'.format(
+                                                       cfg.model_name))
                     saver.save(sess, checkpoint_path,
                                global_step=cfg.global_step)
 
