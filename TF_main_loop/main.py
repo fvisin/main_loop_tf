@@ -331,9 +331,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
-            with tf.name_scope('towr_%d' % device_idx) as scope:
-                with tf.variable_scope(cfg.model_name,
-                                       reuse=reuse_variables) as scope:
+            tower_suffix = 'train' if is_training else 'val'
+            with tf.name_scope('towr{}_{}'.format(device_idx, tower_suffix)):
+                with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
                     net_out = build_model(inputs, is_training)
                     softmax_pred = slim.softmax(net_out)
@@ -352,8 +352,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                         net_out = softmax_pred
                     loss = apply_loss(labels, net_out, loss_fn,
                                       weight_decay, is_training,
-                                      return_mean_loss=True,
-                                      scope=scope)
+                                      return_mean_loss=True)
                     tower_losses.append(loss)
 
                     # Gradients

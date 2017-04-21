@@ -39,7 +39,7 @@ def compute_chunk_size(batch_size, npixels):
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
-               return_mean_loss=False, mask_voids=True, scope=None):
+               return_mean_loss=False, mask_voids=True):
     '''Applies the user-specified loss function and returns the loss
 
     Note:
