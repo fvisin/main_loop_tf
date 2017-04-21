@@ -19,3 +19,17 @@ gflags.DEFINE_list('vgg_var_to_load',
                    'layers to reload')
 gflags.DEFINE_bool('restore_model', False, 'Whether to reload the weights of '
                    'the model')
+gflags.DEFINE_bool('save_samples', True, 'Whether to save GT/Prediction '
+                   'image summaries')
+gflags.DEFINE_bool('save_raw_predictions', False, 'Whether to save raw '
+                   'predictions on disk')
+gflags.DEFINE_bool('save_heatmap', True, 'Whether to save heatmap image '
+                   'image summaries')
+gflags.DEFINE_bool('save_animations', False, 'Whether to save gif '
+                   'animations')
+gflags.DEFINE_bool('save_images_on_disk', False, 'If True the images '
+                   'will be saved also on disk as well as in '
+                   'Tensorboard')
+gflags.DEFINE_integer('img_summaries_freq', 1, 'How often, in terms '
+                      'of batches, to save image summaries during '
+                      'validation')

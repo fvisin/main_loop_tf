@@ -2,6 +2,8 @@ from subprocess import check_output
 import sys
 
 # Force matplotlib not to use any Xwindows backend.
+import matplotlib
+matplotlib.use('Agg')
 # Initialize numpy's random seed
 #import settings  # noqa
 

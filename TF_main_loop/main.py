@@ -303,11 +303,7 @@ def __run(build_model):
                     val_summary_ops[s],
                     sess,
                     0,
-                    which_set=s,
-                    stateful_validation=cfg.stateful_validation,
-                    save_samples=True,
-                    save_heatmap=True,
-                    save_raw_predictions=False)
+                    which_set=s)
 
 
 def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
@@ -329,6 +325,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     # Compute the gradients for each model tower
     tower_grads = []
     tower_preds = []
+    tower_soft_preds = []
     tower_losses = []
     for device_idx, (inputs, labels) in enumerate(zip(sym_inputs_per_gpu,
                                                       sym_labels_per_gpu)):
@@ -340,6 +337,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
                     net_out = build_model(inputs, is_training)
                     softmax_pred = slim.softmax(net_out)
+                    tower_soft_preds.append(softmax_pred)
 
                     # Prediction
                     sym_pred = tf.argmax(softmax_pred, axis=-1)
@@ -370,6 +368,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
     # Convert from list of tensors to tensor, and average
     sym_preds = tf.concat(tower_preds, axis=0)
+    softmax_preds = tf.concat(tower_soft_preds, axis=0)
 
     # Compute the mean IoU
     # TODO would it be better to use less precision here?
@@ -441,7 +440,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     if is_training:
         return [sym_avg_tower_loss, train_op], train_summary_op
     else:
-        return ([sym_preds, sym_m_iou, sym_avg_tower_loss, sym_cm_update_op],
+        return ([sym_preds, softmax_preds, sym_m_iou, sym_avg_tower_loss, sym_cm_update_op],
                 val_summary_ops)
 
 
@@ -566,10 +565,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         sess,
                         epoch_id,
                         which_set=s,
-                        stateful_validation=cfg.stateful_validation,
-                        save_samples=True,
-                        save_heatmap=True,
-                        save_raw_predictions=False)
+                        model_name='')
 
                 # TODO gsheet
                 history_acc.append([mean_iou.get('valid')])
