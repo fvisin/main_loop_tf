@@ -225,13 +225,16 @@ def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
         else:
             of = None
 
-        if x.shape[-1] == 5:
-            raw_data = raw_data[seq_length // 2, ..., :3]
+        if raw_data.ndim == 4:
+            # Show only the middle frame
+            heat_map_in = raw_data[seq_length // 2, ..., :3]
+        else:
+            heat_map_in = raw_data
 
         # PRINT THE HEATMAP
         if cfg.save_heatmap:
             # do not pass optical flow
-            save_heatmap_fn(raw_data, of, y_soft_pred,
+            save_heatmap_fn(heat_map_in, of, y_soft_pred,
                             labels, nclasses,
                             save_basedir, subset,
                             f, epoch_id,
@@ -242,13 +245,15 @@ def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
         # y = y.argmax(2)
         # y_pred = y_pred.argmax(2)
 
-        if x.shape[-1] == 5:
-            raw_data = raw_data[seq_length // 2]
-
         # Save image and append frame to animations sequence
         if cfg.save_samples:
-
-            save_sample_and_fill_sequence_fn(raw_data, of, y_pred, y, cmap,
+            if raw_data.ndim == 4:
+                sample_in = raw_data[seq_length // 2]
+                y_in = y[seq_length // 2]
+            else:
+                sample_in = raw_data
+                y_in = y
+            save_sample_and_fill_sequence_fn(sample_in, of, y_pred, y_in, cmap,
                                              nclasses, labels, subset,
                                              animations, save_basedir,
                                              f, epoch_id,

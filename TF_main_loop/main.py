@@ -112,6 +112,8 @@ def __parse_config(argv=None):
             cfg.val_input_shape = [None, cfg.seq_length, None, None, 3]
         if cfg.crop_size:
             cfg.input_shape[2:4] = cfg.crop_size
+        else:
+            cfg.input_shape = (None, cfg.seq_length) + Dataset.data_shape
         ret_ext_seq = cfg.return_extended_sequences
         ret_middle_frame = cfg.return_middle_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
