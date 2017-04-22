@@ -391,7 +391,7 @@ def validate(placeholders,
             #                          save_raw_predictions)
         # Once all the batches have been processed, save animations
         # save_animations(animations, save_basedir)
-        if cfg.save_gifs:
+        if cfg.save_animations:
             save_animations(animations, save_basedir)
 
 

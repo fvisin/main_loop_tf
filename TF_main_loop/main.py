@@ -493,9 +493,12 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             loss_value, _ = sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
-            pbar.set_description('Batch {}/{}({}) {}s (D {}s), Loss {}'.format(
-                batch_id + 1, train.nbatches, cum_iter, t_iter, t_data_load,
-                loss_value))
+            pbar.set_description('Batch {:4d}/{:4d}({:4d}) {:.3f}s (D {:.3f}s)'
+                                 ', Loss {:.4f}'.format(batch_id + 1,
+                                                        train.nbatches,
+                                                        cum_iter, t_iter,
+                                                        t_data_load,
+                                                        loss_value))
             pbar.update(1)
 
             # Verify if it's the end of the epoch
@@ -580,7 +583,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 end_of_epoch = False
                 # We skipped validation, decrease the counter
                 val_skip -= 1
-
+        pbar.close()
         # exit epochs loop
         if estop or last_epoch:
             break
