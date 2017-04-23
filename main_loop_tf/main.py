@@ -10,6 +10,7 @@ import tensorflow as tf
 from tensorflow import nn
 from tensorflow.contrib import slim
 from tensorflow.python.training import training
+from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
@@ -28,6 +29,8 @@ gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
                    'the middle frame segmentation mask only for each sequence')
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
+gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
+                     'Supervisor')
 
 
 def run(argv, build_model):
@@ -216,95 +219,102 @@ def __run(build_model):
                                 device_count={'CPU': cfg.num_cpus})
     else:
         RuntimeError('You must specify the devices to run on')
-    sess = tf.Session(config=config)
-
-    if cfg.debug:
-        from tensorflow.python import debug as tf_debug
-        sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-        sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
 
     print("Building the model ...")
-    cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
-                                  dtype=cfg._FLOATX)
-    sym_inputs = tf.placeholder(shape=cfg.input_shape,
-                                dtype=cfg._FLOATX, name='inputs')
-    sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
-                                    dtype=cfg._FLOATX, name='val_inputs')
-    sym_labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
+    with tf.Graph().as_default() as graph:
+    # with graph:
+        cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
+                                      dtype=cfg._FLOATX)
+        sym_inputs = tf.placeholder(shape=cfg.input_shape,
+                                    dtype=cfg._FLOATX, name='inputs')
+        sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
+                                        dtype=cfg._FLOATX, name='val_inputs')
+        sym_labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
 
-    # TODO is there another way to split the input in chunks when
-    # batchsize is not a multiple of num_splits?
-    # Split in chunks, the size of each is provided in sym_input_split_dim
-    sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                          dtype='int32',
-                                          name='inputs_split_dim')
-    sym_labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                          dtype='int32',
-                                          name='label_split_dim')
-    placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
-                    sym_labels_split_dim]
-    val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
+        # TODO is there another way to split the input in chunks when
+        # batchsize is not a multiple of num_splits?
+        # Split in chunks, the size of each is provided in sym_input_split_dim
+        sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
+                                              dtype='int32',
+                                              name='inputs_split_dim')
+        sym_labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
+                                              dtype='int32',
+                                              name='label_split_dim')
+        placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
                         sym_labels_split_dim]
+        val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
+                            sym_labels_split_dim]
 
-    with sess, tf.device(cfg.devices[0]):
-        # Model compilation
-        # -----------------
-        train_outs, train_summary_op = build_graph(placeholders,
-                                                   cfg.input_shape,
-                                                   cfg.optimizer,
-                                                   cfg.weight_decay,
-                                                   cfg.loss_fn, build_model,
-                                                   True)
+        sv = Supervisor(
+            logdir=cfg.checkpoints_dir,
+            save_model_secs=300
+            )
+        with sv.managed_session(cfg.supervisor_master, config) as sess, tf.device(cfg.devices[0]):
+            # Model compilation
+            # -----------------
+            train_outs, train_summary_op = build_graph(placeholders,
+                                                       cfg.input_shape,
+                                                       cfg.optimizer,
+                                                       cfg.weight_decay,
+                                                       cfg.loss_fn, build_model,
+                                                       True)
 
-        val_outs, val_summary_ops = build_graph(val_placeholders,
-                                                cfg.val_input_shape,
-                                                cfg.optimizer,
-                                                cfg.weight_decay,
-                                                cfg.loss_fn, build_model,
-                                                False)
+            val_outs, val_summary_ops = build_graph(val_placeholders,
+                                                    cfg.val_input_shape,
+                                                    cfg.optimizer,
+                                                    cfg.weight_decay,
+                                                    cfg.loss_fn, build_model,
+                                                    False)
 
-        # Add the variables initializer Op.
-        init = tf.group(tf.global_variables_initializer(),
-                        tf.local_variables_initializer())
+            # No need if we use the Supervisor
+            # # Add the variables initializer Op.
+            # init = tf.group(tf.global_variables_initializer(),
+            #                 tf.local_variables_initializer())
 
-        # Initialize the variables (we might restore a subset of them..)
-        sess.run(init)
+            # # Initialize the variables (we might restore a subset of them..)
+            # sess.run(init)
+            if cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+                sess.add_tensor_filter("has_inf_or_nan",
+                                       tf_debug.has_inf_or_nan)
 
-        if cfg.restore_model:
-            # TODO add option to restore best rather than last?
-            checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-            print("Restoring model from checkpoint {}...".format(checkpoint))
-            saver = tf.train.Saver()
-            saver.restore(sess, checkpoint)
-            print("Model restored.")
+            if cfg.restore_model:
+                # TODO add option to restore best rather than last?
+                checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
+                print('Restoring model from checkpoint ' + checkpoint + '...')
+                saver = tf.train.Saver()
+                saver.restore(sess, checkpoint)
+                print("Model restored.")
 
-        if not cfg.do_validation_only:
-            # Start training loop
-            main_loop_kwags = {'placeholders': placeholders,
-                               'val_placeholders': val_placeholders,
-                               'train_outs': train_outs,
-                               'train_summary_op': train_summary_op,
-                               'val_outs': val_outs,
-                               'val_summary_ops': val_summary_ops,
-                               'loss_fn': cfg.loss_fn,
-                               'Dataset': cfg.Dataset,
-                               'dataset_params': cfg.dataset_params,
-                               'valid_params': cfg.valid_params,
-                               'sess': sess}
-            return main_loop(**main_loop_kwags)
-        else:
-            # Perform validation only
-            mean_iou = []
-            for s in cfg.val_on_sets:
-                print('Starting validation on %s set' % s)
-                from validate import validate
-                mean_iou[s] = validate(
-                    val_placeholders,
-                    val_outs,
-                    val_summary_ops[s],
-                    sess,
-                    0,
-                    which_set=s)
+            if not cfg.do_validation_only:
+                # Start training loop
+                main_loop_kwags = {'placeholders': placeholders,
+                                   'val_placeholders': val_placeholders,
+                                   'train_outs': train_outs,
+                                   'train_summary_op': train_summary_op,
+                                   'val_outs': val_outs,
+                                   'val_summary_ops': val_summary_ops,
+                                   'loss_fn': cfg.loss_fn,
+                                   'Dataset': cfg.Dataset,
+                                   'dataset_params': cfg.dataset_params,
+                                   'valid_params': cfg.valid_params,
+                                   'sess': sess,
+                                   'sv': sv}
+                return main_loop(**main_loop_kwags)
+            else:
+                # Perform validation only
+                mean_iou = []
+                for s in cfg.val_on_sets:
+                    print('Starting validation on %s set' % s)
+                    from validate import validate
+                    mean_iou[s] = validate(
+                        val_placeholders,
+                        val_outs,
+                        val_summary_ops[s],
+                        sess,
+                        0,
+                        which_set=s)
 
 
 def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
@@ -498,7 +508,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
               val_outs, val_summary_ops, loss_fn, Dataset, dataset_params,
-              valid_params, sess):
+              valid_params, sess, sv):
 
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
@@ -530,7 +540,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     # Start the training loop.
     start = time()
     print("Beginning main loop...")
-    for epoch_id in range(init_step, max_epochs):
+    while sv.should_stop() or epoch_id == max_epochs:
+    # for epoch_id in range(init_step, max_epochs):
         pbar = tqdm(total=train.nbatches)
         epoch_start = time()
 

@@ -355,6 +355,8 @@ def validate(placeholders,
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
                 (y_pred_batch, y_soft_batch, mIoU,
                  loss, _) = sess.run(eval_outs, feed_dict=feed_dict)
+                # TODO summaries should not be repeated at each batch I
+                # guess..
                 summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
                 summary_writer.add_summary(summary_str, epoch_id)
                 summary_writer.flush()

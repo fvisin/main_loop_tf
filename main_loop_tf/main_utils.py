@@ -150,6 +150,8 @@ def average_gradients(tower_grads):
     for grad_and_vars in zip(*tower_grads):
         # Note that each grad_and_vars looks like the following:
         #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
+        # TODO no need for the loop here
+        # grad.append(mean(grad_gpu[0..N]), var_gpu0)
         grads = []
         for g, _ in grad_and_vars:
             # Add 0 dimension to the gradients to represent the tower.
