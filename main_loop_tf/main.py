@@ -64,8 +64,9 @@ def __parse_config(argv=None):
     exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
                     'debug', 'devices', 'do_validation_only', 'help',
                     'min_epochs', 'max_epochs', 'nthreads', 'num_gpus',
-                    'patience', 'restore_model', 'use_threads', 'val_on_sets',
-                    'val_skip_first', 'val_every_epochs' 'vgg_weights_file']
+                    'num_cpus', 'num_splits', 'patience', 'restore_model',
+                    'use_threads', 'val_on_sets', 'val_skip_first',
+                    'val_every_epochs' 'vgg_weights_file']
     param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
                   if k not in exclude_list}
     h = hashlib.md5()
@@ -83,6 +84,10 @@ def __parse_config(argv=None):
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
     cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
+    cfg.num_splits = cfg.num_gpus
+    if not cfg.num_gpus:
+        cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
+        cfg.num_splits = cfg.num_cpus
 
     # Dataset
     try:
@@ -203,9 +208,14 @@ def __run(build_model):
     #     pass
 
     # BUILD GRAPH
-    # TODO consider CPU case as well
-    config = tf.ConfigProto(allow_soft_placement=True,
-                            device_count={'GPU': cfg.num_gpus})
+    if cfg.num_gpus:
+        config = tf.ConfigProto(allow_soft_placement=True,
+                                device_count={'GPU': cfg.num_gpus})
+    elif cfg.num_cpus:
+        config = tf.ConfigProto(allow_soft_placement=True,
+                                device_count={'CPU': cfg.num_cpus})
+    else:
+        RuntimeError('You must specify the devices to run on')
     sess = tf.Session(config=config)
 
     if cfg.debug:
@@ -223,12 +233,12 @@ def __run(build_model):
     sym_labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
 
     # TODO is there another way to split the input in chunks when
-    # batchsize is not a multiple of num_gpus?
+    # batchsize is not a multiple of num_splits?
     # Split in chunks, the size of each is provided in sym_input_split_dim
-    sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_gpus],
+    sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
                                           dtype='int32',
                                           name='inputs_split_dim')
-    sym_labels_split_dim = tf.placeholder(shape=[cfg.num_gpus],
+    sym_labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
                                           dtype='int32',
                                           name='label_split_dim')
     placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
@@ -300,7 +310,6 @@ def __run(build_model):
 def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                 build_model, is_training):
     cfg = gflags.cfg
-    num_gpus = cfg.num_gpus
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
@@ -310,8 +319,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     # Split the input among the GPUs (batchwise)
     sym_inputs_per_gpu = tf.split(sym_inputs, sym_input_split_dim, 0)
     sym_labels_per_gpu = tf.split(sym_labels, sym_labels_split_dim, 0)
-    for dev_idx in range(num_gpus):
-        sym_inputs_per_gpu[dev_idx].set_shape(input_shape)
+    for gpu_input in sym_inputs_per_gpu:
+        gpu_input.set_shape(input_shape)
 
     # Init variables
     tower_grads = []
@@ -500,7 +509,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
 
     # TRAIN
-    dataset_params['batch_size'] *= cfg.num_gpus
+    dataset_params['batch_size'] *= cfg.num_splits
     print('\nTrain dataset params:\n{}\n'.format(dataset_params))
     print('Validation dataset params:\n{}\n\n'.format(valid_params))
     train = Dataset(
@@ -540,7 +549,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             #    x_in = [x_batch[..., :3], x_in[..., 3:]]
             # reset_states(model, sh)
 
-            # TODO evaluate if it's possible to pass num_gpus inputs in
+            # TODO evaluate if it's possible to pass num_splits inputs in
             # a list, rather than the input as a whole and the shape of
             # the splits as a tensor.
 
