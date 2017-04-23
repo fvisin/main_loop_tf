@@ -571,7 +571,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     patience_counter = 0
                     estop = False
                 # Start skipping again
-                val_skip = max(1, cfg.val_every_epochs)
+                val_skip = max(1, cfg.val_every_epochs) - 1
 
                 # exit minibatches loop
                 if estop:
