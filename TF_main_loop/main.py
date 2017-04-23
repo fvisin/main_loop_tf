@@ -373,7 +373,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
     # Compute the mean IoU
     # TODO would it be better to use less precision here?
-    sym_mask = tf.cast(tf.less_equal(sym_labels, nclasses), tf.int32)
+    sym_mask = tf.ones_like(sym_labels)
+    if len(cfg.void_labels):
+        sym_mask = tf.cast(tf.less_equal(sym_labels, nclasses), tf.int32)
     sym_preds_flat = tf.reshape(sym_preds, [-1])
     sym_m_iou, sym_cm_update_op = tf.metrics.mean_iou(sym_labels,
                                                       sym_preds_flat,
