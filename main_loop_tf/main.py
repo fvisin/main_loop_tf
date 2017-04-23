@@ -13,11 +13,10 @@ from tensorflow.python.training import training
 from tqdm import tqdm
 
 import gflags
-
-from main_utils import (apply_loss, average_gradients, compute_chunk_size,
-                        save_repos_hash)
+import loss
+from main_utils import (apply_loss, compute_chunk_size, save_repos_hash,
+                        average_gradients, process_gradients)
 from config import dataset, flow, optimization, misc  # noqa
-
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
@@ -159,7 +158,10 @@ def __parse_config(argv=None):
     try:
         loss_fn = getattr(nn, cfg.loss_fn)
     except AttributeError:
-        loss_fn = getattr(nn, cfg.loss_fn.capitalize())
+        try:
+            loss_fn = getattr(nn, cfg.loss_fn.capitalize())
+        except AttributeError:
+            loss_fn = getattr(loss, cfg.loss_fn)
     cfg.loss_fn = loss_fn
 
     # TODO Add val_every_iter?
@@ -328,8 +330,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                       sym_labels_per_gpu)):
         with tf.device(devices[device_idx]):
             reuse_variables = not is_training or device_idx > 0
-            with tf.name_scope('towr{}_{}'.format(device_idx,
-                                                  tower_suffix)) as scope:
+            with tf.name_scope('tower{}_{}'.format(device_idx,
+                                                   tower_suffix)) as scope:
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
                     net_out = build_model(inputs, is_training)
@@ -359,7 +361,49 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
                     # Gradients
                     if is_training:
-                        grads = optimizer.compute_gradients(loss)
+
+                        # 1) Compute gradients
+                        grads = optimizer.compute_gradients(
+                             loss, colocate_gradients_with_ops=True)
+
+                        # 2) Process gradients, average them later
+                        grads = process_gradients(grads,
+                                                  cfg.grad_noise_scale,
+                                                  cfg.grad_multiplier,
+                                                  cfg.max_grad_norm)
+
+                        # Add histograms for variables, grads and grad norms.
+                        for gradient, variable in grads:
+                            if isinstance(gradient, tf.IndexedSlices):
+                                grad_values = gradient.values
+                            else:
+                                grad_values = gradient
+
+                            with tf.name_scope('grad_values'):
+                                if grad_values is not None:
+                                    var_name = variable.name.replace(":", "_")
+                                    summaries["training"].append(
+                                        tf.summary.histogram(
+                                            "gradients_tower_%s/%s" %
+                                            (scope, var_name),
+                                            grad_values))
+
+                            with tf.name_scope('grad_norms'):
+                                    summaries["training"].append(
+                                        tf.summary.scalar(
+                                            "gradient_norm_tower_%s/%s" %
+                                            (scope, var_name),
+                                            tf.global_norm([grad_values])))
+
+                        with tf.name_scope('grad_global_norm'):
+                            if cfg.max_grad_norm is not None:
+                                summaries["training"].append(
+                                    tf.summary.scalar(
+                                        "global_norm_%s/clipped_grad_norm" %
+                                        scope,
+                                        tf.global_norm(list(zip(*grads))[0])))
+
+                        # Save gradients for each gpu to be averaged out
                         tower_grads.append(grads)
 
                     # Print regularization
@@ -393,11 +437,11 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             train_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
                                                  global_step=global_step)
         # Add the histograms of the gradients
-        with tf.name_scope('grad_summaries'):
-            for grad, var in grads_and_vars:
-                if grad is not None:
-                    summaries['training'].append(
-                        tf.summary.histogram(var.op.name + '/gradients', grad))
+        # with tf.name_scope('grad_summaries'):
+        #     for grad, var in grads_and_vars:
+        #         if grad is not None:
+        #             summaries['training'].append(
+        #                 tf.summary.histogram(var.op.name + '/gradients', grad))
 
     #############
     # SUMMARIES #

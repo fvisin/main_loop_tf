@@ -1,18 +1,19 @@
-from subprocess import check_output
+import tensorflow as tf
+import gflags
 import sys
 
-# Force matplotlib not to use any Xwindows backend.
 import matplotlib
-matplotlib.use('Agg')
 # Initialize numpy's random seed
-#import settings  # noqa
+# import settings  # noqa
 
-import gflags
-import tensorflow as tf
+from subprocess import check_output
+from tensorflow.contrib.layers.python.layers.optimizers import(
+    _clip_gradients_by_norm,
+    _add_scaled_noise_to_gradients,
+    _multiply_gradients)
 
-# from validate import evaluate_generator, cat_masked_accuracy, dice_coef_loss
-
-
+# Force matplotlib not to use any Xwindows backend.
+matplotlib.use('Agg')
 sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -84,6 +85,52 @@ def apply_l2_penalty(loss, weight_decay):
         loss += l2_penalty * weight_decay
 
     return loss
+
+
+def process_gradients(gradients,
+                      gradient_noise_scale=None,
+                      gradient_multipliers=None,
+                      clip_gradients=None):
+
+    """
+    gradient_noise_scale: float or None, adds 0-mean normal noise scaled
+        by this value.
+    gradient_multipliers: dict of variables or variable names to floats.
+        If present, gradients for specified variables will be multiplied
+        by given constant.
+    clip_gradients: float, callable or `None`. If float, is provided, a global
+      clipping is applied to prevent the norm of the gradient to exceed this
+      value. Alternatively, a callable can be provided e.g.: adaptive_clipping.
+      This callable takes a `list` of `(gradients, variables)` `tuple`s and
+      returns the same thing with the gradients modified.
+    """
+
+    if gradient_noise_scale is not None:
+        gradients = _add_scaled_noise_to_gradients(
+            gradients, gradient_noise_scale)
+
+    # Multiply some gradients.
+    if gradient_multipliers is not None:
+        gradients = _multiply_gradients(
+            gradients, gradient_multipliers)
+        if not gradients:
+            raise ValueError(
+                "Empty list of (gradient,var) pairs"
+                "encountered. This is most likely "
+                "to be caused by an improper value "
+                "of gradient_multipliers.")
+
+    # Optionally clip gradients by global norm.
+    if isinstance(clip_gradients, float):
+        gradients = _clip_gradients_by_norm(
+            gradients, clip_gradients)
+    elif callable(clip_gradients):
+        gradients = clip_gradients(gradients)
+    elif clip_gradients is not None:
+        raise ValueError(
+            "Unknown type %s for clip_gradients" % type(clip_gradients))
+
+    return gradients
 
 
 def average_gradients(tower_grads):
