@@ -689,9 +689,3 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     #               'models/' + save_name + '.svg')
     # validate = True  # print the best model's test error
     return best
-
-
-# PUT THIS INTO YOUR MAIN
-if __name__ == '__main__':
-    from model import build_model
-    run(sys.argv, build_model)
