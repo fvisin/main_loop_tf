@@ -295,6 +295,11 @@ def validate(placeholders,
         summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
                                                graph=sess.graph)
 
+        # Re-init confusion matrix
+        cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
+                               scope='mean_iou')
+        sess.run([tf.variables_initializer(cm)])
+
         # Begin loop over dataset samples
         eval_cost = 0
         animations = {}
@@ -307,7 +312,6 @@ def validate(placeholders,
             subset_batch = ret['subset']
             f_batch = ret['filenames']
             raw_data_batch = ret['raw_data']
-
             # Reset the state when we switch to a new video
             # if cfg.stateful_validation:
             #     if any(s == 'default' for s in subset_batch):
