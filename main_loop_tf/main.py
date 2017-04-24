@@ -372,6 +372,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                   cfg.grad_multiplier,
                                                   cfg.max_grad_norm)
 
+                        # TODO: LATTA
                         # Add histograms for variables, grads and grad norms.
                         for gradient, variable in grads:
                             if isinstance(gradient, tf.IndexedSlices):
@@ -379,29 +380,23 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                             else:
                                 grad_values = gradient
 
-                            with tf.name_scope('grad_values'):
-                                if grad_values is not None:
-                                    var_name = variable.name.replace(":", "_")
-                                    summaries["training"].append(
-                                        tf.summary.histogram(
-                                            "gradients_tower_%s/%s" %
-                                            (scope, var_name),
-                                            grad_values))
+                            if grad_values is not None:
+                                var_name = variable.name.replace(":", "_")
+                                summaries["training"].append(
+                                    tf.summary.histogram(
+                                        "gradients_%s" % var_name,
+                                        grad_values))
 
-                            with tf.name_scope('grad_norms'):
-                                    summaries["training"].append(
-                                        tf.summary.scalar(
-                                            "gradient_norm_tower_%s/%s" %
-                                            (scope, var_name),
-                                            tf.global_norm([grad_values])))
-
-                        with tf.name_scope('grad_global_norm'):
-                            if cfg.max_grad_norm is not None:
                                 summaries["training"].append(
                                     tf.summary.scalar(
-                                        "global_norm_%s/clipped_grad_norm" %
-                                        scope,
-                                        tf.global_norm(list(zip(*grads))[0])))
+                                        "gradient_norm_%s" % var_name,
+                                        tf.global_norm([grad_values])))
+
+                        if cfg.max_grad_norm is not None:
+                            summaries["training"].append(
+                                tf.summary.scalar(
+                                    "global_norm/clipped_grad_norm",
+                                    tf.global_norm(list(zip(*grads))[0])))
 
                         # Save gradients for each gpu to be averaged out
                         tower_grads.append(grads)
@@ -446,12 +441,20 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     #############
     # SUMMARIES #
     #############
+
+    # Trainining or Validation summaries
     with tf.name_scope('summaries_{}'.format(tower_suffix)):
+
+        # Scalars
         for k, s in summaries.iteritems():
             s.append(tf.summary.scalar('Mean_tower_loss_' + k,
                                        sym_avg_tower_loss))
             s.append(tf.summary.scalar('Mean_IoU_' + k, sym_m_iou))
 
+        # During the training we want to save informations about the
+        # gradients, the trainable variables and the activations.
+
+        # Histograms
         if is_training:
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
