@@ -353,11 +353,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                       weight_decay, is_training,
                                       return_mean_loss=True)
                     tower_losses.append(loss)
-                    # Save this GPU's summary (thanks to scope)
-                    with tf.name_scope('tower_loss_summaries'):
-                        for k, s in summaries.iteritems():
-                            s.append(tf.summary.scalar(
-                                'Loss_tower_{}_{}'.format(scope, k), loss))
+                    # Save this GPU's loss summary
+                    for k, s in summaries.iteritems():
+                        s.append(tf.summary.scalar('Loss', loss))
 
                     # Gradients
                     if is_training:
@@ -372,39 +370,48 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                   cfg.grad_multiplier,
                                                   cfg.max_grad_norm)
 
-                        # TODO: LATTA
-                        # Add histograms for variables, grads and grad norms.
-                        for gradient, variable in grads:
-                            if isinstance(gradient, tf.IndexedSlices):
-                                grad_values = gradient.values
-                            else:
-                                grad_values = gradient
+            if is_training:
 
-                            if grad_values is not None:
-                                var_name = variable.name.replace(":", "_")
-                                summaries["training"].append(
-                                    tf.summary.histogram(
-                                        "gradients_%s" % var_name,
-                                        grad_values))
+                # Add histograms for variables, grads and grad norms.
+                for gradient, variable in grads:
+                    if isinstance(gradient, tf.IndexedSlices):
+                        grad_values = gradient.values
+                    else:
+                        grad_values = gradient
 
-                                summaries["training"].append(
-                                    tf.summary.scalar(
-                                        "gradient_norm_%s" % var_name,
-                                        tf.global_norm([grad_values])))
+                    if grad_values is not None:
+                        var_name = variable.name.replace(":", "_")
+                        var_name = var_name.replace(
+                            cfg.model_name+"/", "")
+                        if cfg.summary_sublayer and var_name.count(
+                                                '/') >= 2:
+                            var_name = var_name.replace("/", "_", 1)
+                        summaries["training"].append(
+                            tf.summary.histogram(
+                                "Tower%d_Gradients_%s" % (device_idx,
+                                                          var_name),
+                                grad_values))
 
-                        if cfg.max_grad_norm is not None:
-                            summaries["training"].append(
-                                tf.summary.scalar(
-                                    "global_norm/clipped_grad_norm",
-                                    tf.global_norm(list(zip(*grads))[0])))
+                        summaries["training"].append(
+                            tf.summary.scalar(
+                                "Tower%d_Gradient_norm_%s" % (device_idx,
+                                                              var_name),
+                                tf.global_norm([grad_values])))
 
-                        # Save gradients for each gpu to be averaged out
-                        tower_grads.append(grads)
+                if cfg.max_grad_norm is not None:
+                    summaries["training"].append(
+                        tf.summary.scalar(
+                            "Tower%d_Global_norm/clipped_grad_norm" %
+                            device_idx,
+                            tf.global_norm(list(zip(*grads))[0])))
 
-                    # Print regularization
-                    for v in tf.get_collection(
-                            tf.GraphKeys.REGULARIZATION_LOSSES):
-                        print('Regularization losses:\n{}'.format(v))
+                # Save gradients for each gpu to be averaged out
+                tower_grads.append(grads)
+
+            # Print regularization
+            for v in tf.get_collection(
+                    tf.GraphKeys.REGULARIZATION_LOSSES):
+                print('Regularization losses:\n{}'.format(v))
 
     # Convert from list of tensors to tensor, and average
     sym_preds = tf.concat(tower_preds, axis=0)
@@ -431,16 +438,29 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         with tf.control_dependencies(update_ops):
             train_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
                                                  global_step=global_step)
+        # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients
         # with tf.name_scope('grad_summaries'):
         #     for grad, var in grads_and_vars:
         #         if grad is not None:
         #             summaries['training'].append(
-        #                 tf.summary.histogram(var.op.name + '/gradients', grad))
+        #                 tf.summary.histogram(
+        #                   var.op.name + '/gradients', grad))
 
     #############
     # SUMMARIES #
     #############
+
+    # Variables Histograms (training)
+    if is_training:
+        # Add the histograms for trainable variables
+        for var in tf.trainable_variables():
+            var_name = var.op.name.replace(cfg.model_name+'/', "")
+            if cfg.summary_sublayer and var_name.count('/') >= 2:
+                var_name = var_name.replace("/", "_", 1)
+            var_name = 'Variables_' + var_name
+            summaries['training'].append(tf.summary.histogram(var_name,
+                                                              var))
 
     # Trainining or Validation summaries
     with tf.name_scope('summaries_{}'.format(tower_suffix)):
@@ -454,12 +474,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         # During the training we want to save informations about the
         # gradients, the trainable variables and the activations.
 
-        # Histograms
         if is_training:
-            # Add the histograms for trainable variables
-            for var in tf.trainable_variables():
-                summaries['training'].append(tf.summary.histogram(var.op.name,
-                                                                  var))
             train_summary_op = tf.summary.merge(summaries['training'])
         else:
             val_summary_ops = {}

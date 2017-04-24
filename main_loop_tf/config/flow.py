@@ -26,3 +26,5 @@ gflags.DEFINE_integer('patience', 100, 'The number of validation with no '
                       lower_bound=1)
 gflags.DEFINE_bool('do_validation_only', False, 'If True does one round '
                    'of validation')
+gflags.DEFINE_bool('summary_sublayer', False, 'If True groups summaries '
+                   'with two layers deep')
