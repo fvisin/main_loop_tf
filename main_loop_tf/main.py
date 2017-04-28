@@ -151,7 +151,7 @@ def __parse_config(argv=None):
 
     # Optimization
     try:
-        Optimizer = getattr(training, cfg.optimizer)
+        Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
     except AttributeError:
         Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
     cfg.optimizer = Optimizer(**cfg.optimizer_params)
@@ -398,12 +398,11 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                               var_name),
                                 tf.global_norm([grad_values])))
 
-                if cfg.max_grad_norm is not None:
-                    summaries["training"].append(
-                        tf.summary.scalar(
-                            "Tower%d_Global_norm/clipped_grad_norm" %
-                            device_idx,
-                            tf.global_norm(list(zip(*grads))[0])))
+                summaries["training"].append(
+                    tf.summary.scalar(
+                        "Tower%d_Global_norm/clipped_grad_norm" %
+                        device_idx,
+                        tf.global_norm(list(zip(*grads))[0])))
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
@@ -566,6 +565,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                                                         t_data_load,
                                                         loss_value))
             pbar.update(1)
+            # Upgrade the summaries
+            summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
+            summary_writer.add_summary(summary_str, cum_iter)
+            summary_writer.flush()
 
             # Verify if it's the end of the epoch
             if batch_id == train.nbatches - 1:
@@ -583,10 +586,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         patience_counter >= cfg.patience):
                     estop = True
 
-                # Upgrade the summaries
-                summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
-                summary_writer.add_summary(summary_str, cum_iter)
-                summary_writer.flush()
                 # Save the checkpoint
                 checkpoint_path = os.path.join(
                     cfg.checkpoints_dir, '{}.ckpt'.format(cfg.model_name))

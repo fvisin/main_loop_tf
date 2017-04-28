@@ -19,6 +19,6 @@ gflags.DEFINE_bool('stateful_validation', True, 'If True the state of '
 gflags.DEFINE_bool('use_extra_BN', False, 'Whether to add a BN layer on '
                    'the input')
 
-gflags.DEFINE_float("max_grad_norm", 4.0, "Clip gradients to this norm.")
+gflags.DEFINE_float("max_grad_norm", None, "Clip gradients to this norm.")
 gflags.DEFINE_float("grad_noise_scale", None, "Gradient noise scale.")
 gflags.DEFINE_float("grad_multiplier", None, "Gradient Multipliers")
