@@ -236,11 +236,8 @@ def __run(build_model):
         val_placeholders = [val_inputs, labels, inputs_split_dim,
                             labels_split_dim]
 
-        sv = Supervisor(
-            logdir=cfg.checkpoints_dir,
-            save_model_secs=300
-            )
-        with sv.managed_session(cfg.supervisor_master, config) as sess, tf.device(cfg.devices[0]):
+        # Put the model parameters on the FIRST device only
+        with tf.device(cfg.devices[0]):
             # Model compilation
             # -----------------
             train_outs, train_summary_op = build_graph(placeholders,
@@ -266,6 +263,12 @@ def __run(build_model):
 
             # # Initialize the variables (we might restore a subset of them..)
             # sess.run(init)
+
+        sv = Supervisor(
+            logdir=cfg.checkpoints_dir,
+            save_model_secs=300)
+
+        with sv.managed_session(cfg.supervisor_master, config) as sess:
             if cfg.debug:
                 from tensorflow.python import debug as tf_debug
                 sess = tf_debug.LocalCLIDebugWrapperSession(sess)
