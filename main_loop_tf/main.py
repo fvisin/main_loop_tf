@@ -112,25 +112,17 @@ def __parse_config(argv=None):
         dataset_params['overlap'] = cfg.overlap
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
-        cfg.input_shape = [None, cfg.seq_length, None, None, 3]
-        if Dataset.data_shape:
-            cfg.val_input_shape = (None, cfg.seq_length) + Dataset.data_shape
-        else:
-            cfg.val_input_shape = [None, cfg.seq_length, None, None, 3]
+        cfg.input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
+        cfg.val_input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
         if cfg.crop_size:
             cfg.input_shape[2:4] = cfg.crop_size
-        else:
-            cfg.input_shape = (None, cfg.seq_length) + Dataset.data_shape
         ret_ext_seq = cfg.return_extended_sequences
         ret_middle_frame = cfg.return_middle_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
         dataset_params['return_middle_frame_only'] = ret_middle_frame
     else:
-        cfg.input_shape = [None, None, None, 3]
-        if Dataset.data_shape:
-            cfg.val_input_shape = (None,) + Dataset.data_shape
-        else:
-            cfg.val_input_shape = [None, None, None, 3]
+        cfg.input_shape = [None] + list(Dataset.data_shape)
+        cfg.val_input_shape = [None] + list(Dataset.data_shape)
         if cfg.crop_size:
             cfg.input_shape[1:3] = cfg.crop_size
     dataset_params['use_threads'] = cfg.use_threads
@@ -225,25 +217,24 @@ def __run(build_model):
     # with graph:
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                       dtype=cfg._FLOATX)
-        sym_inputs = tf.placeholder(shape=cfg.input_shape,
-                                    dtype=cfg._FLOATX, name='inputs')
-        sym_val_inputs = tf.placeholder(shape=cfg.val_input_shape,
-                                        dtype=cfg._FLOATX, name='val_inputs')
-        sym_labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
+        inputs = tf.placeholder(shape=cfg.input_shape,
+                                dtype=cfg._FLOATX, name='inputs')
+        val_inputs = tf.placeholder(shape=cfg.val_input_shape,
+                                    dtype=cfg._FLOATX, name='val_inputs')
+        labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
 
         # TODO is there another way to split the input in chunks when
         # batchsize is not a multiple of num_splits?
-        # Split in chunks, the size of each is provided in sym_input_split_dim
-        sym_inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                              dtype='int32',
-                                              name='inputs_split_dim')
-        sym_labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                              dtype='int32',
-                                              name='label_split_dim')
-        placeholders = [sym_inputs, sym_labels, sym_inputs_split_dim,
-                        sym_labels_split_dim]
-        val_placeholders = [sym_val_inputs, sym_labels, sym_inputs_split_dim,
-                            sym_labels_split_dim]
+        # Split in chunks, the size of each is provided in input_split_dim
+        inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
+                                          dtype='int32',
+                                          name='inputs_split_dim')
+        labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
+                                          dtype='int32',
+                                          name='label_split_dim')
+        placeholders = [inputs, labels, inputs_split_dim, labels_split_dim]
+        val_placeholders = [val_inputs, labels, inputs_split_dim,
+                            labels_split_dim]
 
         sv = Supervisor(
             logdir=cfg.checkpoints_dir,
@@ -256,14 +247,16 @@ def __run(build_model):
                                                        cfg.input_shape,
                                                        cfg.optimizer,
                                                        cfg.weight_decay,
-                                                       cfg.loss_fn, build_model,
+                                                       cfg.loss_fn,
+                                                       build_model,
                                                        True)
 
             val_outs, val_summary_ops = build_graph(val_placeholders,
                                                     cfg.val_input_shape,
                                                     cfg.optimizer,
                                                     cfg.weight_decay,
-                                                    cfg.loss_fn, build_model,
+                                                    cfg.loss_fn,
+                                                    build_model,
                                                     False)
 
             # No need if we use the Supervisor
@@ -323,13 +316,12 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
-    [sym_inputs, sym_labels, sym_input_split_dim,
-     sym_labels_split_dim] = placeholders
+    [inputs, labels, input_split_dim, labels_split_dim] = placeholders
 
     # Split the input among the GPUs (batchwise)
-    sym_inputs_per_gpu = tf.split(sym_inputs, sym_input_split_dim, 0)
-    sym_labels_per_gpu = tf.split(sym_labels, sym_labels_split_dim, 0)
-    for gpu_input in sym_inputs_per_gpu:
+    inputs_per_gpu = tf.split(inputs, input_split_dim, 0)
+    labels_per_gpu = tf.split(labels, labels_split_dim, 0)
+    for gpu_input in inputs_per_gpu:
         gpu_input.set_shape(input_shape)
 
     # Init variables
@@ -345,11 +337,13 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             summaries[k] = tf.get_collection_ref(key='val_' + k + '_summaries')
     tower_suffix = 'train' if is_training else 'val'
 
-    for device_idx, (inputs, labels) in enumerate(zip(sym_inputs_per_gpu,
-                                                      sym_labels_per_gpu)):
-        with tf.device(devices[device_idx]):
-            reuse_variables = not is_training or device_idx > 0
-            with tf.name_scope('tower{}_{}'.format(device_idx,
+    # TODO how come the enumerate can work in this context? The list is
+    # symbolic, isn't it?
+    for dev_idx, (dev_inputs, dev_labels) in enumerate(zip(inputs_per_gpu,
+                                                           labels_per_gpu)):
+        with tf.device(devices[dev_idx]):
+            reuse_variables = not is_training or dev_idx > 0
+            with tf.name_scope('tower{}_{}'.format(dev_idx,
                                                    tower_suffix)) as scope:
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
@@ -358,8 +352,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                     tower_soft_preds.append(softmax_pred)
 
                     # Prediction
-                    sym_pred = tf.argmax(softmax_pred, axis=-1)
-                    tower_preds.append(sym_pred)
+                    pred = tf.argmax(softmax_pred, axis=-1)
+                    tower_preds.append(pred)
 
                     # Loss
                     # Use softmax, unless using the
@@ -432,21 +426,19 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                 print('Regularization losses:\n{}'.format(v))
 
     # Convert from list of tensors to tensor, and average
-    sym_preds = tf.concat(tower_preds, axis=0)
+    preds = tf.concat(tower_preds, axis=0)
     softmax_preds = tf.concat(tower_soft_preds, axis=0)
 
     # Compute the mean IoU
     # TODO would it be better to use less precision here?
-    sym_mask = tf.ones_like(sym_labels)
+    mask = tf.ones_like(labels)
     if len(cfg.void_labels):
-        sym_mask = tf.cast(tf.less_equal(sym_labels, nclasses), tf.int32)
-    sym_preds_flat = tf.reshape(sym_preds, [-1])
-    sym_m_iou, sym_cm_update_op = tf.metrics.mean_iou(sym_labels,
-                                                      sym_preds_flat,
-                                                      nclasses,
-                                                      sym_mask)
+        mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
+    preds_flat = tf.reshape(preds, [-1])
+    m_iou, cm_update_op = tf.metrics.mean_iou(labels, preds_flat, nclasses,
+                                              mask)
     # Compute the average *per variable* across the towers
-    sym_avg_tower_loss = tf.reduce_mean(tower_losses)
+    avg_tower_loss = tf.reduce_mean(tower_losses)
 
     if is_training:
         # Impose graph dependency so that update operations are computed
@@ -485,9 +477,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
         # Scalars
         for k, s in summaries.iteritems():
-            s.append(tf.summary.scalar('Mean_tower_loss_' + k,
-                                       sym_avg_tower_loss))
-            s.append(tf.summary.scalar('Mean_IoU_' + k, sym_m_iou))
+            s.append(tf.summary.scalar('Mean_tower_loss_' + k, avg_tower_loss))
+            s.append(tf.summary.scalar('Mean_IoU_' + k, m_iou))
 
         # During the training we want to save informations about the
         # gradients, the trainable variables and the activations.
@@ -500,10 +491,10 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                 val_summary_ops[k] = tf.summary.merge(s)
 
     if is_training:
-        return [sym_avg_tower_loss, train_op], train_summary_op
+        return [avg_tower_loss, train_op], train_summary_op
     else:
-        return ([sym_preds, softmax_preds, sym_m_iou, sym_avg_tower_loss,
-                 sym_cm_update_op], val_summary_ops)
+        return ([preds, softmax_preds, m_iou, avg_tower_loss, cm_update_op],
+                val_summary_ops)
 
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
@@ -568,8 +559,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 x_batch.shape[0], np.prod(train.data_shape[:2]))
 
             # Create dictionary to feed the input placeholders
-            # placeholders = [sym_inputs, sym_labels, sym_which_set,
-            #                 sym_input_split_dim, sym_labels_split_dim]
+            # placeholders = [inputs, labels, which_set,
+            #                 input_split_dim, labels_split_dim]
             in_values = [x_in, y_in, split_dim, labels_split_dim]
             feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
 
