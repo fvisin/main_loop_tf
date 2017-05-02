@@ -7,7 +7,7 @@ To use the main loop, simply create a file with this code and call it.
 if __name__ == '__main__':
     import sys
 
-    from TF_main_loop.main import run
+    from main_loop_tf.main import run
 
     from model import build_model
 
@@ -49,7 +49,7 @@ extensions in gflags_ext:
 ``` python
 import gflags
 import sys
-from TF_main_loop import gflags_ext
+from main_loop_tf import gflags_ext
 
 gflags_ext.DEFINE_intlist('a', [[10, 10], [20, 20]], 'A list of ints')
 ```

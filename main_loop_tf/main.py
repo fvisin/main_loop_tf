@@ -75,7 +75,7 @@ def __parse_config(argv=None):
     cfg.hash = h
     save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                  'dataset_loaders',
-                                                 'TF_main_loop'])
+                                                 'main_loop_tf'])
     cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
                                        cfg.hash)
     cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')

@@ -18,7 +18,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='TF_main_loop',
+    name='main_loop_tf',
 
     # Versions should comply with PEP440.  For a discussion on single-sourcing
     # the version across setup.py and the project code, see
@@ -29,7 +29,7 @@ setup(
     long_description=long_description,
 
     # The project's main homepage.
-    url='https://github.com/fvisin/TF_main_loop',
+    url='https://github.com/fvisin/main_loop_tf',
 
     # Author details
     author='Francesco Visin',
