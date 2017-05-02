@@ -257,15 +257,27 @@ def __run(build_model):
                                                     False)
 
             # No need if we use the Supervisor
-            # # Add the variables initializer Op.
-            # init = tf.group(tf.global_variables_initializer(),
-            #                 tf.local_variables_initializer())
 
             # # Initialize the variables (we might restore a subset of them..)
             # sess.run(init)
 
+        # Group global and local init into one op. Could be split into
+        # two different ops and passed to `init_op` and `local_init_op`
+        init_op = tf.group(tf.global_variables_initializer(),
+                           tf.local_variables_initializer())
+        saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
+
         sv = Supervisor(
+            graph=graph,
+            init_op=init_op,
+            summary_op=None,
+            global_step=cfg.global_step,
             logdir=cfg.checkpoints_dir,
+            checkpoint_basename=cfg.model_name,
+            saver=saver,
+            # session_manager
+            # summary_writer
+            save_summaries_secs=120,
             save_model_secs=300)
 
         with sv.managed_session(cfg.supervisor_master, config) as sess:
@@ -275,13 +287,16 @@ def __run(build_model):
                 sess.add_tensor_filter("has_inf_or_nan",
                                        tf_debug.has_inf_or_nan)
 
-            if cfg.restore_model:
-                # TODO add option to restore best rather than last?
-                checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-                print('Restoring model from checkpoint ' + checkpoint + '...')
-                saver = tf.train.Saver()
-                saver.restore(sess, checkpoint)
-                print("Model restored.")
+            # Supervisor will always restore if a model is there.
+            # TODO we probably need to move the checkpoints if restore
+            # is not True?
+            # if cfg.restore_model:
+            #     # TODO add option to restore best rather than last?
+            #     checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
+            #     print('Restoring model from checkpoint ' + checkpoint + '...')
+            #     saver = tf.train.Saver()
+            #     saver.restore(sess, checkpoint)
+            #     print("Model restored.")
 
             if not cfg.do_validation_only:
                 # Start training loop
@@ -507,12 +522,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
 
-    # Prepare the summary objects
-    summary_writer = tf.summary.FileWriter(logdir=cfg.train_checkpoints_dir,
-                                           graph=sess.graph)
-    saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
-
-    # TRAIN
     dataset_params['batch_size'] *= cfg.num_splits
     print('\nTrain dataset params:\n{}\n'.format(dataset_params))
     print('Validation dataset params:\n{}\n\n'.format(valid_params))
@@ -534,8 +543,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     # Start the training loop.
     start = time()
     print("Beginning main loop...")
-    while sv.should_stop() or epoch_id == max_epochs:
-    # for epoch_id in range(init_step, max_epochs):
+    for epoch_id in range(init_step, max_epochs):
         pbar = tqdm(total=train.nbatches)
         epoch_start = time()
 
@@ -591,7 +599,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 epoch_end = time()
 
                 # Is it also the last epoch?
-                if epoch_id == max_epochs - 1:
+                if sv.should_stop() or epoch_id == max_epochs - 1:
                     last_epoch = True
 
                 # Early stop if patience is over
@@ -600,13 +608,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         patience_counter >= cfg.patience):
                     estop = True
 
-                # Save the checkpoint
-                checkpoint_path = os.path.join(
-                    cfg.checkpoints_dir, '{}.ckpt'.format(cfg.model_name))
-                saver.save(sess, checkpoint_path, global_step=cfg.global_step)
+                sv.summary_computed(sess, summary_str)
+
                 t_epoch = time() - epoch_start
                 t_save = time() - epoch_end
-
                 pbar.clear()
                 # TODO replace with logger
                 print('Epoch time: {}s (save {}s), Epoch {}/{}, '
@@ -642,9 +647,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
                                                    '{}_best.ckpt'.format(
                                                        cfg.model_name))
-                    saver.save(sess, checkpoint_path,
-                               global_step=cfg.global_step)
-
                     patience_counter = 0
                     estop = False
                 # Start skipping again
