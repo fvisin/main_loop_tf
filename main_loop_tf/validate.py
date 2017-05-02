@@ -12,7 +12,7 @@ from main_utils import compute_chunk_size
 
 # Print prediction hotmap
 def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
-                    subset, f, epoch_id, summary_writer=None):
+                    subset, f, epoch_id):
     '''Save an image of the probability of each class
 
     Save the image and the heatmap of the probability of each class'''
@@ -71,16 +71,15 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
                                    width=int(size[1]))
     heatmap_img_summary = tf.Summary.Value(tag='Heatmaps',
                                            image=heatmap_img)
-    summary = tf.Summary(value=[heatmap_img_summary])
-    summary_writer.add_summary(summary, epoch_id)
-    summary_writer.flush()
+    summary_str = tf.Summary(value=[heatmap_img_summary])
+    cfg.sv.summary_computed(cfg.sess, summary_str)
 
     plt.close('all')
 
 
 def save_sample_and_fill_sequence_fn(raw_data, of, y_pred, y, cmap, nclasses,
                                      labels, subset, animations, save_basedir,
-                                     f, epoch_id, summary_writer=None):
+                                     f, epoch_id):
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import AxesGrid
     from StringIO import StringIO
@@ -148,9 +147,8 @@ def save_sample_and_fill_sequence_fn(raw_data, of, y_pred, y, cmap, nclasses,
     seq_img_summary = tf.Summary.Value(tag='GT/Predictions',
                                        image=seq_img)
 
-    summary = tf.Summary(value=[seq_img_summary])
-    summary_writer.add_summary(summary, epoch_id)
-    summary_writer.flush()
+    summary_str = tf.Summary(value=[seq_img_summary])
+    cfg.sv.summary_computed(cfg.sess, summary_str)
 
     animations.setdefault(subset, []).append(fig2array(fig))
     plt.close('all')
@@ -174,7 +172,7 @@ def save_sample_and_fill_sequence_fn(raw_data, of, y_pred, y, cmap, nclasses,
 
 def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
                 y_soft_batch, subset_batch, raw_data_batch, animations,
-                save_basedir, epoch_id, summary_writer):
+                save_basedir, epoch_id):
     import matplotlib as mpl
     import seaborn as sns
 
@@ -237,8 +235,7 @@ def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
             save_heatmap_fn(heat_map_in, of, y_soft_pred,
                             labels, nclasses,
                             save_basedir, subset,
-                            f, epoch_id,
-                            summary_writer)
+                            f, epoch_id)
 
         # PRINT THE SAMPLES
         # Keep most likely prediction only
@@ -256,8 +253,7 @@ def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
             save_sample_and_fill_sequence_fn(sample_in, of, y_pred, y_in, cmap,
                                              nclasses, labels, subset,
                                              animations, save_basedir,
-                                             f, epoch_id,
-                                             summary_writer)
+                                             f, epoch_id)
         return animations
 
 
@@ -273,7 +269,6 @@ def save_animations(animations, save_basedir):
 def validate(placeholders,
              eval_outs,
              val_summary_op,
-             sess,
              epoch_id,
              which_set='valid'):
 
@@ -292,8 +287,9 @@ def validate(placeholders,
         save_basedir = os.path.join('samples', cfg.model_name,
                                     this_set.which_set)
 
-        summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
-                                               graph=sess.graph)
+        # TODO posso distinguere training da valid??
+        # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
+        #                                        graph=cfg.sess.graph)
 
         # Re-init confusion matrix
         cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
@@ -354,12 +350,11 @@ def validate(placeholders,
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
                 (y_pred_batch, y_soft_batch, mIoU,
-                 loss, _) = sess.run(eval_outs, feed_dict=feed_dict)
+                 loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
                 # TODO summaries should not be repeated at each batch I
                 # guess..
-                summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
-                summary_writer.add_summary(summary_str, epoch_id)
-                summary_writer.flush()
+                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+                cfg.sv.summary_computed(cfg.sess, summary_str)
                 # TODO valuta come fare aggregati sul loop in modo
                 # simbolico per metterlo nei summary (o come mettere
                 # robe nei summary a runtime)
@@ -379,18 +374,17 @@ def validate(placeholders,
                                              y_soft_batch, subset_batch,
                                              raw_data_batch,
                                              animations, save_basedir,
-                                             epoch_id, summary_writer)
+                                             epoch_id)
 
             else:
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
-                y_pred_batch = sess.run([eval_outs[0]], feed_dict=feed_dict)
+                y_pred_batch = cfg.sess.run([eval_outs[0]], feed_dict=feed_dict)
                 # TODO is the summary working in this case? I might not
                 # be able to compute the e.g., metrics. Should I remove
                 # that computation from the graph in build_graph?
-                summary_str = sess.run(val_summary_op, feed_dict=feed_dict)
-                summary_writer.add_summary(summary_str, epoch_id)
-                summary_writer.flush()
+                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+                cfg.sv.summary_computed(cfg.sess, summary_str)
                 pbar.set_description('Time: %f' % (eval_iter_el_time))
                 pbar.update(1)
 
