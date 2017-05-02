@@ -216,7 +216,7 @@ def __run(build_model):
     with tf.Graph().as_default() as graph:
     # with graph:
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
-                                      dtype=cfg._FLOATX)
+                                      dtype='int32')
         inputs = tf.placeholder(shape=cfg.input_shape,
                                 dtype=cfg._FLOATX, name='inputs')
         val_inputs = tf.placeholder(shape=cfg.val_input_shape,
