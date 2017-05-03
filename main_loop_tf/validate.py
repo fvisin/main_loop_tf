@@ -254,7 +254,7 @@ def save_images(this_set, x_batch, y_batch, f_batch, y_pred_batch,
                                              nclasses, labels, subset,
                                              animations, save_basedir,
                                              f, epoch_id)
-        return animations
+        # return animations
 
 
 def save_animations(animations, save_basedir):
@@ -292,9 +292,10 @@ def validate(placeholders,
         #                                        graph=cfg.sess.graph)
 
         # Re-init confusion matrix
-        cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
-                               scope='mean_iou')
-        cfg.sess.run([tf.variables_initializer(cm)])
+        # cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
+        #                        scope='mean_iou')
+        # cfg.sess.run([
+        #     tf.assign(cm, tf.zeros(tf.shape(cm), dtype=tf.int32))])
 
         # Begin loop over dataset samples
         eval_cost = 0
@@ -371,14 +372,14 @@ def validate(placeholders,
                 pbar.update(1)
 
                 # Save image summary for learning visualization
-                if bidx % cfg.img_summaries_freq == 0:
 
-                    animations = save_images(this_set, x_batch, y_batch,
-                                             f_batch, y_pred_batch,
-                                             y_soft_batch, subset_batch,
-                                             raw_data_batch,
-                                             animations, save_basedir,
-                                             epoch_id)
+                cfg.sv.loop(20, save_images,
+                            args=(this_set, x_batch, y_batch,
+                                  f_batch, y_pred_batch,
+                                  y_soft_batch, subset_batch,
+                                  raw_data_batch,
+                                  animations, save_basedir,
+                                  epoch_id))
 
             else:
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
