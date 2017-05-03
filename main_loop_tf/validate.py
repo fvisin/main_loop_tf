@@ -294,7 +294,7 @@ def validate(placeholders,
         # Re-init confusion matrix
         cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
                                scope='mean_iou')
-        sess.run([tf.variables_initializer(cm)])
+        cfg.sess.run([tf.variables_initializer(cm)])
 
         # Begin loop over dataset samples
         eval_cost = 0
@@ -349,12 +349,16 @@ def validate(placeholders,
                 # and get batch pred, mIoU so far, batch loss
                 in_values = [x_in, y_in, split_dim, lab_split_dim]
                 feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
-                (y_pred_batch, y_soft_batch, mIoU,
-                 loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
-                # TODO summaries should not be repeated at each batch I
-                # guess..
-                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
-                cfg.sv.summary_computed(cfg.sess, summary_str)
+
+                if bidx % cfg.val_summary_freq == 0:
+                    (y_pred_batch, y_soft_batch, mIoU,
+                     loss, _, summary_str) = cfg.sess.run(
+                         eval_outs + [val_summary_op], feed_dict=feed_dict)
+                    cfg.sv.summary_computed(cfg.sess, summary_str)
+                else:
+                    (y_pred_batch, y_soft_batch, mIoU,
+                     loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
+
                 # TODO valuta come fare aggregati sul loop in modo
                 # simbolico per metterlo nei summary (o come mettere
                 # robe nei summary a runtime)

@@ -277,7 +277,6 @@ def __run(build_model):
             saver=saver,
             # session_manager
             # summary_writer
-            save_summaries_secs=120,
             save_model_secs=300)
         cfg.sv = sv
 
@@ -361,8 +360,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                            labels_per_gpu)):
         with tf.device(devices[dev_idx]):
             reuse_variables = not is_training or dev_idx > 0
-            with tf.name_scope('tower{}_{}'.format(dev_idx,
-                                                   tower_suffix)) as scope:
+            with tf.name_scope('tower{}_{}'.format(dev_idx, tower_suffix)):
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
                     net_out = build_model(inputs, is_training)
@@ -414,26 +412,23 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                         var_name = variable.name.replace(":", "_")
                         var_name = var_name.replace(
                             cfg.model_name+"/", "")
-                        if cfg.summary_sublayer and var_name.count(
-                                                '/') >= 2:
+                        if cfg.summary_sublayer and var_name.count('/') >= 2:
                             var_name = var_name.replace("/", "_", 1)
                         summaries["training"].append(
                             tf.summary.histogram(
-                                "Tower%d_Gradients_%s" % (device_idx,
-                                                          var_name),
+                                "Tower%d_Gradients_%s" % (dev_idx, var_name),
                                 grad_values))
 
                         summaries["training"].append(
                             tf.summary.scalar(
-                                "Tower%d_Gradient_norm_%s" % (device_idx,
-                                                              var_name),
+                                "Tower%d_GradientNorm_%s" %
+                                (dev_idx, var_name),
                                 tf.global_norm([grad_values])))
 
                 summaries["training"].append(
                     tf.summary.scalar(
                         "Tower%d_Global_norm/clipped_grad_norm" %
-                        device_idx,
-                        tf.global_norm(list(zip(*grads))[0])))
+                        dev_idx, tf.global_norm(list(zip(*grads))[0])))
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
@@ -577,7 +572,13 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
             # train_op does not return anything, but must be in the
             # outputs to update the gradient
-            loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
+            if cum_iter % cfg.train_summary_freq == 0:
+                loss_value, _, summary_str = cfg.sess.run(
+                    train_outs + [train_summary_op],
+                    feed_dict=feed_dict)
+                sv.summary_computed(cfg.sess, summary_str)
+            else:
+                loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
             pbar.set_description('Batch {:4d}/{:4d}({:4d}) {:.3f}s (D {:.3f}s)'
@@ -587,10 +588,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                                                         t_data_load,
                                                         loss_value))
             pbar.update(1)
-            # Upgrade the summaries
-            summary_str = sess.run(train_summary_op, feed_dict=feed_dict)
-            summary_writer.add_summary(summary_str, cum_iter)
-            summary_writer.flush()
 
             # Verify if it's the end of the epoch
             if batch_id == train.nbatches - 1:
@@ -609,8 +606,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                     estop = True
 
                 # Upgrade the summaries
-                summary_str = cfg.sess.run(train_summary_op, feed_dict=feed_dict)
-                sv.summary_computed(cfg.sess, summary_str)
+                # summary_str = cfg.sess.run(train_summary_op, feed_dict=feed_dict)
+                # sv.summary_computed(cfg.sess, summary_str)
 
                 t_epoch = time() - epoch_start
                 t_save = time() - epoch_end
