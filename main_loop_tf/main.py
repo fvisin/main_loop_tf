@@ -152,10 +152,9 @@ def __parse_config(argv=None):
 
     # Optimization
     try:
-        Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
+        cfg.Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
     except AttributeError:
-        Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
-    cfg.optimizer = Optimizer(**cfg.optimizer_params)
+        cfg.Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
     try:
         loss_fn = getattr(nn, cfg.loss_fn)
     except AttributeError:
@@ -214,8 +213,8 @@ def __run(build_model):
         RuntimeError('You must specify the devices to run on')
 
     print("Building the model ...")
-    with tf.Graph().as_default() as graph:
     # with graph:
+    with tf.Graph().as_default() as graph:
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                       dtype='int32')
         inputs = tf.placeholder(shape=cfg.input_shape,
@@ -223,6 +222,45 @@ def __run(build_model):
         val_inputs = tf.placeholder(shape=cfg.val_input_shape,
                                     dtype=cfg._FLOATX, name='val_inputs')
         labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
+
+        prev_err = tf.placeholder(shape=(),
+                                   dtype=cfg._FLOATX, name='prev_err')
+        if cfg.lr_decay is None:
+            lr = cfg.lr
+        elif cfg.lr_decay == 'exp':
+            lr = tf.train.exponential_decay(cfg.lr,
+                                            cfg.global_step,
+                                            cfg.decay_steps,
+                                            cfg.decay_rate,
+                                            staircase=cfg.staircase)
+        elif cfg.lr_decay == 'piecewise':
+            lr = tf.train.piecewise_constant(cfg.global_step,
+                                             cfg.lr_boundaries,
+                                             cfg.lr_values)
+        elif cfg.lr_decay == 'polynomial':
+            lr = tf.train.polynomial_decay(cfg.lr,
+                                           cfg.global_step,
+                                           cfg.decay_steps,
+                                           end_learning_rate=cfg.end_lr,
+                                           power=cfg.power,
+                                           cycle=cfg.staircase)
+
+        elif cfg.lr_decay == 'natural_exp':
+            lr = tf.train.natural_exp_decay(cfg.lr,
+                                            cfg.global_step,
+                                            cfg.decay_steps,
+                                            cfg.decay_rate,
+                                            staircase=cfg.staircase)
+        elif cfg.lr_decay == 'inverse_time':
+            lr = tf.train.inverse_time_decay(cfg.lr,
+                                             cfg.global_step,
+                                             cfg.decay_steps,
+                                             cfg.decay_rate,
+                                             staircase=cfg.staircase)
+        else:
+            raise NotImplementedError()
+
+        cfg.optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
 
         # TODO is there another way to split the input in chunks when
         # batchsize is not a multiple of num_splits?
@@ -233,7 +271,8 @@ def __run(build_model):
         labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
                                           dtype='int32',
                                           name='label_split_dim')
-        placeholders = [inputs, labels, inputs_split_dim, labels_split_dim]
+        placeholders = [inputs, labels, inputs_split_dim, labels_split_dim,
+                        prev_err]
         val_placeholders = [val_inputs, labels, inputs_split_dim,
                             labels_split_dim]
 
@@ -328,7 +367,11 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
-    [inputs, labels, input_split_dim, labels_split_dim] = placeholders
+    if is_training:
+        [inputs, labels, input_split_dim,
+         labels_split_dim, prev_err] = placeholders
+    else:
+        [inputs, labels, input_split_dim, labels_split_dim] = placeholders
 
     # Split the input among the GPUs (batchwise)
     inputs_per_gpu = tf.split(inputs, input_split_dim, 0)
@@ -389,8 +432,49 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                              loss, colocate_gradients_with_ops=True)
 
                         # 2) Process gradients, average them later
+
+                        if cfg.grad_noise_decay is None:
+                            grad_noise_scale = cfg.grad_noise_scale
+                        elif cfg.grad_noise_decay == 'annealing':
+
+                            """
+                            Adds annealed gaussian noise to the gradients at
+                            every time step, by decaying the variance at each
+                            time step
+                            g_t <- g_t + N(0, sigma_t^2)
+                            sigma_t^2 = eta / (1 + t)^gamma
+
+                            with eta selected from {0.01, 0.3, 1.0) and
+                            gamma = 0.55
+                            See: "Adding gradient noise improves learning
+                            for very deep networks",
+                            http://arxiv.org/pdf/1511.06807v1.pdf
+                            """
+
+                            eta = cfg.grad_noise_scale ** 0.5
+                            gamma = 0.55 / 2
+                            grad_noise_scale = eta * tf.pow(tf.cast(
+                                cfg.global_step + 1, cfg._FLOATX), -gamma)
+
+                            summaries["training"].append(tf.summary.scalar(
+                                "Tower%d_NoiseGrad" % dev_idx,
+                                grad_noise_scale))
+
+                        elif cfg.grad_noise_decay == 'neural_gpu':
+                            eta = cfg.grad_noise_scale
+                            gamma = 0.55
+                            grad_noise_scale = eta * tf.sqrt(
+                                prev_err * tf.pow(tf.cast(
+                                    cfg.global_step + 1, cfg._FLOATX), -gamma))
+
+                            summaries["training"].append(tf.summary.scalar(
+                                "Tower%d_NoiseGrad" % dev_idx,
+                                grad_noise_scale))
+
+                        else:
+                            raise NotImplementedError()
                         grads = process_gradients(grads,
-                                                  cfg.grad_noise_scale,
+                                                  grad_noise_scale,
                                                   cfg.grad_multiplier,
                                                   cfg.max_grad_norm)
 
@@ -535,6 +619,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     # Start the training loop.
     start = time()
     print("Beginning main loop...")
+    loss_value = 0
     for epoch_id in range(init_step, max_epochs):
         pbar = tqdm(total=train.nbatches)
         epoch_start = time()
@@ -564,7 +649,13 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             # Create dictionary to feed the input placeholders
             # placeholders = [inputs, labels, which_set,
             #                 input_split_dim, labels_split_dim]
-            in_values = [x_in, y_in, split_dim, labels_split_dim]
+
+            # Do not add noise if loss is less than threshold
+            # TODO: It should be IoU or any other metric, but in this
+            # case our loss is Dice Coefficient so it's fine
+            loss_value = -1.0 if loss_value < -cfg.thresh_loss else loss_value
+            in_values = [x_in, y_in, split_dim, labels_split_dim,
+                         1 + loss_value]
             feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
 
             # train_op does not return anything, but must be in the
