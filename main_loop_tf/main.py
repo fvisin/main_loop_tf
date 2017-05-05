@@ -315,7 +315,7 @@ def __run(build_model):
                 return main_loop(**main_loop_kwags)
             else:
                 # Perform validation only
-                mean_iou = []
+                mean_iou = {}
                 for s in cfg.val_on_sets:
                     print('Starting validation on %s set' % s)
                     from validate import validate
