@@ -188,7 +188,7 @@ def save_images(img_queue, save_basedir):
 
     while True:
         try:
-            (epoch_id, this_set, x_batch, y_batch, f_batch, subset_batch,
+            (epoch_id, this_set, x_batch, y_batch, f_batch, subset,
              raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
 
             cfg = gflags.cfg
@@ -203,14 +203,15 @@ def save_images(img_queue, save_basedir):
             cmap = mpl.colors.ListedColormap(cmap)
             labels = this_set.mask_labels
 
+            assert len(x_batch) == len(y_batch) == len(f_batch) == \
+                len(y_pred_batch) == len(y_soft_batch) == len(raw_data_batch)
             # Save samples, iterating over each element of the batch
-            for x, y, f, y_pred, y_soft_pred, subset, raw_data in zip(
+            for x, y, f, y_pred, y_soft_pred, raw_data in zip(
                     x_batch,
                     y_batch,
                     f_batch,
                     y_pred_batch,
                     y_soft_batch,
-                    subset_batch,
                     raw_data_batch):
                 # y = np.expand_dims(y, -1)
                 # y_pred = np.expand_dims(y_pred, -1)
@@ -333,7 +334,7 @@ def validate(placeholders,
 
             ret = this_set.next()
             x_batch, y_batch = ret['data'], ret['labels']
-            subset_batch = ret['subset']
+            subset = ret['subset'][0]
             f_batch = ret['filenames']
             raw_data_batch = ret['raw_data']
             # Reset the state when we switch to a new video
@@ -386,11 +387,15 @@ def validate(placeholders,
                     (y_pred_batch, y_soft_batch, mIoU, loss,
                      _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
                 tot_loss += loss
+                # mIoU is computed incrementally, so we just need the
+                # last value
+                mIoUs[subset] = mIoU
 
                 eval_iter_el_time = time.time() - start_val_time
-                pbar.set_description('Time: %f, Loss: %f (%f), '
-                                     'Mean IoU: %f' % (eval_iter_el_time, loss,
-                                                       tot_loss/bidx, mIoU))
+                pbar.set_description('Time: {:.3f}, Loss: {:.3f} ({:.3f}), '
+                                     'Mean IoU: {:.3f}'.format(
+                                         eval_iter_el_time, loss,
+                                         tot_loss/bidx, mIoU))
             else:
                 y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
                     eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
@@ -407,7 +412,7 @@ def validate(placeholders,
             # Save image summary for learning visualization
             # import ipdb; ipdb.set_trace()
             img_queue.put((epoch_id, this_set, x_batch, y_batch, f_batch,
-                           subset_batch, raw_data_batch, y_pred_batch,
+                           subset, raw_data_batch, y_pred_batch,
                            y_soft_batch))
         return mIoU
 
