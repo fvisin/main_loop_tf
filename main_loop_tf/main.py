@@ -415,20 +415,19 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                         if cfg.summary_sublayer and var_name.count('/') >= 2:
                             var_name = var_name.replace("/", "_", 1)
                         summaries["training"].append(
-                            tf.summary.histogram(
-                                "Tower%d_Gradients_%s" % (dev_idx, var_name),
-                                grad_values))
+                            tf.summary.histogram("Tower%d_Gradients_%s" %
+                                                 (dev_idx, var_name),
+                                                 grad_values))
 
                         summaries["training"].append(
-                            tf.summary.scalar(
-                                "Tower%d_GradientNorm_%s" %
-                                (dev_idx, var_name),
-                                tf.global_norm([grad_values])))
+                            tf.summary.scalar("Tower%d_GradientNorm_%s" %
+                                              (dev_idx, var_name),
+                                              tf.global_norm([grad_values])))
 
                 summaries["training"].append(
-                    tf.summary.scalar(
-                        "Tower%d_Global_norm/clipped_grad_norm" %
-                        dev_idx, tf.global_norm(list(zip(*grads))[0])))
+                    tf.summary.scalar("Tower%d_Global_norm/clipped_grad_norm" %
+                                      dev_idx,
+                                      tf.global_norm(list(zip(*grads))[0])))
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
@@ -482,8 +481,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             if cfg.summary_sublayer and var_name.count('/') >= 2:
                 var_name = var_name.replace("/", "_", 1)
             var_name = 'Variables_' + var_name
-            summaries['training'].append(tf.summary.histogram(var_name,
-                                                              var))
+            summaries['training'].append(tf.summary.histogram(var_name, var))
 
     # Trainining or Validation summaries
     with tf.name_scope('summaries_{}'.format(tower_suffix)):
