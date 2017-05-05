@@ -28,11 +28,11 @@ def compute_chunk_size(batch_size, npixels):
     cfg = gflags.cfg
 
     # Compute the shape of the input chunk for each GPU
-    a_gpu_shape = int(batch_size / cfg.num_gpus)
-    split_dim = [a_gpu_shape] * cfg.num_gpus
-    if batch_size % cfg.num_gpus != 0:
-        # Fill the last GPU with what remains
-        split_dim[-1] = batch_size % cfg.num_gpus
+    a_device_shape = int(batch_size / cfg.num_splits)
+    split_dim = [a_device_shape] * cfg.num_splits
+    if batch_size % cfg.num_splits != 0:
+        # Fill the last device with what remains
+        split_dim[-1] = batch_size % cfg.num_splits
     # Labels are flattened, so we need to take into account the
     # pixels as well
     labels_split_dim = [el * npixels for el in split_dim]
