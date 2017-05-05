@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import os
 import time
@@ -11,8 +12,8 @@ from main_utils import compute_chunk_size
 
 
 # Print prediction hotmap
-def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
-                    subset, f, epoch_id):
+def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir, subset,
+                    f, epoch_id):
     '''Save an image of the probability of each class
 
     Save the image and the heatmap of the probability of each class'''
@@ -22,14 +23,19 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
 
     cfg = gflags.cfg
 
-    num_non_hot = 1 if of is None else 2
-    nframes = y_soft_pred.shape[-1]
     fig = plt.figure(dpi=300)
     # Remove whitespace from around the image
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
+    # We will plot the image, each channel/class separately and
+    # potentially the optical flow. Let's spread them evenly in a square
+    nclasses = cfg.nclasses
+    num_extra_frames = 1 if of is None else 2
+    ncols = int(math.ceil(math.sqrt(nclasses + num_extra_frames)))
+    nrows = int(math.ceil((nclasses + num_extra_frames) / ncols))
+
     grid = AxesGrid(fig, 111,
-                    nrows_ncols=(4, max(num_non_hot, nframes // 4+1)),
+                    nrows_ncols=(nrows, ncols),
                     axes_pad=0.25,
                     share_all=True,
                     label_mode="L",
@@ -49,7 +55,7 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
         grid[1].set_title('Optical flow')
     # heatmaps
     for l, pred, ax in zip(labels[:nclasses-1], y_soft_pred.transpose(2, 0, 1),
-                           grid[num_non_hot:]):
+                           grid[num_extra_frames:]):
         im = ax.imshow(pred, cmap='hot', vmin=0, vmax=1,
                        interpolation='nearest')
         ax.set_title(l)
@@ -69,7 +75,7 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir,
     heatmap_img = tf.Summary.Image(encoded_image_string=sio.getvalue(),
                                    height=int(size[0]),
                                    width=int(size[1]))
-    heatmap_img_summary = tf.Summary.Value(tag='Heatmaps',
+    heatmap_img_summary = tf.Summary.Value(tag='Heatmaps/' + subset,
                                            image=heatmap_img)
     summary_str = tf.Summary(value=[heatmap_img_summary])
     cfg.sv.summary_computed(cfg.sess, summary_str)
@@ -144,7 +150,7 @@ def save_sample_and_fill_sequence_fn(raw_data, of, y_pred, y, cmap, nclasses,
     plt.imsave(sio, fig2array(fig), format='png')
     # size = fig.get_size_inches()*fig.dpi  # size in pixels
     seq_img = tf.Summary.Image(encoded_image_string=sio.getvalue())
-    seq_img_summary = tf.Summary.Value(tag='GT/Predictions',
+    seq_img_summary = tf.Summary.Value(tag='Predictions/' + subset,
                                        image=seq_img)
 
     summary_str = tf.Summary(value=[seq_img_summary])
