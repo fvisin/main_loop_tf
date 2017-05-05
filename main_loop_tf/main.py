@@ -355,7 +355,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                                            labels_per_gpu)):
         with tf.device(devices[dev_idx]):
             reuse_variables = not is_training or dev_idx > 0
-            with tf.name_scope('tower{}_{}'.format(dev_idx, tower_suffix)):
+            with tf.name_scope('GPU{}_{}'.format(dev_idx, tower_suffix)):
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
                     net_out = build_model(inputs, is_training)
