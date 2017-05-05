@@ -9,6 +9,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import nn
 from tensorflow.contrib import slim
+from tensorflow.python.framework import ops
 from tensorflow.python.training import training
 from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
@@ -240,21 +241,13 @@ def __run(build_model):
         with tf.device(cfg.devices[0]):
             # Model compilation
             # -----------------
-            train_outs, train_summary_op = build_graph(placeholders,
-                                                       cfg.input_shape,
-                                                       cfg.optimizer,
-                                                       cfg.weight_decay,
-                                                       cfg.loss_fn,
-                                                       build_model,
-                                                       True)
+            train_outs, train_summary_op, train_reset_cm_op = build_graph(
+                placeholders, cfg.input_shape, cfg.optimizer, cfg.weight_decay,
+                cfg.loss_fn, build_model, True)
 
-            val_outs, val_summary_ops = build_graph(val_placeholders,
-                                                    cfg.val_input_shape,
-                                                    cfg.optimizer,
-                                                    cfg.weight_decay,
-                                                    cfg.loss_fn,
-                                                    build_model,
-                                                    False)
+            val_outs, val_summary_ops, val_reset_cm_op = build_graph(
+                val_placeholders, cfg.val_input_shape, cfg.optimizer,
+                cfg.weight_decay, cfg.loss_fn, build_model, False)
 
             # No need if we use the Supervisor
 
@@ -307,6 +300,7 @@ def __run(build_model):
                                    'train_summary_op': train_summary_op,
                                    'val_outs': val_outs,
                                    'val_summary_ops': val_summary_ops,
+                                   'val_reset_cm_op': val_reset_cm_op,
                                    'loss_fn': cfg.loss_fn,
                                    'Dataset': cfg.Dataset,
                                    'dataset_params': cfg.dataset_params,
@@ -323,6 +317,7 @@ def __run(build_model):
                         val_placeholders,
                         val_outs,
                         val_summary_ops[s],
+                        val_reset_cm_op,
                         0,
                         which_set=s)
 
@@ -451,6 +446,9 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                                               mask)
     # Compute the average *per variable* across the towers
     avg_tower_loss = tf.reduce_mean(tower_losses)
+    cm = tf.get_collection(ops.GraphKeys.LOCAL_VARIABLES,
+                           scope='mean_iou/total_confusion_matrix:0')[0]
+    reset_cm_op = tf.assign(cm, tf.zeros_like(cm, cm.dtype, 'reset_cm'))
 
     if is_training:
         # Impose graph dependency so that update operations are computed
@@ -489,7 +487,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         # Scalars
         for k, s in summaries.iteritems():
             s.append(tf.summary.scalar('Mean_tower_loss_' + k, avg_tower_loss))
-            s.append(tf.summary.scalar('Mean_IoU_' + k, m_iou))
+            # We do it more fine-grained in validation.py
+            # s.append(tf.summary.scalar('Mean_IoU_' + k, m_iou))
 
         # During the training we want to save informations about the
         # gradients, the trainable variables and the activations.
@@ -502,15 +501,15 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                 val_summary_ops[k] = tf.summary.merge(s)
 
     if is_training:
-        return [avg_tower_loss, train_op], train_summary_op
+        return [avg_tower_loss, train_op], train_summary_op, reset_cm_op
     else:
         return ([preds, softmax_preds, m_iou, avg_tower_loss, cm_update_op],
-                val_summary_ops)
+                val_summary_ops, reset_cm_op)
 
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
-              val_outs, val_summary_ops, loss_fn, Dataset, dataset_params,
-              valid_params, sv):
+              val_outs, val_summary_ops, val_reset_cm_op, loss_fn, Dataset,
+              dataset_params, valid_params, sv):
 
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
@@ -628,6 +627,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         val_placeholders,
                         val_outs,
                         val_summary_ops[s],
+                        val_reset_cm_op,
                         epoch_id,
                         which_set=s)
 

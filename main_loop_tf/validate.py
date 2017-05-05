@@ -292,6 +292,7 @@ def save_animation_frame(frame, video_name, save_basedir):
 def validate(placeholders,
              eval_outs,
              val_summary_op,
+             val_reset_cm_op,
              epoch_id,
              which_set='valid'):
         cfg = gflags.cfg
@@ -327,6 +328,8 @@ def validate(placeholders,
         # Begin loop over dataset samples
         tot_loss = 0
         pbar = tqdm(total=this_set.nbatches)
+        prev_subset = None
+        mIoUs = {}
         for bidx in range(this_set.nbatches):
             if cfg.sv.should_stop():
                 break
@@ -337,17 +340,23 @@ def validate(placeholders,
             subset = ret['subset'][0]
             f_batch = ret['filenames']
             raw_data_batch = ret['raw_data']
-            # Reset the state when we switch to a new video
-            # if cfg.stateful_validation:
-            #     if any(s == 'default' for s in subset_batch):
-            #         raise RuntimeError(
-            #             'For stateful validation, the validation dataset '
-            #             'should provide `subset`')
-            #     if any(last_subset != s for s in subset_batch):
-            #         reset_states(model, x_batch.shape)
-            #         last_subset = subset_batch[-1]
-            # else:
-            #     reset_states(model, x_batch.shape)
+
+            # Reset the confusion matrix if we are switching video
+            if this_set.set_has_GT:
+                if not prev_subset or subset != prev_subset:
+                    print('Reset confusion matrix! {} --> {}'.format(
+                        prev_subset, subset))
+                    cfg.sess.run(val_reset_cm_op)
+                    if cfg.stateful_validation:
+                        if subset == 'default':
+                            raise RuntimeError(
+                                'For stateful validation, the validation '
+                                'dataset should provide `subset`')
+                        pass
+                        # reset_states(model, x_batch.shape)
+                    if prev_subset is not None:  # skip at the beginning
+                        write_subset_summary(mIoUs, prev_subset)
+                    prev_subset = subset
 
             # TODO remove duplication of code
             # Compute the shape of the input chunk for each GPU
@@ -376,8 +385,8 @@ def validate(placeholders,
                 #     w_freq = loss_kwargs.get('w_freq')
                 #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
 
-                # Get batch pred, mIoU so far, batch loss and
-                # potentially the summary
+                # Get batch pred, mIoU so far, batch loss and potentially the
+                # summary
                 if bidx % cfg.val_summary_freq == 0:
                     (y_pred_batch, y_soft_batch, mIoU, loss,
                      _, summary_str) = cfg.sess.run(
@@ -414,7 +423,24 @@ def validate(placeholders,
             img_queue.put((epoch_id, this_set, x_batch, y_batch, f_batch,
                            subset, raw_data_batch, y_pred_batch,
                            y_soft_batch))
-        return mIoU
+        # Write the last video summary
+        write_subset_summary(mIoUs, prev_subset)
+
+        # Compute the aggregate metric
+        mean_IoU = np.mean(mIoUs.values())
+        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
+                                        simple_value=mean_IoU)
+        summary_str = tf.Summary(value=[mIou_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str)
+        return mean_IoU
+
+
+def write_subset_summary(mIoUs, subset):
+    cfg = gflags.cfg
+    mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
+                                    simple_value=mIoUs[subset])
+    summary_str = tf.Summary(value=[mIou_summary])
+    cfg.sv.summary_computed(cfg.sess, summary_str)
 
 
 def fig2array(fig):
