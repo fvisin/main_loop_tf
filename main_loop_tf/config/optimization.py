@@ -39,7 +39,7 @@ gflags_ext.DEFINE_multidict('optimizer_params', {},
 gflags.DEFINE_string('loss_fn', 'sparse_softmax_cross_entropy_with_logits',
                      'The loss function')
 
-gflags.DEFINE_bool('stateful_validation', True, 'If True the state of '
+gflags.DEFINE_bool('stateful_validation', False, 'If True the state of '
                    'the RNNs will be kept to process the next batch (if '
                    'consecutive)')
 gflags.DEFINE_bool('use_extra_BN', False, 'Whether to add a BN layer on '

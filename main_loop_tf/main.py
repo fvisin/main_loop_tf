@@ -154,7 +154,8 @@ def __parse_config(argv=None):
     try:
         cfg.Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
     except AttributeError:
-        cfg.Optimizer = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
+        cfg.Optimizer = getattr(training, cfg.optimizer.capitalize() +
+                                'Optimizer')
     try:
         loss_fn = getattr(nn, cfg.loss_fn)
     except AttributeError:
@@ -224,7 +225,7 @@ def __run(build_model):
         labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
 
         prev_err = tf.placeholder(shape=(),
-                                   dtype=cfg._FLOATX, name='prev_err')
+                                  dtype=cfg._FLOATX, name='prev_err')
         if cfg.lr_decay is None:
             lr = cfg.lr
         elif cfg.lr_decay == 'exp':
@@ -260,7 +261,7 @@ def __run(build_model):
         else:
             raise NotImplementedError()
 
-        cfg.optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
+        cfg.Optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
 
         # TODO is there another way to split the input in chunks when
         # batchsize is not a multiple of num_splits?
@@ -281,17 +282,30 @@ def __run(build_model):
             # Model compilation
             # -----------------
             train_outs, train_summary_op, train_reset_cm_op = build_graph(
-                placeholders, cfg.input_shape, cfg.optimizer, cfg.weight_decay,
+                placeholders, cfg.input_shape, cfg.Optimizer, cfg.weight_decay,
                 cfg.loss_fn, build_model, True)
 
             val_outs, val_summary_ops, val_reset_cm_op = build_graph(
-                val_placeholders, cfg.val_input_shape, cfg.optimizer,
+                val_placeholders, cfg.val_input_shape, cfg.Optimizer,
                 cfg.weight_decay, cfg.loss_fn, build_model, False)
+            if cfg.hyperparams_summaries is not None:
+                sum_text = []
+                for (key_header,
+                     list_value) in cfg.hyperparams_summaries.iteritems():
 
-            # No need if we use the Supervisor
+                    header_list = []
+                    text_list = []
+                    for v in list_value:
+                        header_list.append('**'+v+'**')
+                        text_list.append(str(getattr(cfg, v)))
+                    header_tensor = tf.constant(header_list)
+                    text_tensor = tf.constant(text_list)
 
-            # # Initialize the variables (we might restore a subset of them..)
-            # cfg.sess.run(init)
+                    sum_text.append(tf.summary.text(
+                        key_header, tf.reshape(
+                            tf.concat([header_tensor, text_tensor], axis=0),
+                            [2, -1])))
+                sum_text_op = tf.summary.merge(sum_text)
 
         # Group global and local init into one op. Could be split into
         # two different ops and passed to `init_op` and `local_init_op`
@@ -319,6 +333,11 @@ def __run(build_model):
                 sess = tf_debug.LocalCLIDebugWrapperSession(sess)
                 sess.add_tensor_filter("has_inf_or_nan",
                                        tf_debug.has_inf_or_nan)
+
+            if cfg.hyperparams_summaries is not None:
+                # write Hyper parameters text summaries
+                summary_str = cfg.sess.run(sum_text_op)
+                sv.summary_computed(cfg.sess, summary_str)
 
             # Supervisor will always restore if a model is there.
             # TODO we probably need to move the checkpoints if restore
