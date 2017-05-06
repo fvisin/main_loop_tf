@@ -13,10 +13,263 @@ import gflags
 from tqdm import tqdm
 import tensorflow as tf
 
-from main_utils import compute_chunk_size
+from utils import compute_chunk_size, fig2array
 
 
-# Print prediction hotmap
+def validate(placeholders,
+             eval_outs,
+             val_summary_op,
+             val_reset_cm_op,
+             epoch_id,
+             which_set='valid'):
+        cfg = gflags.cfg
+        if getattr(cfg.valid_params, 'resize_images', False):
+            warn('Forcing resize_images to False in evaluation.')
+            cfg.valid_params.update({'resize_images': False})
+
+        cfg.valid_params['batch_size'] *= cfg.num_gpus
+        this_set = cfg.Dataset(
+            which_set=which_set,
+            **cfg.valid_params)
+        save_basedir = os.path.join('samples', cfg.model_name,
+                                    this_set.which_set)
+        img_queue = Queue.Queue(maxsize=25)
+        for _ in range(5):
+            t = threading.Thread(
+                target=save_images,
+                args=(img_queue, save_basedir))
+            t.setDaemon(True)  # Die when main dies
+            t.start()
+            cfg.sv.coord.register_thread(t)
+
+        # TODO posso distinguere training da valid??
+        # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
+        #                                        graph=cfg.sess.graph)
+
+        # Re-init confusion matrix
+        # cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
+        #                        scope='mean_iou')
+        # cfg.sess.run([
+        #     tf.assign(cm, tf.zeros(tf.shape(cm), dtype=tf.int32))])
+
+        # Begin loop over dataset samples
+        tot_loss = 0
+        pbar = tqdm(total=this_set.nbatches)
+        prev_subset = None
+        mIoUs = {}
+        for bidx in range(this_set.nbatches):
+            if cfg.sv.should_stop():
+                break
+            start_val_time = time.time()
+
+            ret = this_set.next()
+            x_batch, y_batch = ret['data'], ret['labels']
+            subset = ret['subset'][0]
+            f_batch = ret['filenames']
+            raw_data_batch = ret['raw_data']
+
+            # Reset the confusion matrix if we are switching video
+            if this_set.set_has_GT:
+                if not prev_subset or subset != prev_subset:
+                    print('Reset confusion matrix! {} --> {}'.format(
+                        prev_subset, subset))
+                    cfg.sess.run(val_reset_cm_op)
+                    if cfg.stateful_validation:
+                        if subset == 'default':
+                            raise RuntimeError(
+                                'For stateful validation, the validation '
+                                'dataset should provide `subset`')
+                        pass
+                        # reset_states(model, x_batch.shape)
+                    if prev_subset is not None:  # skip at the beginning
+                        write_subset_summary(mIoUs, prev_subset)
+                    prev_subset = subset
+
+            # TODO remove duplication of code
+            # Compute the shape of the input chunk for each GPU
+            split_dim, lab_split_dim = compute_chunk_size(
+                x_batch.shape[0], np.prod(this_set.data_shape[:2]))
+
+            if cfg.seq_length and cfg.seq_length > 1:
+                x_in = x_batch
+                y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
+            else:
+                x_in = x_batch
+                y_in = y_batch
+
+            # if cfg.use_second_path:
+            #     x_in = [x_in[..., :3], x_in[..., 3:]]
+            y_in = y_in.flatten()
+            in_values = [x_in, y_in, split_dim, lab_split_dim]
+            feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
+
+            if this_set.set_has_GT:
+                # Class balance
+                # class_balance_w = np.ones(np.prod(
+                #     mini_x.shape[:3])).astype(floatX)
+                # class_balance = loss_kwargs.get('class_balance', '')
+                # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
+                #     w_freq = loss_kwargs.get('w_freq')
+                #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
+
+                # Get batch pred, mIoU so far, batch loss and potentially the
+                # summary
+                if bidx % cfg.val_summary_freq == 0:
+                    (y_pred_batch, y_soft_batch, mIoU, loss,
+                     _, summary_str) = cfg.sess.run(
+                         eval_outs + [val_summary_op], feed_dict=feed_dict)
+                    cfg.sv.summary_computed(cfg.sess, summary_str)
+                else:
+                    (y_pred_batch, y_soft_batch, mIoU, loss,
+                     _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
+                tot_loss += loss
+                # mIoU is computed incrementally, so we just need the
+                # last value
+                mIoUs[subset] = mIoU
+
+                eval_iter_el_time = time.time() - start_val_time
+                pbar.set_description('Time: {:.3f}, Loss: {:.3f} ({:.3f}), '
+                                     'Mean IoU: {:.3f}'.format(
+                                         eval_iter_el_time, loss,
+                                         tot_loss/bidx, mIoU))
+            else:
+                y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
+                    eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
+                mIoU = 0
+                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+                cfg.sv.summary_computed(cfg.sess, summary_str)
+                eval_iter_el_time = time.time() - start_val_time
+                pbar.set_description('Time: %f' % (eval_iter_el_time))
+            pbar.update(1)
+            # TODO there is no guarantee that this will be processed
+            # in order. We could use condition variables, e.g.,
+            # http://python.active-venture.com/lib/condition-objects.html
+            #
+            # Save image summary for learning visualization
+            # import ipdb; ipdb.set_trace()
+            img_queue.put((epoch_id, this_set, x_batch, y_batch, f_batch,
+                           subset, raw_data_batch, y_pred_batch,
+                           y_soft_batch))
+        # Write the last video summary
+        write_subset_summary(mIoUs, prev_subset)
+
+        # Compute the aggregate metric
+        mean_IoU = np.mean(mIoUs.values())
+        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
+                                        simple_value=mean_IoU)
+        summary_str = tf.Summary(value=[mIou_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str)
+        return mean_IoU
+
+
+def write_subset_summary(mIoUs, subset):
+    cfg = gflags.cfg
+    mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
+                                    simple_value=mIoUs[subset])
+    summary_str = tf.Summary(value=[mIou_summary])
+    cfg.sv.summary_computed(cfg.sess, summary_str)
+
+
+def save_images(img_queue, save_basedir):
+    import matplotlib as mpl
+    import seaborn as sns
+    cfg = gflags.cfg
+
+    while True:
+        try:
+            (epoch_id, this_set, x_batch, y_batch, f_batch, subset,
+             raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
+
+            cfg = gflags.cfg
+
+            # Initialize variables
+            nclasses = this_set.nclasses
+            seq_length = this_set.seq_length
+            try:
+                cmap = this_set.cmap
+            except AttributeError:
+                cmap = [el for el in sns.hls_palette(this_set.nclasses)]
+            cmap = mpl.colors.ListedColormap(cmap)
+            labels = this_set.mask_labels
+
+            assert len(x_batch) == len(y_batch) == len(f_batch) == \
+                len(y_pred_batch) == len(y_soft_batch) == len(raw_data_batch)
+            # Save samples, iterating over each element of the batch
+            for x, y, f, y_pred, y_soft_pred, raw_data in zip(
+                    x_batch,
+                    y_batch,
+                    f_batch,
+                    y_pred_batch,
+                    y_soft_batch,
+                    raw_data_batch):
+                # y = np.expand_dims(y, -1)
+                # y_pred = np.expand_dims(y_pred, -1)
+                if x.shape[-1] == 5:
+                    # Keep only middle frame name and save as png
+                    seq_length = x_batch.shape[1]
+                    f = f[seq_length // 2]
+                    f = f[:-4]  # strip .jpg
+                    f = f + '.png'
+                else:
+                    f = f[0]
+                    f = f[:-4]
+                    f = f + '.png'
+                # Retrieve the optical flow channels
+                if x.shape[-1] == 5:
+                    of = x[seq_length // 2, ..., 3:]
+                    # ang, mag = of
+                    import cv2
+                    hsv = np.zeros_like(x[seq_length // 2, ..., :3],
+                                        dtype='uint8')
+                    hsv[..., 0] = of[..., 0] * 255
+                    hsv[..., 1] = 255
+                    hsv[..., 2] = cv2.normalize(of[..., 1] * 255, None, 0, 255,
+                                                cv2.NORM_MINMAX)
+                    of = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+                else:
+                    of = None
+
+                if raw_data.ndim == 4:
+                    # Show only the middle frame
+                    heat_map_in = raw_data[seq_length // 2, ..., :3]
+                else:
+                    heat_map_in = raw_data
+
+                # PRINT THE HEATMAP
+                if cfg.save_heatmap:
+                    # do not pass optical flow
+                    save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
+                                    nclasses, save_basedir, subset, f,
+                                    epoch_id)
+
+                # PRINT THE SAMPLES
+                # Keep most likely prediction only
+                # y = y.argmax(2)
+                # y_pred = y_pred.argmax(2)
+
+                # Save image and append frame to animations sequence
+                if cfg.save_samples:
+                    if raw_data.ndim == 4:
+                        sample_in = raw_data[seq_length // 2]
+                        y_in = y[seq_length // 2]
+                    else:
+                        sample_in = raw_data
+                        y_in = y
+                    save_samples_and_animations(sample_in, of, y_pred, y_in,
+                                                cmap, nclasses, labels, subset,
+                                                save_basedir, f, epoch_id)
+                # return animations
+        except Queue.Empty:
+            continue
+        except Exception as e:
+            # Do not crash for errors during image saving
+            # cfg.sv.coord.request_stop(e)
+            # raise
+            # break
+            print('Error in save_images!! ' + str(e))
+            continue
+
+
 def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir, subset,
                     f, epoch_id):
     '''Save an image of the probability of each class
@@ -181,288 +434,9 @@ def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
         del(img)
 
 
-def save_images(img_queue, save_basedir):
-    import matplotlib as mpl
-    import seaborn as sns
-    cfg = gflags.cfg
-
-    while True:
-        try:
-            (epoch_id, this_set, x_batch, y_batch, f_batch, subset,
-             raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
-
-            cfg = gflags.cfg
-
-            # Initialize variables
-            nclasses = this_set.nclasses
-            seq_length = this_set.seq_length
-            try:
-                cmap = this_set.cmap
-            except AttributeError:
-                cmap = [el for el in sns.hls_palette(this_set.nclasses)]
-            cmap = mpl.colors.ListedColormap(cmap)
-            labels = this_set.mask_labels
-
-            assert len(x_batch) == len(y_batch) == len(f_batch) == \
-                len(y_pred_batch) == len(y_soft_batch) == len(raw_data_batch)
-            # Save samples, iterating over each element of the batch
-            for x, y, f, y_pred, y_soft_pred, raw_data in zip(
-                    x_batch,
-                    y_batch,
-                    f_batch,
-                    y_pred_batch,
-                    y_soft_batch,
-                    raw_data_batch):
-                # y = np.expand_dims(y, -1)
-                # y_pred = np.expand_dims(y_pred, -1)
-                if x.shape[-1] == 5:
-                    # Keep only middle frame name and save as png
-                    seq_length = x_batch.shape[1]
-                    f = f[seq_length // 2]
-                    f = f[:-4]  # strip .jpg
-                    f = f + '.png'
-                else:
-                    f = f[0]
-                    f = f[:-4]
-                    f = f + '.png'
-                # Retrieve the optical flow channels
-                if x.shape[-1] == 5:
-                    of = x[seq_length // 2, ..., 3:]
-                    # ang, mag = of
-                    import cv2
-                    hsv = np.zeros_like(x[seq_length // 2, ..., :3],
-                                        dtype='uint8')
-                    hsv[..., 0] = of[..., 0] * 255
-                    hsv[..., 1] = 255
-                    hsv[..., 2] = cv2.normalize(of[..., 1] * 255, None, 0, 255,
-                                                cv2.NORM_MINMAX)
-                    of = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-                else:
-                    of = None
-
-                if raw_data.ndim == 4:
-                    # Show only the middle frame
-                    heat_map_in = raw_data[seq_length // 2, ..., :3]
-                else:
-                    heat_map_in = raw_data
-
-                # PRINT THE HEATMAP
-                if cfg.save_heatmap:
-                    # do not pass optical flow
-                    save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
-                                    nclasses, save_basedir, subset, f,
-                                    epoch_id)
-
-                # PRINT THE SAMPLES
-                # Keep most likely prediction only
-                # y = y.argmax(2)
-                # y_pred = y_pred.argmax(2)
-
-                # Save image and append frame to animations sequence
-                if cfg.save_samples:
-                    if raw_data.ndim == 4:
-                        sample_in = raw_data[seq_length // 2]
-                        y_in = y[seq_length // 2]
-                    else:
-                        sample_in = raw_data
-                        y_in = y
-                    save_samples_and_animations(sample_in, of, y_pred, y_in,
-                                                cmap, nclasses, labels, subset,
-                                                save_basedir, f, epoch_id)
-                # return animations
-        except Queue.Empty:
-            continue
-        except Exception as e:
-            # Do not crash for errors during image saving
-            # cfg.sv.coord.request_stop(e)
-            # raise
-            # break
-            print('Error in save_images!! ' + str(e))
-            continue
-
-
 def save_animation_frame(frame, video_name, save_basedir):
     import imageio
     f = os.path.join(save_basedir, 'animations', video_name + '.gif')
     if not os.path.exists(os.path.dirname(f)):
         os.makedirs(os.path.dirname(f))
     imageio.imwrite(f, frame, duration=0.7)
-
-
-def validate(placeholders,
-             eval_outs,
-             val_summary_op,
-             val_reset_cm_op,
-             epoch_id,
-             which_set='valid'):
-        cfg = gflags.cfg
-        if getattr(cfg.valid_params, 'resize_images', False):
-            warn('Forcing resize_images to False in evaluation.')
-            cfg.valid_params.update({'resize_images': False})
-
-        cfg.valid_params['batch_size'] *= cfg.num_gpus
-        this_set = cfg.Dataset(
-            which_set=which_set,
-            **cfg.valid_params)
-        save_basedir = os.path.join('samples', cfg.model_name,
-                                    this_set.which_set)
-        img_queue = Queue.Queue(maxsize=25)
-        for _ in range(5):
-            t = threading.Thread(
-                target=save_images,
-                args=(img_queue, save_basedir))
-            t.setDaemon(True)  # Die when main dies
-            t.start()
-            cfg.sv.coord.register_thread(t)
-
-        # TODO posso distinguere training da valid??
-        # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
-        #                                        graph=cfg.sess.graph)
-
-        # Re-init confusion matrix
-        # cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
-        #                        scope='mean_iou')
-        # cfg.sess.run([
-        #     tf.assign(cm, tf.zeros(tf.shape(cm), dtype=tf.int32))])
-
-        # Begin loop over dataset samples
-        tot_loss = 0
-        pbar = tqdm(total=this_set.nbatches)
-        prev_subset = None
-        mIoUs = {}
-        for bidx in range(this_set.nbatches):
-            if cfg.sv.should_stop():
-                break
-            start_val_time = time.time()
-
-            ret = this_set.next()
-            x_batch, y_batch = ret['data'], ret['labels']
-            subset = ret['subset'][0]
-            f_batch = ret['filenames']
-            raw_data_batch = ret['raw_data']
-
-            # Reset the confusion matrix if we are switching video
-            if this_set.set_has_GT:
-                if not prev_subset or subset != prev_subset:
-                    print('Reset confusion matrix! {} --> {}'.format(
-                        prev_subset, subset))
-                    cfg.sess.run(val_reset_cm_op)
-                    if cfg.stateful_validation:
-                        if subset == 'default':
-                            raise RuntimeError(
-                                'For stateful validation, the validation '
-                                'dataset should provide `subset`')
-                        pass
-                        # reset_states(model, x_batch.shape)
-                    if prev_subset is not None:  # skip at the beginning
-                        write_subset_summary(mIoUs, prev_subset)
-                    prev_subset = subset
-
-            # TODO remove duplication of code
-            # Compute the shape of the input chunk for each GPU
-            split_dim, lab_split_dim = compute_chunk_size(
-                x_batch.shape[0], np.prod(this_set.data_shape[:2]))
-
-            if cfg.seq_length and cfg.seq_length > 1:
-                x_in = x_batch
-                y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
-            else:
-                x_in = x_batch
-                y_in = y_batch
-
-            # if cfg.use_second_path:
-            #     x_in = [x_in[..., :3], x_in[..., 3:]]
-            y_in = y_in.flatten()
-            in_values = [x_in, y_in, split_dim, lab_split_dim]
-            feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
-
-            if this_set.set_has_GT:
-                # Class balance
-                # class_balance_w = np.ones(np.prod(
-                #     mini_x.shape[:3])).astype(floatX)
-                # class_balance = loss_kwargs.get('class_balance', '')
-                # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
-                #     w_freq = loss_kwargs.get('w_freq')
-                #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
-
-                # Get batch pred, mIoU so far, batch loss and potentially the
-                # summary
-                if bidx % cfg.val_summary_freq == 0:
-                    (y_pred_batch, y_soft_batch, mIoU, loss,
-                     _, summary_str) = cfg.sess.run(
-                         eval_outs + [val_summary_op], feed_dict=feed_dict)
-                    cfg.sv.summary_computed(cfg.sess, summary_str)
-                else:
-                    (y_pred_batch, y_soft_batch, mIoU, loss,
-                     _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
-                tot_loss += loss
-                # mIoU is computed incrementally, so we just need the
-                # last value
-                mIoUs[subset] = mIoU
-
-                eval_iter_el_time = time.time() - start_val_time
-                pbar.set_description('Time: {:.3f}, Loss: {:.3f} ({:.3f}), '
-                                     'Mean IoU: {:.3f}'.format(
-                                         eval_iter_el_time, loss,
-                                         tot_loss/bidx, mIoU))
-            else:
-                y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                    eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
-                mIoU = 0
-                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
-                cfg.sv.summary_computed(cfg.sess, summary_str)
-                eval_iter_el_time = time.time() - start_val_time
-                pbar.set_description('Time: %f' % (eval_iter_el_time))
-            pbar.update(1)
-            # TODO there is no guarantee that this will be processed
-            # in order. We could use condition variables, e.g.,
-            # http://python.active-venture.com/lib/condition-objects.html
-            #
-            # Save image summary for learning visualization
-            # import ipdb; ipdb.set_trace()
-            img_queue.put((epoch_id, this_set, x_batch, y_batch, f_batch,
-                           subset, raw_data_batch, y_pred_batch,
-                           y_soft_batch))
-        # Write the last video summary
-        write_subset_summary(mIoUs, prev_subset)
-
-        # Compute the aggregate metric
-        mean_IoU = np.mean(mIoUs.values())
-        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
-                                        simple_value=mean_IoU)
-        summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str)
-        return mean_IoU
-
-
-def write_subset_summary(mIoUs, subset):
-    cfg = gflags.cfg
-    mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
-                                    simple_value=mIoUs[subset])
-    summary_str = tf.Summary(value=[mIou_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str)
-
-
-def fig2array(fig):
-    """Convert a Matplotlib figure to a 4D numpy array
-
-    Params
-    ------
-    fig:
-        A matplotlib figure
-
-    Return
-    ------
-        A numpy 3D array of RGBA values
-
-    Modified version of: http://www.icare.univ-lille1.fr/node/1141
-    """
-    # draw the renderer
-    fig.canvas.draw()
-
-    # Get the RGBA buffer from the figure
-    w, h = fig.canvas.get_width_height()
-    buf = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    buf.shape = (h, w, 3)
-
-    return buf

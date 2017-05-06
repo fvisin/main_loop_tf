@@ -185,3 +185,28 @@ def save_repos_hash(params_dict, this_repo_name, packages=['theano']):
     for p in packages:
         this_pkg = __import__(p)
         params_dict[p + '_hash'] = this_pkg.__version__
+
+
+def fig2array(fig):
+    """Convert a Matplotlib figure to a 4D numpy array
+
+    Params
+    ------
+    fig:
+        A matplotlib figure
+
+    Return
+    ------
+        A numpy 3D array of RGBA values
+
+    Modified version of: http://www.icare.univ-lille1.fr/node/1141
+    """
+    # draw the renderer
+    fig.canvas.draw()
+
+    # Get the RGBA buffer from the figure
+    w, h = fig.canvas.get_width_height()
+    buf = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    buf.shape = (h, w, 3)
+
+    return buf

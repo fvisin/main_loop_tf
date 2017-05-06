@@ -16,8 +16,8 @@ from tqdm import tqdm
 
 import gflags
 import loss
-from main_utils import (apply_loss, compute_chunk_size, save_repos_hash,
-                        average_gradients, process_gradients)
+from utils import (apply_loss, compute_chunk_size, save_repos_hash,
+                   average_gradients, process_gradients)
 from config import dataset, flow, optimization, misc  # noqa
 
 FLAGS = gflags.FLAGS
