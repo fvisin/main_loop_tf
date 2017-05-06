@@ -176,6 +176,8 @@ def save_images(img_queue, save_basedir):
     cfg = gflags.cfg
 
     while True:
+        if cfg.sv.should_stop() and img_queue.empty():
+            break
         try:
             (epoch_id, this_set, x_batch, y_batch, f_batch, subset,
              raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
