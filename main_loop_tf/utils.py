@@ -3,6 +3,7 @@ import gflags
 import sys
 
 import matplotlib
+import numpy as np
 # Initialize numpy's random seed
 # import settings  # noqa
 
