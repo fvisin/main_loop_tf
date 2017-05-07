@@ -28,7 +28,7 @@ gflags.DEFINE_bool('do_validation_only', False, 'If True does one round '
                    'of validation')
 gflags.DEFINE_bool('summary_sublayer', False, 'If True groups summaries '
                    'with two layers deep')
-gflags.DEFINE_integer('train_summary_freq', 1,
+gflags.DEFINE_integer('train_summary_freq', 10,
                       'How frequent save train summaries (in steps)')
-gflags.DEFINE_integer('val_summary_freq', 1,
+gflags.DEFINE_integer('val_summary_freq', 10,
                       'How frequent save validation summaries (in steps)')
