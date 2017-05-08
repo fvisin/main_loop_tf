@@ -80,9 +80,10 @@ def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
 
 
 def apply_l2_penalty(loss, weight_decay):
-    reg_losses = tf.losses.get_regularization_losses()
-    if len(reg_losses):
-        l2_penalty = tf.add_n(reg_losses)
+    with tf.variable_scope('L2_regularization'):
+        trainable_variables = tf.trainable_variables()
+        l2_penalty = tf.add_n([tf.nn.l2_loss(v) for v in trainable_variables
+                               if 'bias' not in v.name])
         loss += l2_penalty * weight_decay
 
     return loss
