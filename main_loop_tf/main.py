@@ -277,8 +277,9 @@ def __run(build_model):
         val_placeholders = [val_inputs, labels, inputs_split_dim,
                             labels_split_dim]
 
-        # Put the model parameters on the FIRST device only
-        with tf.device(cfg.devices[0]):
+        # Model parameters on the FIRST device specified in cfg.devides
+        # Gradient Average and the rest on the operations are on CPU
+        with tf.device('/cpu:0'):
             # Model compilation
             # -----------------
             train_outs, train_summary_op, train_reset_cm_op = build_graph(
@@ -307,11 +308,11 @@ def __run(build_model):
                             [2, -1])))
                 sum_text_op = tf.summary.merge(sum_text)
 
-        # Group global and local init into one op. Could be split into
-        # two different ops and passed to `init_op` and `local_init_op`
-        init_op = tf.group(tf.global_variables_initializer(),
-                           tf.local_variables_initializer())
-        saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
+            # Group global and local init into one op. Could be split into
+            # two different ops and passed to `init_op` and `local_init_op`
+            init_op = tf.group(tf.global_variables_initializer(),
+                               tf.local_variables_initializer())
+            saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
 
         sv = Supervisor(
             graph=graph,
@@ -411,8 +412,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             summaries[k] = tf.get_collection_ref(key='val_' + k + '_summaries')
     tower_suffix = 'train' if is_training else 'val'
 
-    # TODO how come the enumerate can work in this context? The list is
-    # symbolic, isn't it?
+    # inputs_per_gpu, labels_per_gpu are lists
     for dev_idx, (dev_inputs, dev_labels) in enumerate(zip(inputs_per_gpu,
                                                            labels_per_gpu)):
         with tf.device(devices[dev_idx]):
@@ -420,7 +420,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             with tf.name_scope('GPU{}_{}'.format(dev_idx, tower_suffix)):
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
 
-                    net_out = build_model(inputs, is_training)
+                    net_out = build_model(dev_inputs, is_training)
                     softmax_pred = slim.softmax(net_out)
                     tower_soft_preds.append(softmax_pred)
 
@@ -435,7 +435,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                     if (loss_fn is not
                             tf.nn.sparse_softmax_cross_entropy_with_logits):
                         net_out = softmax_pred
-                    loss = apply_loss(labels, net_out, loss_fn,
+                    loss = apply_loss(dev_labels, net_out, loss_fn,
                                       weight_decay, is_training,
                                       return_mean_loss=True)
                     tower_losses.append(loss)
