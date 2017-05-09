@@ -2,15 +2,6 @@ import gflags
 
 
 # ============ Flow control
-#         # early_stop_metric='subsets_avg_val_jaccard_fg',
-#         # early_stop_strategy='max',
-#         # val_every_batches=None,  # validate every n batches (else epoch)
-gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
-                      'to keep', lower_bound=0)
-gflags.DEFINE_string('checkpoints_dir', './checkpoints', 'The path where '
-                     'the model checkpoints are stored')
-gflags.DEFINE_string('tmp_path', './models/tmp_', 'Where to save temporary '
-                     'stuff')
 gflags.DEFINE_integer('val_every_epochs', 1, 'Validation frequency, in epochs',
                       lower_bound=1)
 gflags.DEFINE_spaceseplist('val_on_sets', 'valid', 'On which sets to '
@@ -26,9 +17,7 @@ gflags.DEFINE_integer('patience', 100, 'The number of validation with no '
                       lower_bound=1)
 gflags.DEFINE_bool('do_validation_only', False, 'If True does one round '
                    'of validation')
-gflags.DEFINE_bool('summary_sublayer', False, 'If True groups summaries '
-                   'with two layers deep')
-gflags.DEFINE_integer('train_summary_freq', 10,
-                      'How frequent save train summaries (in steps)')
-gflags.DEFINE_integer('val_summary_freq', 10,
-                      'How frequent save validation summaries (in steps)')
+# Other flags we might want to define (see also config/misc.py):
+# early_stop_metric='subsets_avg_val_jaccard_fg',
+# early_stop_strategy='max',
+# val_every_batches=None,  # validate every n batches (else epoch)

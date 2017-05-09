@@ -238,7 +238,7 @@ def save_images(img_queue, save_basedir):
                     heat_map_in = raw_data
 
                 # PRINT THE HEATMAP
-                if cfg.save_heatmap:
+                if cfg.save_heatmap_summaries:
                     # do not pass optical flow
                     save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
                                     nclasses, save_basedir, subset, f,
@@ -250,7 +250,8 @@ def save_images(img_queue, save_basedir):
                 # y_pred = y_pred.argmax(2)
 
                 # Save image and append frame to animations sequence
-                if cfg.save_samples:
+                if (cfg.save_gif_frames_on_disk or cfg.save_samples_summaries
+                        or cfg.save_gif_on_disk):
                     if raw_data.ndim == 4:
                         sample_in = raw_data[seq_length // 2]
                         y_in = y[seq_length // 2]
@@ -323,11 +324,11 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir, subset,
     grid.cbar_axes[0].colorbar(im)
     for cax in grid.cbar_axes:
         cax.toggle_label(False)
-    if cfg.save_images_on_disk:
-        fpath = os.path.join(save_basedir, 'heatmaps', subset, f)
-        if not os.path.exists(os.path.dirname(fpath)):
-            os.makedirs(os.path.dirname(fpath))
-        plt.savefig(fpath)  # save 3 subplots
+    # Uncomment to save the heatmaps on disk
+    # fpath = os.path.join(save_basedir, 'heatmaps', subset, f)
+    # if not os.path.exists(os.path.dirname(fpath)):
+    #     os.makedirs(os.path.dirname(fpath))
+    # plt.savefig(fpath)  # save 3 subplots
 
     sio = StringIO()
     plt.imsave(sio, fig2array(fig), format='png')
@@ -399,28 +400,29 @@ def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
 
     # TODO: Labels 45 gradi
 
-    if cfg.save_images_on_disk:
+    if cfg.save_gif_frames_on_disk:
         fpath = os.path.join(save_basedir, 'segmentations', subset, f)
         if not os.path.exists(os.path.dirname(fpath)):
             os.makedirs(os.path.dirname(fpath))
         plt.savefig(fpath)  # save 3 subplots
 
-    sio = StringIO()
-    plt.imsave(sio, fig2array(fig), format='png')
-    # size = fig.get_size_inches()*fig.dpi  # size in pixels
-    seq_img = tf.Summary.Image(encoded_image_string=sio.getvalue())
-    seq_img_summary = tf.Summary.Value(tag='Predictions/' + subset,
-                                       image=seq_img)
+    if cfg.save_sample_summaries:
+        sio = StringIO()
+        plt.imsave(sio, fig2array(fig), format='png')
+        # size = fig.get_size_inches()*fig.dpi  # size in pixels
+        seq_img = tf.Summary.Image(encoded_image_string=sio.getvalue())
+        seq_img_summary = tf.Summary.Value(tag='Predictions/' + subset,
+                                           image=seq_img)
 
-    summary_str = tf.Summary(value=[seq_img_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str)
+        summary_str = tf.Summary(value=[seq_img_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str)
 
-    if cfg.save_images_on_disk:
+    if cfg.save_gif_on_disk:
         save_animation_frame(fig2array(fig), subset, save_basedir)
     plt.close('all')
 
     # save predictions
-    if cfg.save_raw_predictions:
+    if cfg.save_raw_predictions_on_disk:
         # plt.imshow(y_pred, vmin=0, vmax=nclasses)
         # fpath = os.path.join('samples', model_name, 'predictions',
         #                      f)
