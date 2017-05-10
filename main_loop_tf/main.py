@@ -774,6 +774,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
         pbar.close()
         # exit epochs loop
         if estop or last_epoch:
+            sv.request_stop()
             break
 
     max_valid_idx = np.argmax(np.array(history_acc))
