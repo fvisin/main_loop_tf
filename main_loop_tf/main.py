@@ -639,7 +639,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     start = time()
     print("Beginning main loop...")
     loss_value = 0
-    for epoch_id in range(init_step, max_epochs):
+    while not sv.should_stop():
+        epoch_id = sv.global_step.eval(cfg.sess)
         pbar = tqdm(total=train.nbatches)
         epoch_start = time()
 
