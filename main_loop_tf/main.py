@@ -100,6 +100,16 @@ def __parse_config(argv=None):
     save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                  'dataset_loaders',
                                                  'main_loop_tf'])
+
+    # Change the checkpoints directory if the model has not to be restored
+    if not cfg.restore_model:
+        incr_num = 0
+        logdir = cfg.checkpoints_dir + '_' + str(incr_num)
+        while(os.path.exists(logdir)):
+            incr_num += 1
+            logdir = logdir[:-2] + '_' + str(incr_num)
+        cfg.checkpoints_dir = logdir
+
     cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
                                        cfg.hash)
     cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
@@ -390,7 +400,8 @@ def __run(build_model):
                                    'Dataset': cfg.Dataset,
                                    'dataset_params': cfg.dataset_params,
                                    'valid_params': cfg.valid_params,
-                                   'sv': sv}
+                                   'sv': sv,
+                                   'saver': saver}
                 return main_loop(**main_loop_kwags)
             else:
                 # Perform validation only
@@ -633,7 +644,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
               val_outs, val_summary_ops, val_reset_cm_op, loss_fn, Dataset,
-              dataset_params, valid_params, sv):
+              dataset_params, valid_params, sv, saver):
 
     # Add TqdmHandler
     handler = TqdmHandler()
@@ -776,6 +787,9 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 checkpoint_path = os.path.join(cfg.checkpoints_dir,
                                                '{}_best.ckpt'.format(
                                                    cfg.model_name))
+
+                saver.save(cfg.sess, checkpoint_path,
+                           global_step=cfg.global_step)
                 t_save = time() - t_save
                 tf.logging.info('Checkpoint saved in {}s'.format(t_save))
 
