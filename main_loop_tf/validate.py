@@ -238,7 +238,7 @@ def save_images(img_queue, save_basedir):
                     heat_map_in = raw_data
 
                 # PRINT THE HEATMAP
-                if cfg.save_heatmap_summaries:
+                if cfg.show_heatmaps_summaries:
                     # do not pass optical flow
                     save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
                                     nclasses, save_basedir, subset, f,
@@ -250,7 +250,7 @@ def save_images(img_queue, save_basedir):
                 # y_pred = y_pred.argmax(2)
 
                 # Save image and append frame to animations sequence
-                if (cfg.save_gif_frames_on_disk or cfg.save_samples_summaries
+                if (cfg.save_gif_frames_on_disk or cfg.show_samples_summaries
                         or cfg.save_gif_on_disk):
                     if raw_data.ndim == 4:
                         sample_in = raw_data[seq_length // 2]
@@ -406,7 +406,7 @@ def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
             os.makedirs(os.path.dirname(fpath))
         plt.savefig(fpath)  # save 3 subplots
 
-    if cfg.save_sample_summaries:
+    if cfg.show_sample_summaries:
         sio = StringIO()
         plt.imsave(sio, fig2array(fig), format='png')
         # size = fig.get_size_inches()*fig.dpi  # size in pixels

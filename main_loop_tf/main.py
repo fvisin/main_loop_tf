@@ -18,7 +18,7 @@ import gflags
 import loss
 from utils import (apply_loss, compute_chunk_size, save_repos_hash,
                    average_gradients, process_gradients)
-from config import dataset, flow, optimization, misc  # noqa
+import config
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
@@ -510,7 +510,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
                         var_name = variable.name.replace(":", "_")
                         var_name = var_name.replace(
                             cfg.model_name+"/", "")
-                        if cfg.summary_sublayer and var_name.count('/') >= 2:
+                        if cfg.group_summaries and var_name.count('/') >= 2:
                             var_name = var_name.replace("/", "_", 1)
                         summaries["training"].append(
                             tf.summary.histogram("Tower%d_Gradients_%s" %
@@ -579,7 +579,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
         # Add the histograms for trainable variables
         for var in tf.trainable_variables():
             var_name = var.op.name.replace(cfg.model_name+'/', "")
-            if cfg.summary_sublayer and var_name.count('/') >= 2:
+            if cfg.group_summaries and var_name.count('/') >= 2:
                 var_name = var_name.replace("/", "_", 1)
             var_name = 'Variables_' + var_name
             summaries['training'].append(tf.summary.histogram(var_name, var))
