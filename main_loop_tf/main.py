@@ -626,10 +626,9 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
         **dataset_params)
 
     # Setup loop parameters
-    init_step = 0  # TODO do we need this? Can we get it out of the checkpoints
+    cum_iter = sv.global_step.eval(cfg.sess)
     val_skip = cfg.val_skip
     patience_counter = 0
-    cum_iter = 0
     estop = False
     end_of_epoch = False
     last_epoch = False
@@ -640,12 +639,12 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     print("Beginning main loop...")
     loss_value = 0
     while not sv.should_stop():
-        epoch_id = sv.global_step.eval(cfg.sess)
         pbar = tqdm(total=train.nbatches)
         epoch_start = time()
+        epoch_id = cum_iter // train.nbatches
 
         for batch_id in range(train.nbatches):
-            cum_iter += 1
+            cum_iter = sv.global_step.eval(cfg.sess)
             iter_start = time()
 
             # inputs and labels
