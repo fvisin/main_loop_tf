@@ -18,7 +18,13 @@ import gflags
 import loss
 from utils import (apply_loss, compute_chunk_size, save_repos_hash,
                    average_gradients, process_gradients)
-import config
+# config module load all flags from source files
+import config  # noqa
+
+import cv2
+import pygtk  # noqa
+import gtk
+gtk.gdk.threads_init()
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
@@ -113,8 +119,14 @@ def __parse_config(argv=None):
         dataset_params['overlap'] = cfg.overlap
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
+
         cfg.input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
         cfg.val_input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
+
+        if cfg.of:
+            cfg.input_shape[-1] = 6
+            cfg.val_input_shape[-1] = 6
+
         if cfg.crop_size:
             cfg.input_shape[2:4] = cfg.crop_size
         ret_ext_seq = cfg.return_extended_sequences
@@ -643,6 +655,9 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                            '[{elapsed}<{remaining},'
                            '{rate_fmt}{postfix}]')
 
+    if cfg.debug_of:
+        cv2.namedWindow("rgb-optflow")
+
     while not sv.should_stop():
         epoch_start = time()
         epoch_id = cum_iter // train.nbatches
@@ -658,8 +673,16 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             # sh = inputs.shape  # do NOT provide a list of shapes
             x_in = x_batch
             y_in = y_batch.flatten()
-            # if cfg.use_second_path:
-            #    x_in = [x_batch[..., :3], x_in[..., 3:]]
+            if cfg.debug_of:
+                for x_b in x_in:
+                    for x_frame in x_b:
+                        rgb_of_frame = np.concatenate(
+                            [x_frame[..., :3], x_frame[..., 3:]],
+                            axis=1).astype(np.float32)
+                        rgb_of_frame = cv2.cvtColor(rgb_of_frame,
+                                                    cv2.COLOR_RGB2BGR)
+                        cv2.imshow("rgb-optflow", rgb_of_frame)
+                        cv2.waitKey(100)
             # reset_states(model, sh)
 
             # TODO evaluate if it's possible to pass num_splits inputs in

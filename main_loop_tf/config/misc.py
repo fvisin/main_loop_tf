@@ -7,6 +7,9 @@ gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
 gflags.DEFINE_string('checkpoints_dir', './checkpoints', 'The path where '
                      'the model checkpoints are stored')
 gflags.DEFINE_list('devices', ['/cpu:0'], 'A list of devices to use')
+gflags.DEFINE_bool('debug_of', False,
+                   'Show rgb and optical flow of each batch in a window')
+
 # gflags.DEFINE_bool('restore_model', False, 'Whether to reload the weights of '
 #                    'the model')
 

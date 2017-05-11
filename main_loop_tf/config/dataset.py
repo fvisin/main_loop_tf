@@ -6,7 +6,7 @@ from main_loop_tf import gflags_ext
 gflags.DEFINE_integer('batch_size', 1, 'The batch size', lower_bound=0)
 gflags_ext.DEFINE_intlist('crop_size', None, 'The training crop-size')
 gflags.DEFINE_string('dataset', None, 'The dataset')
-gflags.DEFINE_bool('of', False, 'Whether to have the optical flow as an input')
+gflags.DEFINE_string('of', None, 'Whether to have the opt flow as an input')
 gflags.DEFINE_integer('seq_length', None, 'The length of the sequence, in '
                       'case the input is a video', lower_bound=0)
 gflags.DEFINE_integer('seq_per_subset', None, 'Limit the number of sequences '

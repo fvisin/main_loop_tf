@@ -253,8 +253,8 @@ def save_images(img_queue, save_basedir):
                 # y_pred = y_pred.argmax(2)
 
                 # Save image and append frame to animations sequence
-                if (cfg.save_gif_frames_on_disk or cfg.show_samples_summaries
-                        or cfg.save_gif_on_disk):
+                if (cfg.save_gif_frames_on_disk or
+                   cfg.show_samples_summaries or cfg.save_gif_on_disk):
                     if raw_data.ndim == 4:
                         sample_in = raw_data[seq_length // 2]
                         y_in = y[seq_length // 2]
