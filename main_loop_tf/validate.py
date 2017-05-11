@@ -87,7 +87,7 @@ def validate(placeholders,
                         pass
                         # reset_states(model, x_batch.shape)
                     if prev_subset is not None:  # skip at the beginning
-                        write_subset_summary(mIoUs, prev_subset)
+                        write_subset_summary(mIoUs, prev_subset, step=bidx)
                     prev_subset = subset
 
             # TODO remove duplication of code
@@ -123,7 +123,8 @@ def validate(placeholders,
                     (y_pred_batch, y_soft_batch, mIoU, loss,
                      _, summary_str) = cfg.sess.run(
                          eval_outs + [val_summary_op], feed_dict=feed_dict)
-                    cfg.sv.summary_computed(cfg.sess, summary_str)
+                    cfg.sv.summary_computed(cfg.sess, summary_str,
+                                            global_step=bidx)
                 else:
                     (y_pred_batch, y_soft_batch, mIoU, loss,
                      _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
@@ -149,27 +150,27 @@ def validate(placeholders,
             #
             # Save image summary for learning visualization
             # import ipdb; ipdb.set_trace()
-            img_queue.put((epoch_id, this_set, x_batch, y_batch, f_batch,
+            img_queue.put((bidx, this_set, x_batch, y_batch, f_batch,
                            subset, raw_data_batch, y_pred_batch,
                            y_soft_batch))
         # Write the last video summary
-        write_subset_summary(mIoUs, prev_subset)
+        write_subset_summary(mIoUs, prev_subset, step=bidx)
 
         # Compute the aggregate metric
         mean_IoU = np.mean(mIoUs.values())
         mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
                                         simple_value=mean_IoU)
         summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
         return mean_IoU
 
 
-def write_subset_summary(mIoUs, subset):
+def write_subset_summary(mIoUs, subset, step=None):
     cfg = gflags.cfg
     mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
                                     simple_value=mIoUs[subset])
     summary_str = tf.Summary(value=[mIou_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str)
+    cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
 
 def save_images(img_queue, save_basedir):
@@ -181,7 +182,7 @@ def save_images(img_queue, save_basedir):
         if cfg.sv.should_stop() and img_queue.empty():
             break
         try:
-            (epoch_id, this_set, x_batch, y_batch, f_batch, subset,
+            (bidx, this_set, x_batch, y_batch, f_batch, subset,
              raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
 
             cfg = gflags.cfg
@@ -244,7 +245,7 @@ def save_images(img_queue, save_basedir):
                     # do not pass optical flow
                     save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
                                     nclasses, save_basedir, subset, f,
-                                    epoch_id)
+                                    bidx)
 
                 # PRINT THE SAMPLES
                 # Keep most likely prediction only
@@ -262,7 +263,7 @@ def save_images(img_queue, save_basedir):
                         y_in = y
                     save_samples_and_animations(sample_in, of, y_pred, y_in,
                                                 cmap, nclasses, labels, subset,
-                                                save_basedir, f, epoch_id)
+                                                save_basedir, f, bidx)
                 # return animations
         except Queue.Empty:
             continue
@@ -276,7 +277,7 @@ def save_images(img_queue, save_basedir):
 
 
 def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir, subset,
-                    f, epoch_id):
+                    f, bidx):
     '''Save an image of the probability of each class
 
     Save the image and the heatmap of the probability of each class'''
@@ -341,13 +342,13 @@ def save_heatmap_fn(x, of, y_soft_pred, labels, nclasses, save_basedir, subset,
     heatmap_img_summary = tf.Summary.Value(tag='Heatmaps/' + subset,
                                            image=heatmap_img)
     summary_str = tf.Summary(value=[heatmap_img_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str)
+    cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
 
     plt.close('all')
 
 
 def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
-                                labels, subset, save_basedir, f, epoch_id):
+                                labels, subset, save_basedir, f, bidx):
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import AxesGrid
     from StringIO import StringIO
@@ -417,7 +418,7 @@ def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
                                            image=seq_img)
 
         summary_str = tf.Summary(value=[seq_img_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
 
     if cfg.save_gif_on_disk:
         save_animation_frame(fig2array(fig), subset, save_basedir)

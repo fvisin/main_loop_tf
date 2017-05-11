@@ -377,7 +377,6 @@ def __run(build_model):
                         val_outs,
                         val_summary_ops[s],
                         val_reset_cm_op,
-                        0,
                         which_set=s)
 
 
