@@ -638,8 +638,13 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     start = time()
     print("Beginning main loop...")
     loss_value = 0
+    pbar = tqdm(total=train.nbatches,
+                bar_format='{n_fmt}/{total_fmt}{desc}'
+                           '{percentage:3.0f}%|{bar}| '
+                           '[{elapsed}<{remaining},'
+                           '{rate_fmt}{postfix}]')
+
     while not sv.should_stop():
-        pbar = tqdm(total=train.nbatches)
         epoch_start = time()
         epoch_id = cum_iter // train.nbatches
 
@@ -688,12 +693,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
-            pbar.set_description('Epoch {:4d} Iter {:4d} {:.3f}s (D {:.3f}s)'
-                                 ', Loss {:.4f}'.format(epoch_id,
-                                                        cum_iter,
-                                                        t_iter,
-                                                        t_data_load,
-                                                        loss_value))
+            pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
+                                                          epoch_id))
+            pbar.set_postfix({'D': '{:.2f}s'.format(t_data_load),
+                              'loss': '{:.3f}'.format(loss_value)})
             pbar.update(1)
 
             # Verify if it's the end of the epoch
@@ -738,8 +741,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         val_outs,
                         val_summary_ops[s],
                         val_reset_cm_op,
-                        epoch_id,
-                        which_set=s)
+                        which_set=s,
+                        epoch_id=epoch_id)
 
                 # TODO gsheet
                 history_acc.append([mean_iou.get('valid')])

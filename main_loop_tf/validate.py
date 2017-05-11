@@ -20,8 +20,8 @@ def validate(placeholders,
              eval_outs,
              val_summary_op,
              val_reset_cm_op,
-             epoch_id,
-             which_set='valid'):
+             which_set='valid',
+             epoch_id=None):
         cfg = gflags.cfg
         if getattr(cfg.valid_params, 'resize_images', False):
             warn('Forcing resize_images to False in evaluation.')
@@ -54,7 +54,12 @@ def validate(placeholders,
 
         # Begin loop over dataset samples
         tot_loss = 0
-        pbar = tqdm(total=this_set.nbatches)
+        epoch_id = 'Ep ' + str(epoch_id) + ': ' if epoch_id else ''
+        pbar = tqdm(total=this_set.nbatches,
+                    bar_format='{n_fmt}/{total_fmt} ' + epoch_id +
+                               '{percentage:3.0f}%|{bar}| '
+                               '[{elapsed}<{remaining},'
+                               '{rate_fmt} {postfix}]')
         prev_subset = None
         mIoUs = {}
         for bidx in range(this_set.nbatches):
@@ -127,19 +132,16 @@ def validate(placeholders,
                 # last value
                 mIoUs[subset] = mIoU
 
-                eval_iter_el_time = time.time() - start_val_time
-                pbar.set_description('Time: {:.3f}, Loss: {:.3f} ({:.3f}), '
-                                     'Mean IoU: {:.3f}'.format(
-                                         eval_iter_el_time, loss,
-                                         tot_loss/bidx, mIoU))
+                pbar.set_postfix({
+                    'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/bidx),
+                    'mIoU': '{:.3f}'.format(mIoU)})
             else:
                 y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
                     eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
                 mIoU = 0
                 summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
-                cfg.sv.summary_computed(cfg.sess, summary_str)
-                eval_iter_el_time = time.time() - start_val_time
-                pbar.set_description('Time: %f' % (eval_iter_el_time))
+                cfg.sv.summary_computed(cfg.sess, summary_str,
+                                        global_step=bidx)
             pbar.update(1)
             # TODO there is no guarantee that this will be processed
             # in order. We could use condition variables, e.g.,
