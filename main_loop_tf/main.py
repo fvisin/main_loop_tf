@@ -689,10 +689,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
             t_iter = time() - iter_start
 
-            pbar.set_description('Batch {:4d}/{:4d}({:4d}) {:.3f}s (D {:.3f}s)'
-                                 ', Loss {:.4f}'.format(batch_id + 1,
-                                                        train.nbatches,
-                                                        cum_iter, t_iter,
+            pbar.set_description('Epoch {:4d} Iter {:4d} {:.3f}s (D {:.3f}s)'
+                                 ', Loss {:.4f}'.format(epoch_id,
+                                                        cum_iter,
+                                                        t_iter,
                                                         t_data_load,
                                                         loss_value))
             pbar.update(1)
