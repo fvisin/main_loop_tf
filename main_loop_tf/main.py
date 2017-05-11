@@ -22,9 +22,16 @@ from utils import (apply_loss, compute_chunk_size, save_repos_hash,
 import config  # noqa
 
 import cv2
-import pygtk  # noqa
-import gtk
-gtk.gdk.threads_init()
+try:
+    import pygtk  # noqa
+    import gtk
+    gtk.gdk.threads_init()
+except:
+    import warnings
+    warnings.warn('pygtk is not installed, it will not be possible to '
+                  'debug the optical flow')
+    pygtk = None
+    gtk = None
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
@@ -655,7 +662,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                            '[{elapsed}<{remaining},'
                            '{rate_fmt}{postfix}]')
 
-    if cfg.debug_of:
+    if pygtk and cfg.debug_of:
         cv2.namedWindow("rgb-optflow")
 
     while not sv.should_stop():
@@ -673,7 +680,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             # sh = inputs.shape  # do NOT provide a list of shapes
             x_in = x_batch
             y_in = y_batch.flatten()
-            if cfg.debug_of:
+            if pygtk and cfg.debug_of:
                 for x_b in x_in:
                     for x_frame in x_b:
                         rgb_of_frame = np.concatenate(
