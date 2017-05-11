@@ -406,7 +406,7 @@ def save_samples_and_animations(raw_data, of, y_pred, y, cmap, nclasses,
             os.makedirs(os.path.dirname(fpath))
         plt.savefig(fpath)  # save 3 subplots
 
-    if cfg.show_sample_summaries:
+    if cfg.show_samples_summaries:
         sio = StringIO()
         plt.imsave(sio, fig2array(fig), format='png')
         # size = fig.get_size_inches()*fig.dpi  # size in pixels
