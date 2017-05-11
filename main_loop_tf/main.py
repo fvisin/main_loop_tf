@@ -79,17 +79,21 @@ def __parse_config(argv=None):
     # ============ gsheet
     # Save params for log, excluding non JSONable and not interesting objects
     exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
-                    'debug', 'devices', 'do_validation_only', 'help',
-                    'min_epochs', 'max_epochs', 'nthreads', 'num_gpus',
-                    'num_cpus', 'num_splits', 'patience', 'restore_model',
-                    'use_threads', 'val_on_sets', 'val_skip_first',
-                    'val_every_epochs' 'vgg_weights_file']
+                    'debug', 'debug_of', 'devices', 'do_validation_only',
+                    'group_summaries', 'help', 'hyperparams_summaries',
+                    'max_epochs', 'min_epochs', 'model_name', 'nthreads',
+                    'patience', 'return_middle_frame_only', 'restore_model',
+                    'save_gif_frames_on_disk', 'save_gif_on_disk',
+                    'save_raw_predictions_on_disk', 'show_heatmaps_summaries',
+                    'show_samples_summaries', 'supervisor_master',
+                    'thresh_loss', 'train_summary_freq', 'use_threads',
+                    'val_every_epochs', 'val_on_sets', 'val_skip_first',
+                    'val_summary_freq']
     param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
                   if k not in exclude_list}
     h = hashlib.md5()
     h.update(str(param_dict))
-    h = h.hexdigest()
-    cfg.hash = h
+    cfg.hash = h.hexdigest()
     save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                  'dataset_loaders',
                                                  'main_loop_tf'])
