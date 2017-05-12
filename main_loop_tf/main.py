@@ -660,11 +660,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     start = time()
     print("Beginning main loop...")
     loss_value = 0
-    pbar = tqdm(total=train.nbatches,
-                bar_format='{n_fmt}/{total_fmt}{desc}'
-                           '{percentage:3.0f}%|{bar}| '
-                           '[{elapsed}<{remaining},'
-                           '{rate_fmt}{postfix}]')
 
     if pygtk and cfg.debug_of:
         cv2.namedWindow("rgb-optflow")
@@ -672,6 +667,11 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     while not sv.should_stop():
         epoch_start = time()
         epoch_id = cum_iter // train.nbatches
+        pbar = tqdm(total=train.nbatches,
+                    bar_format='{n_fmt}/{total_fmt}{desc}'
+                               '{percentage:3.0f}%|{bar}| '
+                               '[{elapsed}<{remaining},'
+                               '{rate_fmt}{postfix}]')
 
         for batch_id in range(train.nbatches):
             cum_iter = sv.global_step.eval(cfg.sess)
@@ -724,7 +724,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 sv.summary_computed(cfg.sess, summary_str)
             else:
                 loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
-            t_iter = time() - iter_start
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id))
@@ -747,10 +746,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 if (epoch_id >= cfg.min_epochs and
                         patience_counter >= cfg.patience):
                     estop = True
-
-                # Upgrade the summaries
-                # summary_str = cfg.sess.run(train_summary_op, feed_dict=feed_dict)
-                # sv.summary_computed(cfg.sess, summary_str)
 
                 t_epoch = time() - epoch_start
                 t_save = time() - epoch_end
