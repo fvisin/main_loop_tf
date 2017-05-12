@@ -27,7 +27,7 @@ def validate(placeholders,
             warn('Forcing resize_images to False in evaluation.')
             cfg.valid_params.update({'resize_images': False})
 
-        cfg.valid_params['batch_size'] *= cfg.num_gpus
+        cfg.valid_params['batch_size'] *= cfg.num_splits
         this_set = cfg.Dataset(
             which_set=which_set,
             **cfg.valid_params)
