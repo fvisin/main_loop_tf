@@ -21,147 +21,142 @@ def validate(placeholders,
              val_reset_cm_op,
              which_set='valid',
              epoch_id=None):
-        cfg = gflags.cfg
-        if getattr(cfg.valid_params, 'resize_images', False):
-            warn('Forcing resize_images to False in evaluation.')
-            cfg.valid_params.update({'resize_images': False})
+    cfg = gflags.cfg
+    if getattr(cfg.valid_params, 'resize_images', False):
+        warn('Forcing resize_images to False in evaluation.')
+        cfg.valid_params.update({'resize_images': False})
 
-        cfg.valid_params['batch_size'] *= cfg.num_splits
-        this_set = cfg.Dataset(
-            which_set=which_set,
-            **cfg.valid_params)
-        save_basedir = os.path.join('samples', cfg.model_name,
-                                    this_set.which_set)
-        img_queue = Queue.Queue(maxsize=25)
-        for _ in range(5):
-            t = threading.Thread(
-                target=save_images,
-                args=(img_queue, save_basedir))
-            t.setDaemon(True)  # Die when main dies
-            t.start()
-            cfg.sv.coord.register_thread(t)
+    cfg.valid_params['batch_size'] *= cfg.num_splits
+    this_set = cfg.Dataset(
+        which_set=which_set,
+        **cfg.valid_params)
+    save_basedir = os.path.join('samples', cfg.model_name,
+                                this_set.which_set)
+    img_queue = Queue.Queue(maxsize=25)
+    for _ in range(5):
+        t = threading.Thread(
+            target=save_images,
+            args=(img_queue, save_basedir))
+        t.setDaemon(True)  # Die when main dies
+        t.start()
+        cfg.sv.coord.register_thread(t)
 
-        # TODO posso distinguere training da valid??
-        # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
-        #                                        graph=cfg.sess.graph)
+    # TODO posso distinguere training da valid??
+    # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
+    #                                        graph=cfg.sess.graph)
 
-        # Re-init confusion matrix
-        # cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES,
-        #                        scope='mean_iou')
-        # cfg.sess.run([
-        #     tf.assign(cm, tf.zeros(tf.shape(cm), dtype=tf.int32))])
+    # Re-init confusion matrix
+    # cm = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='mean_iou')
+    # cfg.sess.run([tf.assign(cm, tf.zeros(tf.shape(cm), dtype=tf.int32))])
 
-        # Begin loop over dataset samples
-        tot_loss = 0
-        epoch_id = 'Ep ' + str(epoch_id+1) + ': ' if epoch_id else ''
-        pbar = tqdm(total=this_set.nbatches,
-                    bar_format='[' + which_set + '] {n_fmt}/{total_fmt} ' +
-                               epoch_id + '{percentage:3.0f}%|{bar}| '
-                               '[{elapsed}<{remaining},'
-                               '{rate_fmt} {postfix}]')
-        prev_subset = None
-        mIoUs = {}
-        for bidx in range(this_set.nbatches):
-            if cfg.sv.should_stop():
-                break
+    # Begin loop over dataset samples
+    tot_loss = 0
+    epoch_id = 'Ep ' + str(epoch_id+1) + ': ' if epoch_id else ''
+    pbar = tqdm(total=this_set.nbatches,
+                bar_format='[' + which_set + '] {n_fmt}/{total_fmt} ' +
+                           epoch_id + '{percentage:3.0f}%|{bar}| '
+                           '[{elapsed}<{remaining},'
+                           '{rate_fmt} {postfix}]')
+    prev_subset = None
+    mIoUs = {}
+    for bidx in range(this_set.nbatches):
+        if cfg.sv.should_stop():
+            break
 
-            ret = this_set.next()
-            x_batch, y_batch = ret['data'], ret['labels']
-            subset = ret['subset'][0]
-            f_batch = ret['filenames']
-            raw_data_batch = ret['raw_data']
+        ret = this_set.next()
+        x_batch, y_batch = ret['data'], ret['labels']
+        subset = ret['subset'][0]
+        f_batch = ret['filenames']
+        raw_data_batch = ret['raw_data']
 
-            # Reset the confusion matrix if we are switching video
-            if this_set.set_has_GT:
-                if not prev_subset or subset != prev_subset:
-                    tf.logging.info('Reset confusion matrix! {} --> {}'.format(
-                        prev_subset, subset))
-                    cfg.sess.run(val_reset_cm_op)
-                    if cfg.stateful_validation:
-                        if subset == 'default':
-                            raise RuntimeError(
-                                'For stateful validation, the validation '
-                                'dataset should provide `subset`')
-                        pass
-                        # reset_states(model, x_batch.shape)
-                    if prev_subset is not None:  # skip at the beginning
-                        write_subset_summary(mIoUs, prev_subset, step=bidx)
-                    prev_subset = subset
+        # Reset the confusion matrix if we are switching video
+        if this_set.set_has_GT and (not prev_subset or subset != prev_subset):
+                tf.logging.info('Reset confusion matrix! {} --> {}'.format(
+                    prev_subset, subset))
+                cfg.sess.run(val_reset_cm_op)
+                if cfg.stateful_validation:
+                    if subset == 'default':
+                        raise RuntimeError(
+                            'For stateful validation, the validation '
+                            'dataset should provide `subset`')
+                    pass
+                    # reset_states(model, x_batch.shape)
+                if prev_subset is not None:  # skip at the beginning
+                    write_subset_summary(mIoUs, prev_subset, step=bidx)
+                prev_subset = subset
 
-            # TODO remove duplication of code
-            # Compute the shape of the input chunk for each GPU
-            split_dim, lab_split_dim = compute_chunk_size(
-                x_batch.shape[0], np.prod(this_set.data_shape[:2]))
+        # TODO remove duplication of code
+        # Compute the shape of the input chunk for each GPU
+        split_dim, lab_split_dim = compute_chunk_size(
+            x_batch.shape[0], np.prod(this_set.data_shape[:2]))
 
-            if cfg.seq_length and cfg.seq_length > 1:
-                x_in = x_batch
-                y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
-            else:
-                x_in = x_batch
-                y_in = y_batch
+        if cfg.seq_length and cfg.seq_length > 1:
+            x_in = x_batch
+            y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
+        else:
+            x_in = x_batch
+            y_in = y_batch
 
-            # if cfg.use_second_path:
-            #     x_in = [x_in[..., :3], x_in[..., 3:]]
-            y_in = y_in.flatten()
-            in_values = [x_in, y_in, split_dim, lab_split_dim]
-            feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
+        # if cfg.use_second_path:
+        #     x_in = [x_in[..., :3], x_in[..., 3:]]
+        y_in = y_in.flatten()
+        in_values = [x_in, y_in, split_dim, lab_split_dim]
+        feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
 
-            if this_set.set_has_GT:
-                # Class balance
-                # class_balance_w = np.ones(np.prod(
-                #     mini_x.shape[:3])).astype(floatX)
-                # class_balance = loss_kwargs.get('class_balance', '')
-                # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
-                #     w_freq = loss_kwargs.get('w_freq')
-                #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
+        if this_set.set_has_GT:
+            # Class balance
+            # class_balance_w = np.ones(np.prod(
+            #     mini_x.shape[:3])).astype(floatX)
+            # class_balance = loss_kwargs.get('class_balance', '')
+            # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
+            #     w_freq = loss_kwargs.get('w_freq')
+            #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
 
-                # Get batch pred, mIoU so far, batch loss and potentially the
-                # summary
-                if bidx % cfg.val_summary_freq == 0:
-                    (y_pred_batch, y_soft_batch, mIoU, loss,
-                     _, summary_str) = cfg.sess.run(
-                         eval_outs + [val_summary_op], feed_dict=feed_dict)
-                    cfg.sv.summary_computed(cfg.sess, summary_str,
-                                            global_step=bidx)
-                else:
-                    (y_pred_batch, y_soft_batch, mIoU, loss,
-                     _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
-                tot_loss += loss
-                # mIoU is computed incrementally, so we just need the
-                # last value
-                mIoUs[subset] = mIoU
-
-                pbar.set_postfix({
-                    'val loss': '{:.3f}({:.3f})'.format(loss,
-                                                        tot_loss/(bidx+1)),
-                    'mIoU': '{:.3f}'.format(mIoU)})
-            else:
-                y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                    eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
-                mIoU = 0
-                summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+            # Get batch pred, mIoU so far, batch loss and potentially the
+            # summary
+            if bidx % cfg.val_summary_freq == 0:
+                (y_pred_batch, y_soft_batch, mIoU, loss,
+                 _, summary_str) = cfg.sess.run(
+                     eval_outs + [val_summary_op], feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=bidx)
-            pbar.update(1)
-            # TODO there is no guarantee that this will be processed
-            # in order. We could use condition variables, e.g.,
-            # http://python.active-venture.com/lib/condition-objects.html
-            #
-            # Save image summary for learning visualization
-            img_queue.put((bidx, this_set, x_batch, y_batch, f_batch,
-                           subset, raw_data_batch, y_pred_batch,
-                           y_soft_batch))
-        pbar.close()
-        # Write the last video summary
-        write_subset_summary(mIoUs, prev_subset, step=bidx)
+            else:
+                (y_pred_batch, y_soft_batch, mIoU, loss, _) = cfg.sess.run(
+                    eval_outs, feed_dict=feed_dict)
+            tot_loss += loss
+            # mIoU is computed incrementally, so we just need the
+            # last value
+            mIoUs[subset] = mIoU
 
-        # Compute the aggregate metric
-        mean_IoU = np.mean(mIoUs.values())
-        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
-                                        simple_value=mean_IoU)
-        summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
-        return mean_IoU
+            pbar.set_postfix({
+                'val loss': '{:.3f}({:.3f})'.format(loss,
+                                                    tot_loss/(bidx+1)),
+                'mIoU': '{:.3f}'.format(mIoU)})
+        else:
+            y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
+                eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
+            mIoU = 0
+            summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+        pbar.update(1)
+        # TODO there is no guarantee that this will be processed
+        # in order. We could use condition variables, e.g.,
+        # http://python.active-venture.com/lib/condition-objects.html
+        #
+        # Save image summary for learning visualization
+        img_queue.put((bidx, this_set, x_batch, y_batch, f_batch, subset,
+                       raw_data_batch, y_pred_batch, y_soft_batch))
+    pbar.close()
+    # Write the last video summary
+    write_subset_summary(mIoUs, prev_subset, step=bidx)
+
+    # Compute the aggregate metric
+    mean_IoU = np.mean(mIoUs.values())
+    mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
+                                    simple_value=mean_IoU)
+    summary_str = tf.Summary(value=[mIou_summary])
+    cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+    return mean_IoU
 
 
 def write_subset_summary(mIoUs, subset, step=None):
@@ -243,8 +238,7 @@ def save_images(img_queue, save_basedir):
                 if cfg.show_heatmaps_summaries:
                     # do not pass optical flow
                     save_heatmap_fn(heat_map_in, of, y_soft_pred, labels,
-                                    nclasses, save_basedir, subset, f,
-                                    bidx)
+                                    nclasses, save_basedir, subset, f, bidx)
 
                 # PRINT THE SAMPLES
                 # Keep most likely prediction only
@@ -253,7 +247,7 @@ def save_images(img_queue, save_basedir):
 
                 # Save image and append frame to animations sequence
                 if (cfg.save_gif_frames_on_disk or
-                   cfg.show_samples_summaries or cfg.save_gif_on_disk):
+                        cfg.show_samples_summaries or cfg.save_gif_on_disk):
                     if raw_data.ndim == 4:
                         sample_in = raw_data[seq_length // 2]
                         y_in = y[seq_length // 2]
@@ -263,7 +257,6 @@ def save_images(img_queue, save_basedir):
                     save_samples_and_animations(sample_in, of, y_pred, y_in,
                                                 cmap, nclasses, labels, subset,
                                                 save_basedir, f, bidx)
-                # return animations
         except Queue.Empty:
             continue
         except Exception as e:
