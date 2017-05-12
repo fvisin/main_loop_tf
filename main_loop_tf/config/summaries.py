@@ -1,5 +1,5 @@
 import gflags
-import gflags_ext
+from main_loop_tf import gflags_ext
 
 
 # Summaries and samples
