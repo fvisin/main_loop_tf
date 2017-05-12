@@ -60,6 +60,9 @@ def validate(placeholders,
                            '{rate_fmt} {postfix}]')
     prev_subset = None
     mIoUs = {}
+    # Reset Confusion Matrix at the beginning of validation
+    cfg.sess.run(val_reset_cm_op)
+
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():
             break
@@ -71,7 +74,9 @@ def validate(placeholders,
         raw_data_batch = ret['raw_data']
 
         # Reset the confusion matrix if we are switching video
-        if this_set.set_has_GT and (not prev_subset or subset != prev_subset):
+        if (this_set.set_has_GT and
+           (not prev_subset or subset != prev_subset) and
+           cfg.summary_per_subset):
                 tf.logging.info('Reset confusion matrix! {} --> {}'.format(
                     prev_subset, subset))
                 cfg.sess.run(val_reset_cm_op)
@@ -116,18 +121,23 @@ def validate(placeholders,
             # Get batch pred, mIoU so far, batch loss and potentially the
             # summary
             if bidx % cfg.val_summary_freq == 0:
-                (y_pred_batch, y_soft_batch, mIoU, loss,
-                 _, summary_str) = cfg.sess.run(
-                     eval_outs + [val_summary_op], feed_dict=feed_dict)
+                (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
+                 loss, _, summary_str) = cfg.sess.run(
+                 eval_outs + [val_summary_op], feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=bidx)
             else:
-                (y_pred_batch, y_soft_batch, mIoU, loss, _) = cfg.sess.run(
-                    eval_outs, feed_dict=feed_dict)
+                    (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
+                     loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
             tot_loss += loss
             # mIoU is computed incrementally, so we just need the
             # last value
-            mIoUs[subset] = mIoU
+
+            # When we have videos we want the IoU per subset and
+            # then average them
+            if cfg.summary_per_subset:
+                # we just consider foreground class
+                mIoUs[subset] = mIoU = per_class_IoU[1]
 
             pbar.set_postfix({
                 'val loss': '{:.3f}({:.3f})'.format(loss,
@@ -148,15 +158,36 @@ def validate(placeholders,
         img_queue.put((bidx, this_set, x_batch, y_batch, f_batch, subset,
                        raw_data_batch, y_pred_batch, y_soft_batch))
     pbar.close()
-    # Write the last video summary
-    write_subset_summary(mIoUs, prev_subset, step=bidx)
 
-    # Compute the aggregate metric
-    mean_IoU = np.mean(mIoUs.values())
-    mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
-                                    simple_value=mean_IoU)
-    summary_str = tf.Summary(value=[mIou_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+    if cfg.summary_per_subset:
+        # Write the last video summary
+        write_subset_summary(mIoUs, prev_subset, step=bidx)
+        # Compute the aggregate metrics
+        mean_IoU = np.mean(mIoUs.values())
+        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
+                                        simple_value=mean_IoU)
+        summary_str = tf.Summary(value=[mIou_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+
+    else:
+        # Write meanIou summary
+        mIou_summary = tf.Summary.Value(tag='mIoUs/mIoU',
+                                        simple_value=mIoU)
+        summary_str = tf.Summary(value=[mIou_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+
+        # Per class IoU summaries
+        for iou, label_name in zip(
+         per_class_IoU, this_set.mask_labels[:this_set.nclasses]):
+
+            per_class_iou_summary = tf.Summary.Value(
+                tag='mIoUs/per_class_IoU_{}'.format(label_name),
+                simple_value=iou)
+            summary_str = tf.Summary(value=[per_class_iou_summary])
+            cfg.sv.summary_computed(cfg.sess, summary_str,
+                                    global_step=bidx)
+        mean_IoU = mIoU
+
     return mean_IoU
 
 

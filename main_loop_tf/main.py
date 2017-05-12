@@ -19,6 +19,8 @@ import gflags
 import loss
 from utils import (apply_loss, compute_chunk_size, save_repos_hash,
                    average_gradients, process_gradients, TqdmHandler)
+from loss import mean_iou as compute_mean_iou
+
 # config module load all flags from source files
 import config  # noqa
 
@@ -89,7 +91,7 @@ def __parse_config(argv=None):
                     'show_samples_summaries', 'supervisor_master',
                     'thresh_loss', 'train_summary_freq', 'use_threads',
                     'val_every_epochs', 'val_on_sets', 'val_skip_first',
-                    'val_summary_freq']
+                    'val_summary_freq', 'summary_per_subset']
     param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
                   if k not in exclude_list}
     h = hashlib.md5()
@@ -567,13 +569,10 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     if len(cfg.void_labels):
         mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
     preds_flat = tf.reshape(preds, [-1])
-    m_iou, cm_update_op = tf.metrics.mean_iou(labels, preds_flat, nclasses,
-                                              mask)
+    m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
+        labels, preds_flat, nclasses, mask)
     # Compute the average *per variable* across the towers
     avg_tower_loss = tf.reduce_mean(tower_losses)
-    cm = tf.get_collection(ops.GraphKeys.LOCAL_VARIABLES,
-                           scope='mean_iou/total_confusion_matrix:0')[0]
-    reset_cm_op = tf.assign(cm, tf.zeros_like(cm, cm.dtype, 'reset_cm'))
 
     if is_training:
         # Impose graph dependency so that update operations are computed
@@ -628,8 +627,8 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
     if is_training:
         return [avg_tower_loss, train_op], train_summary_op, reset_cm_op
     else:
-        return ([preds, softmax_preds, m_iou, avg_tower_loss, cm_update_op],
-                val_summary_ops, reset_cm_op)
+        return ([preds, softmax_preds, m_iou, per_class_iou, avg_tower_loss,
+                 cm_update_op], val_summary_ops, reset_cm_op)
 
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
