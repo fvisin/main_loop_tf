@@ -651,7 +651,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     val_skip = cfg.val_skip
     patience_counter = 0
     estop = False
-    end_of_epoch = False
     last_epoch = False
     history_acc = np.array([]).tolist()
 
@@ -729,72 +728,65 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                               'loss': '{:.3f}'.format(loss_value)})
             pbar.update(1)
 
-            # Verify if it's the end of the epoch
-            if batch_id == train.nbatches - 1:
-                end_of_epoch = True
-                # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
-
-                # Is it also the last epoch?
-                if sv.should_stop() or epoch_id == max_epochs - 1:
-                    last_epoch = True
-
-                # Early stop if patience is over
-                patience_counter += 1
-                if (epoch_id >= cfg.min_epochs and
-                        patience_counter >= cfg.patience):
-                    estop = True
-
-            # TODO use tf.contrib.learn.monitors.ValidationMonitor?
-            # Validate if last iteration, early stop or we reached valid_every
-            if last_epoch or estop or (end_of_epoch and not val_skip):
-                end_of_epoch = False
-                # Validate
-                mean_iou = {}
-                from validate import validate
-                for s in cfg.val_on_sets:
-                    mean_iou[s] = validate(
-                        val_placeholders,
-                        val_outs,
-                        val_summary_ops[s],
-                        val_reset_cm_op,
-                        which_set=s,
-                        epoch_id=epoch_id)
-
-                # TODO gsheet
-                history_acc.append([mean_iou.get('valid')])
-
-                # Did we improve *validation* mean IOU accuracy?
-                best_hist = np.array(history_acc).max()
-                if (len(history_acc) == 0 or
-                   mean_iou.get('valid') >= best_hist):
-                    tf.logging.info('## Best model found! ##')
-                    t_save = time()
-                    checkpoint_path = os.path.join(cfg.checkpoints_dir,
-                                                   '{}_best.ckpt'.format(
-                                                       cfg.model_name))
-                    t_save = time() - t_save
-                    tf.logging.info('Checkpoint saved in {}s'.format(t_save))
-
-                    patience_counter = 0
-                    estop = False
-                # Start skipping again
-                val_skip = max(1, cfg.val_every_epochs) - 1
-
-                # exit minibatches loop
-                if estop:
-                    tf.logging.info('Early Stop!')
-                    break
-                if last_epoch:
-                    tf.logging.info('Last epoch!')
-                    break
-
-            elif end_of_epoch:
-                end_of_epoch = False
-                # We skipped validation, decrease the counter
-                val_skip -= 1
+        # It's the end of the epoch
         pbar.close()
-        # exit epochs loop
-        if estop or last_epoch:
+        # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
+
+        # Is it also the last epoch?
+        if sv.should_stop() or epoch_id == max_epochs - 1:
+            last_epoch = True
+
+        # Early stop if patience is over
+        patience_counter += 1
+        if (epoch_id >= cfg.min_epochs and
+                patience_counter >= cfg.patience):
+            estop = True
+
+        # TODO use tf.contrib.learn.monitors.ValidationMonitor?
+        # Validate if last epoch, early stop or we reached valid_every
+        if last_epoch or estop or not val_skip:
+            # Validate
+            mean_iou = {}
+            from validate import validate
+            for s in cfg.val_on_sets:
+                mean_iou[s] = validate(
+                    val_placeholders,
+                    val_outs,
+                    val_summary_ops[s],
+                    val_reset_cm_op,
+                    which_set=s,
+                    epoch_id=epoch_id)
+
+            # TODO gsheet
+            history_acc.append([mean_iou.get('valid')])
+
+            # Did we improve *validation* mean IOU accuracy?
+            best_hist = np.array(history_acc).max()
+            if (len(history_acc) == 0 or
+               mean_iou.get('valid') >= best_hist):
+                tf.logging.info('## Best model found! ##')
+                t_save = time()
+                checkpoint_path = os.path.join(cfg.checkpoints_dir,
+                                               '{}_best.ckpt'.format(
+                                                   cfg.model_name))
+                t_save = time() - t_save
+                tf.logging.info('Checkpoint saved in {}s'.format(t_save))
+
+                patience_counter = 0
+                estop = False
+            # Start skipping again
+            val_skip = max(1, cfg.val_every_epochs) - 1
+        else:
+            # We skipped validation, decrease the counter
+            val_skip -= 1
+
+        # Verify epochs' loop exit conditions
+        if estop:
+            tf.logging.info('Early Stop!')
+            sv.request_stop()
+            break
+        if last_epoch:
+            tf.logging.info('Last epoch!')
             sv.request_stop()
             break
 
