@@ -1,17 +1,20 @@
-import tensorflow as tf
-import gflags
+import logging
+from subprocess import check_output
 import sys
+from tqdm import tqdm
 
+import gflags
 import matplotlib
 import numpy as np
-# Initialize numpy's random seed
-# import settings  # noqa
-
-from subprocess import check_output
-from tensorflow.contrib.layers.python.layers.optimizers import(
+import tensorflow as tf
+from tensorflow.contrib.layers.python.layers.optimizers import (
     _clip_gradients_by_norm,
     _add_scaled_noise_to_gradients,
     _multiply_gradients)
+
+# Initialize numpy's random seed
+# import settings  # noqa
+
 
 # Force matplotlib not to use any Xwindows backend.
 matplotlib.use('Agg')
@@ -212,3 +215,13 @@ def fig2array(fig):
     buf.shape = (h, w, 3)
 
     return buf
+
+
+class TqdmHandler(logging.StreamHandler):
+    # From https://github.com/tqdm/tqdm/issues/193#issuecomment-233212170
+    def __init__(self):
+        logging.StreamHandler.__init__(self)
+
+    def emit(self, record):
+        msg = self.format(record)
+        tqdm.write(msg)

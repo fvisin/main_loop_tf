@@ -1,5 +1,6 @@
 from copy import deepcopy
 import hashlib
+import logging
 import os
 import sys
 from time import time
@@ -17,7 +18,7 @@ from tqdm import tqdm
 import gflags
 import loss
 from utils import (apply_loss, compute_chunk_size, save_repos_hash,
-                   average_gradients, process_gradients)
+                   average_gradients, process_gradients, TqdmHandler)
 # config module load all flags from source files
 import config  # noqa
 
@@ -634,6 +635,13 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
               val_outs, val_summary_ops, val_reset_cm_op, loss_fn, Dataset,
               dataset_params, valid_params, sv):
+
+    # Add TqdmHandler
+    handler = TqdmHandler()
+    handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT, None))
+    logger = logging.getLogger('tensorflow')
+    del(logger.handlers[0])  # Remove the default handler
+    logger.addHandler(handler)
 
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs

@@ -21,6 +21,7 @@ def validate(placeholders,
              val_reset_cm_op,
              which_set='valid',
              epoch_id=None):
+
     cfg = gflags.cfg
     if getattr(cfg.valid_params, 'resize_images', False):
         warn('Forcing resize_images to False in evaluation.')
