@@ -170,8 +170,8 @@ def __parse_config(argv=None):
     cfg.void_labels = getattr(Dataset, 'void_labels', [])
     cfg.nclasses = Dataset.non_void_nclasses
     cfg.nclasses_w_void = Dataset.nclasses
-    print('{} classes ({} non-void):'.format(cfg.nclasses_w_void,
-                                             cfg.nclasses))
+    tf.logging.info('{} classes ({} non-void):'.format(cfg.nclasses_w_void,
+                                                       cfg.nclasses))
 
     # Optimization
     try:
@@ -211,7 +211,7 @@ def __run(build_model):
     #     elif class_balance == 'rare_freq_cost':
     #         w_freq = 1 / (cfg.nclasses * freqs)
 
-    #     print("Class balance weights", w_freq)
+    #     tf.logging.info("Class balance weights", w_freq)
     #     cfg.class_balance = w_freq
 
     # ============ Train/validation
@@ -236,7 +236,7 @@ def __run(build_model):
     else:
         RuntimeError('You must specify the devices to run on')
 
-    print("Building the model ...")
+    tf.logging.info("Building the model ...")
     # with graph:
     with tf.Graph().as_default() as graph:
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
@@ -369,10 +369,10 @@ def __run(build_model):
             # if cfg.restore_model:
             #     # TODO add option to restore best rather than last?
             #     checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-            #     print('Restoring model from checkpoint ' + checkpoint + '...')
+            #     tf.logging.info('Restoring model from checkpoint ' + checkpoint + '...')
             #     saver = tf.train.Saver()
             #     saver.restore(sess, checkpoint)
-            #     print("Model restored.")
+            #     tf.logging.info("Model restored.")
 
             if not cfg.do_validation_only:
                 # Start training loop
@@ -393,7 +393,6 @@ def __run(build_model):
                 # Perform validation only
                 mean_iou = {}
                 for s in cfg.val_on_sets:
-                    print('Starting validation on %s set' % s)
                     from validate import validate
                     mean_iou[s] = validate(
                         val_placeholders,
@@ -555,7 +554,7 @@ def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
             # Print regularization
             for v in tf.get_collection(
                     tf.GraphKeys.REGULARIZATION_LOSSES):
-                print('Regularization losses:\n{}'.format(v))
+                tf.logging.debug('Regularization losses:\n{}'.format(v))
 
     # Convert from list of tensors to tensor, and average
     preds = tf.concat(tower_preds, axis=0)
@@ -640,8 +639,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     max_epochs = cfg.max_epochs
 
     dataset_params['batch_size'] *= cfg.num_splits
-    print('\nTrain dataset params:\n{}\n'.format(dataset_params))
-    print('Validation dataset params:\n{}\n\n'.format(valid_params))
+    tf.logging.info('\nTrain dataset params:\n{}\n'.format(dataset_params))
+    tf.logging.info('Validation dataset params:\n{}\n\n'.format(valid_params))
     train = Dataset(
         which_set='train',
         return_list=False,
@@ -658,14 +657,13 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
     # Start the training loop.
     start = time()
-    print("Beginning main loop...")
+    tf.logging.info("Beginning main loop...")
     loss_value = 0
 
     if pygtk and cfg.debug_of:
         cv2.namedWindow("rgb-optflow")
 
     while not sv.should_stop():
-        epoch_start = time()
         epoch_id = cum_iter // train.nbatches
         pbar = tqdm(total=train.nbatches,
                     bar_format='{n_fmt}/{total_fmt}{desc}'
@@ -726,7 +724,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
-                                                          epoch_id))
+                                                          epoch_id+1))
             pbar.set_postfix({'D': '{:.2f}s'.format(t_data_load),
                               'loss': '{:.3f}'.format(loss_value)})
             pbar.update(1)
@@ -735,7 +733,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             if batch_id == train.nbatches - 1:
                 end_of_epoch = True
                 # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
-                epoch_end = time()
 
                 # Is it also the last epoch?
                 if sv.should_stop() or epoch_id == max_epochs - 1:
@@ -747,14 +744,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                         patience_counter >= cfg.patience):
                     estop = True
 
-                t_epoch = time() - epoch_start
-                t_save = time() - epoch_end
-                pbar.clear()
-                # TODO replace with logger
-                print('Epoch time: {}s (save {}s), Epoch {}/{}, '
-                      'Loss: {}'.format(t_epoch, t_save, epoch_id + 1,
-                                        max_epochs, loss_value))
-
             # TODO use tf.contrib.learn.monitors.ValidationMonitor?
             # Validate if last iteration, early stop or we reached valid_every
             if last_epoch or estop or (end_of_epoch and not val_skip):
@@ -763,7 +752,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 mean_iou = {}
                 from validate import validate
                 for s in cfg.val_on_sets:
-                    print('\nStarting validation on %s set' % s)
                     mean_iou[s] = validate(
                         val_placeholders,
                         val_outs,
@@ -779,11 +767,14 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 best_hist = np.array(history_acc).max()
                 if (len(history_acc) == 0 or
                    mean_iou.get('valid') >= best_hist):
-                    print('## Best model found! ##')
-                    print('Saving the checkpoint ...')
+                    tf.logging.info('## Best model found! ##')
+                    t_save = time()
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
                                                    '{}_best.ckpt'.format(
                                                        cfg.model_name))
+                    t_save = time() - t_save
+                    tf.logging.info('Checkpoint saved in {}s'.format(t_save))
+
                     patience_counter = 0
                     estop = False
                 # Start skipping again
@@ -791,10 +782,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
                 # exit minibatches loop
                 if estop:
-                    print('Early Stop!')
+                    tf.logging.info('Early Stop!')
                     break
                 if last_epoch:
-                    print('Last epoch!')
+                    tf.logging.info('Last epoch!')
                     break
 
             elif end_of_epoch:
@@ -811,17 +802,16 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     best = history_acc[max_valid_idx]
     (valid_mean_iou) = best
 
-    print("")
-    print('Best: Mean Class iou - Valid {:.5f}'.format(valid_mean_iou))
-    print("")
+    tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(
+        valid_mean_iou))
 
     end = time()
     m, s = divmod(end - start, 60)
     h, m = divmod(m, 60)
-    print("Total time elapsed: %d:%02d:%02d" % (h, m, s))
+    tf.logging.info("Total time elapsed: %d:%02d:%02d" % (h, m, s))
 
     # # Move complete models and stuff to shared fs
-    # print('\n\nEND OF TRAINING!!\n\n')
+    # tf.logging.info('\n\nEND OF TRAINING!!\n\n')
 
     # def move_if_exist(filename, dest):
     #     if not os.path.exists(os.path.dirname(dest)):
@@ -829,7 +819,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     #     try:
     #         shutil.move(filename, dest)
     #     except IOError:
-    #         print('Move error: {} does not exist.'.format(filename))
+    #         tf.logging.error('Move error: {} does not exist.'.format(
+    #             filename))
 
     # move_if_exist(tmp_path + save_name + "_best.w",
     #               'models/' + save_name + '_best.w')
@@ -841,5 +832,5 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     #               'models/' + save_name + '.npy')
     # move_if_exist(tmp_path + save_name + ".svg",
     #               'models/' + save_name + '.svg')
-    # validate = True  # print the best model's test error
+    # validate = True  # Print the best model's test error
     return best

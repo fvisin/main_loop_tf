@@ -6,7 +6,6 @@ try:
 except ImportError:
     import queue as Queue
 import threading
-import time
 from warnings import warn
 
 import gflags
@@ -54,10 +53,10 @@ def validate(placeholders,
 
         # Begin loop over dataset samples
         tot_loss = 0
-        epoch_id = 'Ep ' + str(epoch_id) + ': ' if epoch_id else ''
+        epoch_id = 'Ep ' + str(epoch_id+1) + ': ' if epoch_id else ''
         pbar = tqdm(total=this_set.nbatches,
-                    bar_format='{n_fmt}/{total_fmt} ' + epoch_id +
-                               '{percentage:3.0f}%|{bar}| '
+                    bar_format='[' + which_set + '] {n_fmt}/{total_fmt} ' +
+                               epoch_id + '{percentage:3.0f}%|{bar}| '
                                '[{elapsed}<{remaining},'
                                '{rate_fmt} {postfix}]')
         prev_subset = None
@@ -65,7 +64,6 @@ def validate(placeholders,
         for bidx in range(this_set.nbatches):
             if cfg.sv.should_stop():
                 break
-            start_val_time = time.time()
 
             ret = this_set.next()
             x_batch, y_batch = ret['data'], ret['labels']
@@ -76,7 +74,7 @@ def validate(placeholders,
             # Reset the confusion matrix if we are switching video
             if this_set.set_has_GT:
                 if not prev_subset or subset != prev_subset:
-                    print('Reset confusion matrix! {} --> {}'.format(
+                    tf.logging.info('Reset confusion matrix! {} --> {}'.format(
                         prev_subset, subset))
                     cfg.sess.run(val_reset_cm_op)
                     if cfg.stateful_validation:
@@ -134,7 +132,8 @@ def validate(placeholders,
                 mIoUs[subset] = mIoU
 
                 pbar.set_postfix({
-                    'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/bidx),
+                    'val loss': '{:.3f}({:.3f})'.format(loss,
+                                                        tot_loss/(bidx+1)),
                     'mIoU': '{:.3f}'.format(mIoU)})
             else:
                 y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
@@ -149,10 +148,10 @@ def validate(placeholders,
             # http://python.active-venture.com/lib/condition-objects.html
             #
             # Save image summary for learning visualization
-            # import ipdb; ipdb.set_trace()
             img_queue.put((bidx, this_set, x_batch, y_batch, f_batch,
                            subset, raw_data_batch, y_pred_batch,
                            y_soft_batch))
+        pbar.close()
         # Write the last video summary
         write_subset_summary(mIoUs, prev_subset, step=bidx)
 
@@ -272,7 +271,7 @@ def save_images(img_queue, save_basedir):
             # cfg.sv.coord.request_stop(e)
             # raise
             # break
-            print('Error in save_images!! ' + str(e))
+            tf.logging.error('Error in save_images!! ' + str(e))
             continue
 
 
