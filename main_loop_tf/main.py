@@ -100,18 +100,31 @@ def __parse_config(argv=None):
     save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                  'dataset_loaders',
                                                  'main_loop_tf'])
-
-    # Change the checkpoints directory if the model has not to be restored
-    if not cfg.restore_model:
+    if cfg.restore_model is None or cfg.restore_model == 'False':
+        # If you don't want to reload any model
+        # Change the checkpoints directory if the model has not to be restored
+        cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
+                                           cfg.hash)
         incr_num = 0
-        logdir = cfg.checkpoints_dir + '_' + str(incr_num)
+        logdir = cfg.checkpoints_dir
         while(os.path.exists(logdir)):
             incr_num += 1
-            logdir = logdir[:-2] + '_' + str(incr_num)
+            if incr_num == 1:
+                logdir += '_' + str(incr_num)
+            else:
+                logdir = logdir[:-2] + '_' + str(incr_num)
         cfg.checkpoints_dir = logdir
+    else:
+        restore_checkpoints_dir = os.path.join(cfg.checkpoints_dir,
+                                               cfg.model_name,
+                                               cfg.restore_model)
+        # If you want to reload a specific  hash
+        if os.path.exists(restore_checkpoints_dir):
+            cfg.checkpoints_dir = restore_checkpoints_dir
+        else:  # If you just want to reload the default hash
+            cfg.checkpoints_dir = os.path.join(
+                cfg.checkpoints_dir, cfg.model_name, cfg.hash)
 
-    cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
-                                       cfg.hash)
     cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
     cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
 

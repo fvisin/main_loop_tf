@@ -9,9 +9,9 @@ gflags.DEFINE_string('checkpoints_dir', './checkpoints', 'The path where '
 gflags.DEFINE_list('devices', ['/cpu:0'], 'A list of devices to use')
 gflags.DEFINE_bool('debug_of', False,
                    'Show rgb and optical flow of each batch in a window')
-
-# gflags.DEFINE_bool('restore_model', False, 'Whether to reload the weights of '
-#                    'the model')
+gflags.DEFINE_string('restore_model', None, 'It can be the hash of the'
+                     'model we want to relaod, or False/None if we dont want'
+                     'to restore the model')
 
 # Other flags we might want to define (see also config/flow.py):
 # See https://www.tensorflow.org/versions/r0.10/tutorials/monitors/
