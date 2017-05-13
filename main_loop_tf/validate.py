@@ -33,8 +33,8 @@ def validate(placeholders,
         **cfg.valid_params)
     save_basedir = os.path.join('samples', cfg.model_name,
                                 this_set.which_set)
-    img_queue = Queue.Queue(maxsize=25)
-    for _ in range(5):
+    img_queue = Queue.Queue(maxsize=10)
+    for _ in range(2):
         t = threading.Thread(
             target=save_images,
             args=(img_queue, save_basedir))
@@ -52,10 +52,11 @@ def validate(placeholders,
 
     # Begin loop over dataset samples
     tot_loss = 0
-    epoch_id = 'Ep ' + str(epoch_id+1) + ': ' if epoch_id else ''
+    epoch_id_str = 'Ep ' + str(epoch_id+1) + ': ' if epoch_id else ''
+    epoch_id = epoch_id if epoch_id else 0
     pbar = tqdm(total=this_set.nbatches,
                 bar_format='[' + which_set + '] {n_fmt}/{total_fmt} ' +
-                           epoch_id + '{percentage:3.0f}%|{bar}| '
+                           epoch_id_str + '{percentage:3.0f}%|{bar}| '
                            '[{elapsed}<{remaining},'
                            '{rate_fmt} {postfix}]')
     prev_subset = None
@@ -66,6 +67,7 @@ def validate(placeholders,
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():
             break
+        cidx = (epoch_id*this_set.nbatches) + bidx
 
         ret = this_set.next()
         x_batch, y_batch = ret['data'], ret['labels']
@@ -87,8 +89,6 @@ def validate(placeholders,
                             'dataset should provide `subset`')
                     pass
                     # reset_states(model, x_batch.shape)
-                if prev_subset is not None:  # skip at the beginning
-                    write_subset_summary(mIoUs, prev_subset, step=bidx)
                 prev_subset = subset
 
         # TODO remove duplication of code
@@ -120,12 +120,12 @@ def validate(placeholders,
 
             # Get batch pred, mIoU so far, batch loss and potentially the
             # summary
-            if bidx % cfg.val_summary_freq == 0:
+            if cidx % cfg.val_summary_freq == 0:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
                  loss, _, summary_str) = cfg.sess.run(
                  eval_outs + [val_summary_op], feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
-                                        global_step=bidx)
+                                        global_step=cidx)
             else:
                     (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
                      loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
@@ -148,33 +148,33 @@ def validate(placeholders,
                 eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
             mIoU = 0
             summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
-            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
         pbar.update(1)
         # TODO there is no guarantee that this will be processed
         # in order. We could use condition variables, e.g.,
         # http://python.active-venture.com/lib/condition-objects.html
         #
         # Save image summary for learning visualization
-        img_queue.put((bidx, this_set, x_batch, y_batch, f_batch, subset,
+        img_queue.put((cidx, this_set, x_batch, y_batch, f_batch, subset,
                        raw_data_batch, y_pred_batch, y_soft_batch))
     pbar.close()
 
     if cfg.summary_per_subset:
         # Write the last video summary
-        write_subset_summary(mIoUs, prev_subset, step=bidx)
+        write_subset_summary(mIoUs, step=epoch_id)
         # Compute the aggregate metrics
         mean_IoU = np.mean(mIoUs.values())
         mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
                                         simple_value=mean_IoU)
         summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
 
     else:
         # Write meanIou summary
         mIou_summary = tf.Summary.Value(tag='mIoUs/mIoU',
                                         simple_value=mIoU)
         summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=bidx)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
 
         # Per class IoU summaries
         for iou, label_name in zip(
@@ -185,18 +185,25 @@ def validate(placeholders,
                 simple_value=iou)
             summary_str = tf.Summary(value=[per_class_iou_summary])
             cfg.sv.summary_computed(cfg.sess, summary_str,
-                                    global_step=bidx)
+                                    global_step=epoch_id)
         mean_IoU = mIoU
 
     return mean_IoU
 
 
-def write_subset_summary(mIoUs, subset, step=None):
+def write_subset_summary(mIoUs, subset=None, step=None):
     cfg = gflags.cfg
-    mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
-                                    simple_value=mIoUs[subset])
-    summary_str = tf.Summary(value=[mIou_summary])
-    cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
+    if subset:
+        mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
+                                        simple_value=mIoUs[subset])
+        summary_str = tf.Summary(value=[mIou_summary])
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
+    else:
+        for subset, mIoU in mIoUs.iteritems():
+            mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
+                                            simple_value=mIoU)
+            summary_str = tf.Summary(value=[mIou_summary])
+            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
 
 def save_images(img_queue, save_basedir):
