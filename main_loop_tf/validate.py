@@ -188,6 +188,7 @@ def validate(placeholders,
                                     global_step=epoch_id)
         mean_IoU = mIoU
 
+    this_set.finish()
     return mean_IoU
 
 
