@@ -297,6 +297,7 @@ def save_images(img_queue, save_basedir):
                     save_samples_and_animations(sample_in, of, y_pred, y_in,
                                                 cmap, nclasses, labels, subset,
                                                 save_basedir, f, bidx)
+            img_queue.task_done()
         except Queue.Empty:
             continue
         except Exception as e:
