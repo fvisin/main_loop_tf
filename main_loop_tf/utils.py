@@ -21,26 +21,25 @@ matplotlib.use('Agg')
 sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
-
-def compute_chunk_size(batch_size, npixels):
+# The function now computes the chunks from batch directly
+# In addition the split is computed using the np.array_split
+# function that I found to be quite good in splitting the
+# batch equally among the gpus (with the previous method
+# the splits were almost unbalanced)
+def compute_chunks(x_batch, y_batch, gpus_used):
     '''Return the splits per gpu
 
     Return
-        * the number of batches per gpu
-        * the number of labels elements per gpu
+        * the batches per gpu
+        * the labels elements per gpu
     '''
-    cfg = gflags.cfg
 
-    # Compute the shape of the input chunk for each GPU
-    a_device_shape = int(batch_size / cfg.num_splits)
-    split_dim = [a_device_shape] * cfg.num_splits
-    if batch_size % cfg.num_splits != 0:
-        # Fill the last device with what remains
-        split_dim[-1] = batch_size % cfg.num_splits
-    # Labels are flattened, so we need to take into account the
-    # pixels as well
-    labels_split_dim = [el * npixels for el in split_dim]
-    return split_dim, labels_split_dim
+    x_batch_chunks = np.array_split(x_batch, gpus_used)
+    y_batch_chunks = np.array_split(y_batch, gpus_used)
+    for i in range(gpus_used):
+        y_batch_chunks[i] = y_batch_chunks[i].flatten()
+
+    return x_batch_chunks, y_batch_chunks
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,

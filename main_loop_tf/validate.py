@@ -12,16 +12,22 @@ import gflags
 from tqdm import tqdm
 import tensorflow as tf
 
-from utils import compute_chunk_size, fig2array
+from utils import compute_chunks, fig2array
 
 
 def validate(placeholders,
              eval_outs,
              val_summary_op,
              val_reset_cm_op,
+             smaller_n_gpus,
              which_set='valid',
              epoch_id=None,
              nthreads=2):
+
+    val_inputs_per_gpu, labels_per_gpu = placeholders
+    p_list = val_inputs_per_gpu + labels_per_gpu
+    smaller_p_list = (val_inputs_per_gpu[:smaller_n_gpus[which_set]] +
+                      labels_per_gpu[:smaller_n_gpus[which_set]])
 
     cfg = gflags.cfg
     if getattr(cfg.valid_params, 'resize_images', False):
@@ -43,6 +49,10 @@ def validate(placeholders,
         t.setDaemon(True)  # Die when main dies
         t.start()
         cfg.sv.coord.register_thread(t)
+
+    # Compute smaller batch if any
+    smaller_batch_size = (this_set.nsamples - (this_set.nbatches - 1) *
+                          cfg.valid_params['batch_size'])
 
     # TODO posso distinguere training da valid??
     # summary_writer = tf.summary.FileWriter(logdir=cfg.val_checkpoints_dir,
@@ -77,6 +87,16 @@ def validate(placeholders,
         f_batch = ret['filenames']
         raw_data_batch = ret['raw_data']
 
+        # Current batch size
+        current_size = x_batch.shape[0]
+        # Compute the actual number of gpus used
+        # for the current batch
+        if current_size == smaller_batch_size:
+            n_gpus_used = smaller_n_gpus[which_set]
+        else:
+            n_gpus_used = cfg.num_splits
+        # TODO: check the confusion matrix!
+
         # Reset the confusion matrix if we are switching video
         if this_set.set_has_GT and (not prev_subset or
                                     subset != prev_subset):
@@ -93,7 +113,7 @@ def validate(placeholders,
 
         # TODO remove duplication of code
         # Compute the shape of the input chunk for each GPU
-        split_dim, lab_split_dim = compute_chunk_size(
+        split_dim, lab_split_dim = compute_chunks(
             x_batch.shape[0], np.prod(this_set.data_shape[:2]))
 
         if cfg.seq_length and cfg.seq_length > 1:
@@ -103,11 +123,15 @@ def validate(placeholders,
             x_in = x_batch
             y_in = y_batch
 
+        x_in_chunks, y_in_chunks = compute_chunks(x_in, y_in, n_gpus_used)
+
         # if cfg.use_second_path:
         #     x_in = [x_in[..., :3], x_in[..., 3:]]
-        y_in = y_in.flatten()
-        in_values = [x_in, y_in, split_dim, lab_split_dim]
-        feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
+        in_values = x_in_chunks + y_in_chunks
+        if current_size == smaller_batch_size:
+            feed_dict = {p: v for (p, v) in zip(smaller_p_list, in_values)}
+        else:
+            feed_dict = {p: v for (p, v) in zip(p_list, in_values)}
 
         if this_set.set_has_GT:
             # Class balance
@@ -122,14 +146,20 @@ def validate(placeholders,
             # the sequences processed so far), the batch loss and potentially
             # the summary
             if cidx % cfg.val_summary_freq == 0:
+                v_outs = eval_outs[0] + [val_summary_op[0]]
+                if current_size == smaller_batch_size:
+                    v_outs = eval_outs[1] + [val_summary_op[1]]
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _, summary_str) = cfg.sess.run(eval_outs + [val_summary_op],
+                 _, summary_str) = cfg.sess.run(v_outs,
                                                 feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
             else:
+                v_outs = eval_outs[0]
+                if current_size == smaller_batch_size:
+                    v_outs = eval_outs[1]
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
+                 _) = cfg.sess.run(v_outs, feed_dict=feed_dict)
             tot_loss += loss
 
             # If fg/bg, just consider the foreground class
@@ -145,10 +175,15 @@ def validate(placeholders,
                 'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
                 'mIoU': '{:.3f}'.format(mIoU)})
         else:
+            v_outs = eval_outs[0][:2]
+            v_summary_op = val_summary_op[0]
+            if current_size == smaller_batch_size:
+                v_outs = eval_outs[1][:2]
+                v_summary_op = val_summary_op[1]
             y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
+                v_outs, feed_dict=feed_dict)
             mIoU = 0
-            summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
+            summary_str = cfg.sess.run(v_summary_op, feed_dict=feed_dict)
             cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
         pbar.update(1)
         # TODO there is no guarantee that this will be processed
