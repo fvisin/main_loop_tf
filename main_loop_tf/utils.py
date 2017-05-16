@@ -1,7 +1,7 @@
 import logging
 from subprocess import check_output
 import sys
-from tqdm import tqdm
+import tqdm
 
 import gflags
 import matplotlib
@@ -224,4 +224,4 @@ class TqdmHandler(logging.StreamHandler):
 
     def emit(self, record):
         msg = self.format(record)
-        tqdm.write(msg)
+        tqdm.tqdm.write(msg)
