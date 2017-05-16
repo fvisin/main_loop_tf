@@ -252,11 +252,11 @@ def __run(build_model):
 
     # BUILD GRAPH
     if cfg.num_gpus:
-        config = tf.ConfigProto(allow_soft_placement=True,
-                                device_count={'GPU': cfg.num_gpus})
+        tf.config = tf.ConfigProto(allow_soft_placement=True,
+                                   device_count={'GPU': cfg.num_gpus})
     elif cfg.num_cpus:
-        config = tf.ConfigProto(allow_soft_placement=True,
-                                device_count={'CPU': cfg.num_cpus})
+        tf.config = tf.ConfigProto(allow_soft_placement=True,
+                                   device_count={'CPU': cfg.num_cpus})
     else:
         RuntimeError('You must specify the devices to run on')
 
@@ -374,7 +374,7 @@ def __run(build_model):
             save_model_secs=300)
         cfg.sv = sv
 
-        with sv.managed_session(cfg.supervisor_master, config) as sess:
+        with sv.managed_session(cfg.supervisor_master, tf_config) as sess:
             cfg.sess = sess
             if cfg.debug:
                 from tensorflow.python import debug as tf_debug
