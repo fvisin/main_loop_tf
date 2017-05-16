@@ -251,14 +251,7 @@ def __run(build_model):
     #     pass
 
     # BUILD GRAPH
-    if cfg.num_gpus:
-        tf.config = tf.ConfigProto(allow_soft_placement=True,
-                                   device_count={'GPU': cfg.num_gpus})
-    elif cfg.num_cpus:
-        tf.config = tf.ConfigProto(allow_soft_placement=True,
-                                   device_count={'CPU': cfg.num_cpus})
-    else:
-        RuntimeError('You must specify the devices to run on')
+    tf_config = tf.ConfigProto(allow_soft_placement=True)
 
     tf.logging.info("Building the model ...")
     # with graph:
