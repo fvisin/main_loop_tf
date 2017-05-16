@@ -131,10 +131,8 @@ def __parse_config(argv=None):
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
     cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
-    cfg.num_splits = cfg.num_gpus
-    if not cfg.num_gpus:
-        cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
-        cfg.num_splits = cfg.num_cpus
+    cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
+    cfg.num_splits = cfg.num_gpus + cfg.num_cpus
 
     # Dataset
     try:
