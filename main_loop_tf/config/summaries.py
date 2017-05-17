@@ -27,6 +27,8 @@ gflags.DEFINE_integer('train_summary_freq', 10,
                       'How frequent save train summaries (in steps)')
 gflags.DEFINE_integer('val_summary_freq', 10,
                       'How frequent save validation summaries (in steps)')
+gflags.DEFINE_bool('summary_per_subset', False,
+                   'If True mIoUs are saved per subset/video')
 gflags_ext.DEFINE_multidict('hyperparams_summaries',
                             {'1-Dataset': ['dataset',
                                            'batch_size',

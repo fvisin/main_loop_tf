@@ -161,20 +161,20 @@ def validate(placeholders,
 
     if cfg.summary_per_subset:
         # Write the last video summary
-        write_subset_summary(mIoUs, step=epoch_id)
+        write_subset_summary(mIoUs, step=cidx)
         # Compute the aggregate metrics
         mean_IoU = np.mean(mIoUs.values())
         mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
                                         simple_value=mean_IoU)
         summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
 
     else:
         # Write meanIou summary
         mIou_summary = tf.Summary.Value(tag='mIoUs/mIoU',
                                         simple_value=mIoU)
         summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
+        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
 
         # Per class IoU summaries
         for iou, label_name in zip(
@@ -185,7 +185,7 @@ def validate(placeholders,
                 simple_value=iou)
             summary_str = tf.Summary(value=[per_class_iou_summary])
             cfg.sv.summary_computed(cfg.sess, summary_str,
-                                    global_step=epoch_id)
+                                    global_step=cidx)
         mean_IoU = mIoU
 
     img_queue.join()
