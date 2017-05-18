@@ -784,8 +784,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
             # Did we improve *validation* mean IOU accuracy?
             best_hist = np.array(history_acc).max()
-            if (len(history_acc) == 0 or
-               mean_iou.get('valid') >= best_hist):
+            if len(history_acc) == 0 or mean_iou.get('valid') >= best_hist:
                 tf.logging.info('## Best model found! ##')
                 t_save = time()
                 checkpoint_path = os.path.join(cfg.checkpoints_dir,
