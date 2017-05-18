@@ -188,6 +188,7 @@ def validate(placeholders,
                                     global_step=epoch_id)
         mean_IoU = mIoU
 
+    img_queue.join()
     this_set.finish()
     return mean_IoU
 
