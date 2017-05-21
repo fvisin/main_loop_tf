@@ -20,7 +20,8 @@ def validate(placeholders,
              val_summary_op,
              val_reset_cm_op,
              which_set='valid',
-             epoch_id=None):
+             epoch_id=None,
+             nthreads=2):
 
     cfg = gflags.cfg
     if getattr(cfg.valid_params, 'resize_images', False):
@@ -34,10 +35,11 @@ def validate(placeholders,
     save_basedir = os.path.join('samples', cfg.model_name,
                                 this_set.which_set)
     img_queue = Queue.Queue(maxsize=10)
-    for _ in range(2):
+    sentinel = object()  # Poison pill
+    for _ in range(nthreads):
         t = threading.Thread(
             target=save_images,
-            args=(img_queue, save_basedir))
+            args=(img_queue, save_basedir, sentinel))
         t.setDaemon(True)  # Die when main dies
         t.start()
         cfg.sv.coord.register_thread(t)
@@ -65,7 +67,7 @@ def validate(placeholders,
     cfg.sess.run(val_reset_cm_op)
 
     for bidx in range(this_set.nbatches):
-        if cfg.sv.should_stop():
+        if cfg.sv.should_stop():  # Stop requested
             break
         cidx = (epoch_id*this_set.nbatches) + bidx
 
@@ -159,6 +161,10 @@ def validate(placeholders,
                        raw_data_batch, y_pred_batch, y_soft_batch))
     pbar.close()
 
+    # Kill the threads
+    for _ in range(nthreads):
+        img_queue.put(sentinel)
+
     if cfg.summary_per_subset:
         # Write the last video summary
         write_subset_summary(mIoUs, step=cidx)
@@ -168,7 +174,6 @@ def validate(placeholders,
                                         simple_value=mean_IoU)
         summary_str = tf.Summary(value=[mIou_summary])
         cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
-
     else:
         # Write meanIou summary
         mIou_summary = tf.Summary.Value(tag='mIoUs/mIoU',
@@ -208,17 +213,23 @@ def write_subset_summary(mIoUs, subset=None, step=None):
             cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
 
-def save_images(img_queue, save_basedir):
+def save_images(img_queue, save_basedir, sentinel):
     import matplotlib as mpl
     import seaborn as sns
     cfg = gflags.cfg
 
     while True:
-        if cfg.sv.should_stop() and img_queue.empty():
+        if cfg.sv.should_stop() and img_queue.empty():  # Stop requested
+            tf.logging.debug('Save images thread stopping for sv.should_stop')
             break
         try:
+            img = img_queue.get(False)
+            if img == sentinel:  # Validation is over, die
+                tf.logging.debug('Save images thread stopping for sentinel')
+                img_queue.task_done()
+                break
             (bidx, this_set, x_batch, y_batch, f_batch, subset,
-             raw_data_batch, y_pred_batch, y_soft_batch) = img_queue.get(False)
+             raw_data_batch, y_pred_batch, y_soft_batch) = img
 
             cfg = gflags.cfg
 
