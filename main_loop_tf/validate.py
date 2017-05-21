@@ -62,7 +62,7 @@ def validate(placeholders,
                            '[{elapsed}<{remaining},'
                            '{rate_fmt} {postfix}]')
     prev_subset = None
-    mIoUs = {}
+    per_subset_IoUs = {}
     # Reset Confusion Matrix at the beginning of validation
     cfg.sess.run(val_reset_cm_op)
 
@@ -78,20 +78,18 @@ def validate(placeholders,
         raw_data_batch = ret['raw_data']
 
         # Reset the confusion matrix if we are switching video
-        if (this_set.set_has_GT and
-           (not prev_subset or subset != prev_subset) and
-           cfg.summary_per_subset):
-                tf.logging.info('Reset confusion matrix! {} --> {}'.format(
-                    prev_subset, subset))
-                cfg.sess.run(val_reset_cm_op)
-                if cfg.stateful_validation:
-                    if subset == 'default':
-                        raise RuntimeError(
-                            'For stateful validation, the validation '
-                            'dataset should provide `subset`')
-                    pass
-                    # reset_states(model, x_batch.shape)
-                prev_subset = subset
+        if this_set.set_has_GT and (not prev_subset or
+                                    subset != prev_subset):
+            tf.logging.info('Reset confusion matrix! {} --> {}'.format(
+                prev_subset, subset))
+            cfg.sess.run(val_reset_cm_op)
+            if cfg.stateful_validation:
+                if subset == 'default':
+                    raise RuntimeError(
+                        'For stateful validation, the validation '
+                        'dataset should provide `subset`')
+                # reset_states(model, x_batch.shape)
+            prev_subset = subset
 
         # TODO remove duplication of code
         # Compute the shape of the input chunk for each GPU
@@ -120,30 +118,31 @@ def validate(placeholders,
             #     w_freq = loss_kwargs.get('w_freq')
             #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
 
-            # Get batch pred, mIoU so far, batch loss and potentially the
-            # summary
+            # Get the batch pred, the mIoU so far (computed incrementally over
+            # the sequences processed so far), the batch loss and potentially
+            # the summary
             if cidx % cfg.val_summary_freq == 0:
-                (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
-                 loss, _, summary_str) = cfg.sess.run(
-                 eval_outs + [val_summary_op], feed_dict=feed_dict)
+                (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
+                 _, summary_str) = cfg.sess.run(eval_outs + [val_summary_op],
+                                                feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
             else:
-                    (y_pred_batch, y_soft_batch, mIoU, per_class_IoU,
-                     loss, _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
+                (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
+                 _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
             tot_loss += loss
-            # mIoU is computed incrementally, so we just need the
-            # last value
 
-            # When we have videos we want the IoU per subset and
-            # then average them
+            # If fg/bg, just consider the foreground class
+            if len(per_class_IoU) == 2:
+                per_class_IoU = per_class_IoU[1]
+
+            # Save the IoUs per subset (i.e., video) and their average
             if cfg.summary_per_subset:
-                # we just consider foreground class
-                mIoUs[subset] = mIoU = per_class_IoU[1]
+                per_subset_IoUs[subset] = per_class_IoU
+                mIoU = np.mean(per_subset_IoUs)
 
             pbar.set_postfix({
-                'val loss': '{:.3f}({:.3f})'.format(loss,
-                                                    tot_loss/(bidx+1)),
+                'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
                 'mIoU': '{:.3f}'.format(mIoU)})
         else:
             y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
@@ -165,52 +164,42 @@ def validate(placeholders,
     for _ in range(nthreads):
         img_queue.put(sentinel)
 
+    # Write the summaries
+    class_labels = this_set.mask_labels[:this_set.non_void_nclasses]
     if cfg.summary_per_subset:
-        # Write the last video summary
-        write_subset_summary(mIoUs, step=cidx)
-        # Compute the aggregate metrics
-        mean_IoU = np.mean(mIoUs.values())
-        mIou_summary = tf.Summary.Value(tag='mIoUs/mean_per_video_IoU',
-                                        simple_value=mean_IoU)
-        summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
+        # Write the IoUs per subset (i.e., video) and (potentially) class and
+        # their average
+        write_IoUs_summaries(per_subset_IoUs, step=cidx,
+                             class_labels=class_labels)
+        write_IoUs_summaries({'mean_per_video': mIoU}, step=cidx)
     else:
-        # Write meanIou summary
-        mIou_summary = tf.Summary.Value(tag='mIoUs/mIoU',
-                                        simple_value=mIoU)
-        summary_str = tf.Summary(value=[mIou_summary])
-        cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
+        # Write the IoUs (potentially per class) and the average IoU over all
+        # the sequences
+        write_IoUs_summaries({'global': per_class_IoU}, step=cidx,
+                             class_labels=class_labels)
+        write_IoUs_summaries({'global_mean': mIoU}, step=cidx)
 
-        # Per class IoU summaries
-        for iou, label_name in zip(
-         per_class_IoU, this_set.mask_labels[:this_set.nclasses]):
-
-            per_class_iou_summary = tf.Summary.Value(
-                tag='mIoUs/per_class_IoU_{}'.format(label_name),
-                simple_value=iou)
-            summary_str = tf.Summary(value=[per_class_iou_summary])
-            cfg.sv.summary_computed(cfg.sess, summary_str,
-                                    global_step=cidx)
-        mean_IoU = mIoU
-
-    img_queue.join()
-    this_set.finish()
-    return mean_IoU
+    img_queue.join()  # Wait for the threads to be done
+    this_set.finish()  # Close the dataset
+    return mIoU
 
 
-def write_subset_summary(mIoUs, subset=None, step=None):
+def write_IoUs_summaries(IoUs, step=None, class_labels=[]):
     cfg = gflags.cfg
-    if subset:
-        mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
-                                        simple_value=mIoUs[subset])
-        summary_str = tf.Summary(value=[mIou_summary])
+
+    def write_summary(lab, val):
+        summary = tf.Summary.Value(tag='IoUs/' + lab, simple_value=val)
+        summary_str = tf.Summary(value=[summary])
         cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
-    else:
-        for subset, mIoU in mIoUs.iteritems():
-            mIou_summary = tf.Summary.Value(tag='mIoUs/' + subset,
-                                            simple_value=mIoU)
-            summary_str = tf.Summary(value=[mIou_summary])
-            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
+
+    for label, IoU in IoUs.iteritems():
+        if len(class_labels) and len(class_labels) == len(IoU):
+            # Write per class value if labels are provided and consistent
+            for class_val, class_label in zip(IoU, class_labels):
+                write_summary('per_class_{}_{}_IoU'.format(label, class_label),
+                              class_val)
+        else:
+            write_summary('{}_IoU'.format(label), IoU)
 
 
 def save_images(img_queue, save_basedir, sentinel):
