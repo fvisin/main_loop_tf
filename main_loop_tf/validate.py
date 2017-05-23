@@ -139,7 +139,7 @@ def validate(placeholders,
             # Save the IoUs per subset (i.e., video) and their average
             if cfg.summary_per_subset:
                 per_subset_IoUs[subset] = per_class_IoU
-                mIoU = np.mean(per_subset_IoUs)
+                mIoU = np.mean(per_subset_IoUs.values())
 
             pbar.set_postfix({
                 'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
