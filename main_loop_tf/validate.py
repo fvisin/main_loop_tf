@@ -307,6 +307,7 @@ def save_images(img_queue, save_basedir, sentinel):
             # raise
             # break
             tf.logging.error('Error in save_images!! ' + str(e))
+            img_queue.task_done()
             continue
 
 
