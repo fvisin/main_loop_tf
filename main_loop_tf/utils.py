@@ -21,12 +21,8 @@ matplotlib.use('Agg')
 sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
-# The function now computes the chunks from batch directly
-# In addition the split is computed using the np.array_split
-# function that I found to be quite good in splitting the
-# batch equally among the gpus (with the previous method
-# the splits were almost unbalanced)
-def compute_chunks(x_batch, y_batch, gpus_used):
+
+def split_in_gpu_chunks(x_batch, y_batch, gpus_used):
     '''Return the splits per gpu
 
     Return
