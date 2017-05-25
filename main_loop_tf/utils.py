@@ -22,7 +22,7 @@ sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
 
-def split_in_gpu_chunks(x_batch, y_batch, gpus_used):
+def split_in_chunks(x_batch, y_batch, gpus_used):
     '''Return the splits per gpu
 
     Return

@@ -12,14 +12,14 @@ import gflags
 from tqdm import tqdm
 import tensorflow as tf
 
-from utils import split_in_gpu_chunks, fig2array
+from utils import split_in_chunks, fig2array
 
 
 def validate(placeholders,
-             eval_outs,
-             val_summary_op,
-             val_reset_cm_op,
-             s_gpus,
+             outs,
+             summary_op,
+             reset_cm_op,
+             small_num_splits,
              which_set='valid',
              epoch_id=None,
              nthreads=2):
@@ -29,10 +29,11 @@ def validate(placeholders,
         warn('Forcing resize_images to False in evaluation.')
         cfg.valid_params.update({'resize_images': False})
 
-    cfg.valid_params['batch_size'] *= cfg.num_splits
     this_set = cfg.Dataset(
         which_set=which_set,
         **cfg.valid_params)
+
+    # Prepare the threads to save the images
     save_basedir = os.path.join('samples', cfg.model_name,
                                 this_set.which_set)
     img_queue = Queue.Queue(maxsize=10)
@@ -65,7 +66,7 @@ def validate(placeholders,
     prev_subset = None
     per_subset_IoUs = {}
     # Reset Confusion Matrix at the beginning of validation
-    cfg.sess.run(val_reset_cm_op)
+    cfg.sess.run(reset_cm_op)
 
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():  # Stop requested
@@ -78,20 +79,21 @@ def validate(placeholders,
         f_batch = ret['filenames']
         raw_data_batch = ret['raw_data']
 
-        # Compute the actual number of gpus used
-        # for the current batch
+        # Is this batch shorter than batch_size?
         if x_batch.shape[0] != cfg.valid_params['batch_size']:
-            this_n_gpus = s_gpus[which_set]
+            this_n_splits = small_num_splits
+            this_outs = outs['small']
         else:
-            this_n_gpus = cfg.num_splits
-        # TODO: check the confusion matrix!
+            this_n_splits = cfg.num_splits
+            this_outs = outs['full']
 
+        # TODO: check the confusion matrix!
         # Reset the confusion matrix if we are switching video
         if this_set.set_has_GT and (not prev_subset or
                                     subset != prev_subset):
             tf.logging.info('Reset confusion matrix! {} --> {}'.format(
                 prev_subset, subset))
-            cfg.sess.run(val_reset_cm_op)
+            cfg.sess.run(reset_cm_op)
             if cfg.stateful_validation:
                 if subset == 'default':
                     raise RuntimeError(
@@ -107,26 +109,19 @@ def validate(placeholders,
             x_in = x_batch
             y_in = y_batch
 
-        x_in_chunks, y_in_chunks = split_in_gpu_chunks(x_in, y_in,
-                                                       this_n_gpus)
-
         # if cfg.use_second_path:
         #     x_in = [x_in[..., :3], x_in[..., 3:]]
-        in_values = x_in_chunks + y_in_chunks
-        if x_batch.shape[0] != cfg.valid_params['batch_size']:
-            s_placeholders = (placeholders[0][:s_gpus[which_set]] +
-                              placeholders[1][:s_gpus[which_set]])
-            feed_dict = {p: v for (p, v) in zip(s_placeholders, in_values)}
-        else:
-            f_placeholders = (placeholders[0] + placeholders[1])
-            feed_dict = {p: v for (p, v) in zip(f_placeholders, in_values)}
 
-        if x_batch.shape[0] != cfg.valid_params['batch_size']:
-            v_outs = eval_outs[1]
-            v_summary_op = val_summary_op[1]
-        else:
-            v_outs = eval_outs[0]
-            v_summary_op = val_summary_op[0]
+        x_batch_chunks, y_batch_chunks = split_in_chunks(x_in, y_in,
+                                                         this_n_splits)
+
+        # Create a dictionary to feed the placeholders
+        # The zip will only consider the placeholders we need to
+        # fill (i.e., up to this_n_splits)
+        [inputs_per_gpu, labels_per_gpu] = placeholders
+        in_vals = zip(inputs_per_gpu, x_batch_chunks)
+        in_vals.extend(zip(labels_per_gpu, y_batch_chunks))
+        feed_dict = {p: v for(p, v) in in_vals}
 
         if this_set.set_has_GT:
             # Class balance
@@ -142,17 +137,17 @@ def validate(placeholders,
             # the summary
             if cidx % cfg.val_summary_freq == 0:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _, summary_str) = cfg.sess.run(
-                 v_outs + [v_summary_op], feed_dict=feed_dict)
+                 _, summary_str) = cfg.sess.run(this_outs + [summary_op],
+                                                feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
-                summary = tf.Summary.Value(tag='Mean_tower_loss_'+which_set,
-                                           simple_value=loss)
+                summary = tf.Summary.Value(
+                    tag='Mean_tower_loss_val_' + which_set, simple_value=loss)
                 summary_str = tf.Summary(value=[summary])
                 cfg.sv.summary_computed(cfg.sess, summary_str)
             else:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _) = cfg.sess.run(v_outs, feed_dict=feed_dict)
+                 _) = cfg.sess.run(this_outs, feed_dict=feed_dict)
             tot_loss += loss
 
             # If fg/bg, just consider the foreground class
@@ -168,11 +163,15 @@ def validate(placeholders,
                 'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
                 'mIoU': '{:.3f}'.format(mIoU)})
         else:
-            y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                v_outs[:2], feed_dict=feed_dict)
-            mIoU = 0
-            summary_str = cfg.sess.run([v_summary_op], feed_dict=feed_dict)
-            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
+            if cidx % cfg.val_summary_freq == 0:
+                y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
+                    this_outs[:2] + [summary_op], feed_dict=feed_dict)
+                mIoU = 0
+                cfg.sv.summary_computed(cfg.sess, summary_str,
+                                        global_step=cidx)
+            else:
+                y_pred_batch, y_soft_batch = cfg.sess.run(this_outs[:2],
+                                                          feed_dict=feed_dict)
         pbar.update(1)
         # TODO there is no guarantee that this will be processed
         # in order. We could use condition variables, e.g.,
@@ -216,8 +215,8 @@ def write_IoUs_summaries(IoUs, step=None, class_labels=[]):
         cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
     for label, IoU in IoUs.iteritems():
-        if len(class_labels) and len(class_labels) == len(IoU):
-            # Write per class value if labels are provided and consistent
+        # Write per class value if labels are provided and consistent
+        if len(class_labels) > 2 and len(class_labels) == len(IoU):
             for class_val, class_label in zip(IoU, class_labels):
                 write_summary('per_class_{}_{}_IoU'.format(label, class_label),
                               class_val)

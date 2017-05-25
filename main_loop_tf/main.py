@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 import gflags
 import loss
-from utils import (apply_loss, split_in_gpu_chunks, save_repos_hash,
+from utils import (apply_loss, split_in_chunks, save_repos_hash,
                    average_gradients, process_gradients, TqdmHandler)
 from loss import mean_iou as compute_mean_iou
 
@@ -143,7 +143,7 @@ def __parse_config(argv=None):
                           'Dataset')
     cfg.Dataset = Dataset
     dataset_params = {}
-    dataset_params['batch_size'] = cfg.batch_size
+    dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
     dataset_params['data_augm_kwargs'] = {}
     dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
     dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
@@ -183,7 +183,7 @@ def __parse_config(argv=None):
     cfg.dataset_params = dataset_params
     cfg.valid_params = deepcopy(cfg.dataset_params)
     cfg.valid_params.update({
-        'batch_size': cfg.val_batch_size,
+        'batch_size': cfg.val_batch_size * cfg.num_splits,
         'seq_per_subset': 0,
         'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
@@ -260,36 +260,38 @@ def __run(build_model):
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                       dtype='int32')
 
-        # Create input placeholders for each gpu tower
-        # All the placeholders are instantiated with a default value
-        # since we want to be able to use a subset of them when the
-        # batchsize is not big enough to fill all th GPUs and TF raises
-        # a negative shape error if one placeholder is not fed (and has
-        # no default value).
-        # This is not a problem since when the default value is being
-        # used we ignore it's output and do not perform gradient descent
-        # on it.
-        # Note: shape for labels placeholders will be None since we
-        # provide flattened labels.
+        # Create a list of input placeholders for each GPU. We use
+        # placeholder_with_default because we use a subset of them when the
+        # batchsize is not big enough to fill all the GPUs and TF raises a
+        # negative shape error if one placeholder is not fed otherwise. This is
+        # not a problem, since when the default value is being used we ignore
+        # it's output and do not perform gradient descent on it.
         inputs_per_gpu = []
         val_inputs_per_gpu = []
         labels_per_gpu = []
-        for _ in range(cfg.num_splits):
+        for i, _ in enumerate(range(cfg.num_splits)):
             inputs_per_gpu.append(tf.placeholder_with_default(
-                np.zeros(shape=[1]+cfg.input_shape[1:], dtype=cfg._FLOATX),
-                shape=cfg.input_shape))
+                np.zeros(shape=[cfg.batch_size] + cfg.input_shape[1:],
+                         dtype=cfg._FLOATX),
+                shape=cfg.input_shape,
+                name='inputs_per_gpu_%i' % i))
             val_inputs_per_gpu.append(tf.placeholder_with_default(
-                np.zeros(shape=[1]+cfg.val_input_shape[1:], dtype=cfg._FLOATX),
-                shape=cfg.val_input_shape))
-            if cfg.seq_length:
-                l_shape = np.prod(cfg.input_shape[2:])
-            else:
-                l_shape = np.prod(cfg.input_shape[1:])
+                np.zeros(shape=[cfg.val_batch_size] + cfg.val_input_shape[1:],
+                         dtype=cfg._FLOATX),
+                shape=cfg.val_input_shape,
+                name='val_inputs_per_gpu_%i' % i))
+            # Note: shape is None here because we feed flattened labels
+            l_shape = np.prod(cfg.input_shape[2 if cfg.seq_length else 1:])
             labels_per_gpu.append(tf.placeholder_with_default(
-                np.zeros(shape=[l_shape], dtype=np.int32), shape=[None]))
+                np.zeros(shape=[l_shape], dtype=np.int32),
+                shape=[None],
+                name='labels_per_gpu_%i' % i))
 
-        prev_err = tf.placeholder(shape=(),
-                                  dtype=cfg._FLOATX, name='prev_err')
+        prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX, name='prev_err')
+        placeholders = [inputs_per_gpu, labels_per_gpu, prev_err]
+        val_placeholders = [val_inputs_per_gpu, labels_per_gpu]
+
+        # Learning rate schedule
         if cfg.lr_decay is None:
             lr = cfg.lr
         elif cfg.lr_decay == 'exp':
@@ -324,51 +326,54 @@ def __run(build_model):
                                              staircase=cfg.staircase)
         else:
             raise NotImplementedError()
-
         cfg.Optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
 
-        placeholders = [inputs_per_gpu, labels_per_gpu, prev_err]
-        val_placeholders = [val_inputs_per_gpu, labels_per_gpu]
-
-        # When the set size is not a multiple of the batch_size, the
-        # last batch will be smaller than batch_size. When this happen
-        # we might not be able to feed all the GPUs with an input for
-        # this batch. Here we compute the number of GPUs to use for the
-        # last batch of each set
-        n_gpus_per_set = {}
-        for s in ['train'] + cfg.val_on_sets:
-            if s == 'train':
-                params = cfg.dataset_params
-            else:
-                params = cfg.valid_params
-            d_params = copy.deepcopy(params)
-            d_params['batch_size'] *= cfg.num_splits
-            this_set = cfg.Dataset(which_set=s, **d_params)
-            batch_size = params['batch_size']
+        # Check if the last batch will not be processed by all the devices.
+        # When the number of samples of the set is not a multiple of the
+        # batch_size, the last batch will be smaller than batch_size.
+        # When this happens we might not be able to feed all the
+        # CPUs/GPUs with the last batch. Here, for each set, we compute
+        # the number of splits for the last batch
+        small_num_splits = {}
+        for s in ['train'] + ['eval_' + v for v in cfg.val_on_sets]:
+            params = cfg.dataset_params if s == 'train' else cfg.valid_params
+            this_set = cfg.Dataset(which_set=s, **params)
+            ext_batch_size = params['batch_size']
             last_batch_size = (this_set.nsamples -
-                               (this_set.nbatches - 1) *
-                               batch_size * cfg.num_splits)
-            n_gpus_per_set[s] = last_batch_size // batch_size
-            if last_batch_size % batch_size != 0:
-                n_gpus_per_set[s] += 1
+                               ext_batch_size * (this_set.nbatches - 1))
+            this_set.finish()
+            del(this_set)
+            # Spread the last batch over the GPUs as evenly as possible
+            this_num_splits = last_batch_size // ext_batch_size
+            if last_batch_size % ext_batch_size != 0:
+                this_num_splits += 1
 
-        # Model parameters on the FIRST device specified in cfg.devides
-        # Gradient Average and the rest on the operations are on CPU
+            # Store the number of splits if smaller than the usual one
+            if this_num_splits != cfg.num_splits:
+                small_num_splits[s] = this_num_splits
+            else:
+                small_num_splits[s] = None
+
+        # Model compilation
+        # -----------------
+        # Model parameters on the FIRST device specified in cfg.devices
+        # Gradient Average and the rest of the operations are on CPU
         with tf.device('/cpu:0'):
-            # Model compilation
-            # -----------------
+            # Build the training graph
             train_outs, train_summary_op, train_reset_cm_op = build_graph(
-                placeholders, cfg.input_shape, build_model, True,
-                n_gpus_per_set['train'], 'train')
+                placeholders, cfg.input_shape, build_model,
+                small_num_splits['train'], 'train')
 
+            # Build the validation graphs (reusing variables)
             val_outs = {}
             val_summary_ops = {}
-            val_reset_cm_op = {}
-            for s in cfg.val_on_sets:
-                (val_outs[s], val_summary_ops[s],
-                 val_reset_cm_op[s]) = build_graph(
-                     val_placeholders, cfg.val_input_shape,
-                     build_model, False, n_gpus_per_set[s], s)
+            val_reset_cm_ops = {}
+            for s in ['eval_' + v for v in cfg.val_on_sets]:
+                ret = build_graph(val_placeholders, cfg.val_input_shape,
+                                  build_model, small_num_splits[s], s)
+                val_outs[s], val_summary_ops[s], val_reset_cm_ops[s] = ret
+
+            # Add the hyperparameters summaries
             if cfg.hyperparams_summaries is not None:
                 sum_text = []
                 for (key_header,
@@ -394,6 +399,8 @@ def __run(build_model):
                                tf.local_variables_initializer())
             saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
 
+        # Start the session
+        # ------------------
         sv = Supervisor(
             graph=graph,
             init_op=init_op,
@@ -439,14 +446,14 @@ def __run(build_model):
                                    'train_summary_op': train_summary_op,
                                    'val_outs': val_outs,
                                    'val_summary_ops': val_summary_ops,
-                                   'val_reset_cm_op': val_reset_cm_op,
+                                   'val_reset_cm_ops': val_reset_cm_ops,
                                    'loss_fn': cfg.loss_fn,
                                    'Dataset': cfg.Dataset,
                                    'dataset_params': cfg.dataset_params,
                                    'valid_params': cfg.valid_params,
                                    'sv': sv,
                                    'saver': saver,
-                                   's_gpus': n_gpus_per_set}
+                                   'small_num_splits': small_num_splits}
                 return main_loop(**main_loop_kwags)
             else:
                 # Perform validation only
@@ -455,14 +462,14 @@ def __run(build_model):
                     from validate import validate
                     mean_iou[s] = validate(
                         val_placeholders,
-                        val_outs[s],
-                        val_summary_ops[s],
-                        val_reset_cm_op[s],
-                        n_gpus_per_set,
-                        which_set=s)
+                        val_outs['eval_' + s],
+                        val_summary_ops['eval_' + s],
+                        val_reset_cm_ops['eval_' + s],
+                        small_num_splits['eval_' + s],
+                        which_set='eval_' + s)
 
 
-def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
+def build_graph(placeholders, input_shape, build_model, small_num_splits,
                 which_set):
     ''' Build the multiGPU graph of computation
 
@@ -488,55 +495,52 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
+    is_training = which_set == 'train'
+    reuse_variables = not is_training
+
     if is_training:
         [inputs_per_gpu, labels_per_gpu, prev_err] = placeholders
+        summaries = tf.get_collection_ref(key='train_summaries')
     else:
         [inputs_per_gpu, labels_per_gpu] = placeholders
+        summaries = tf.get_collection_ref(
+            key='val_' + which_set + '_summaries')
 
     # Init variables
     tower_grads = []
     tower_preds = []
     tower_soft_preds = []
     tower_losses = []
-    # summaries = {}
-    if is_training:
-        summaries = tf.get_collection_ref(key='train_summaries')
-    else:
-        summaries = tf.get_collection_ref(
-            key='val_' + which_set + '_summaries')
-    tower_suffix = 'train' if is_training else 'val'
 
-    # inputs_per_gpu, labels_per_gpu are lists
-    for dev_idx, (dev_inputs, dev_labels) in enumerate(zip(inputs_per_gpu,
-                                                           labels_per_gpu)):
-        with tf.device(devices[dev_idx]):
-            reuse_variables = not is_training or dev_idx > 0
-            with tf.name_scope('GPU{}_{}'.format(dev_idx, tower_suffix)):
+    for device, dev_inputs, dev_labels in zip(devices, inputs_per_gpu,
+                                              labels_per_gpu):
+        with tf.device(device):
+            device = device.replace('/', '').replace(':', '').lower()
+            with tf.name_scope('{}_{}'.format(device, which_set)):
                 with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
+                    reuse_variables = True
 
+                    # Model output, softmax and prediction
                     net_out = build_model(dev_inputs, is_training)
                     softmax_pred = slim.softmax(net_out)
                     tower_soft_preds.append(softmax_pred)
-
-                    # Prediction
                     pred = tf.argmax(softmax_pred, axis=-1)
                     tower_preds.append(pred)
 
                     # Loss
-                    # Use softmax, unless using the
-                    # tf.nn.sparse_softmax_cross_entropy function that
-                    # internally applies it already
                     if (loss_fn is not
                             tf.nn.sparse_softmax_cross_entropy_with_logits):
+                        # sparse_softmax_cross_entropy applies the
+                        # softmax internally
                         net_out = softmax_pred
                     loss = apply_loss(dev_labels, net_out, loss_fn,
                                       weight_decay, is_training,
                                       return_mean_loss=True)
                     tower_losses.append(loss)
-                    # Save this GPU's loss summary
                     summaries.append(tf.summary.scalar('Loss', loss))
 
                     # Gradients
+                    # TODO is it possible to move it in a function?
                     if is_training:
 
                         # 1) Compute gradients
@@ -544,7 +548,6 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                              loss, colocate_gradients_with_ops=True)
 
                         # 2) Process gradients, average them later
-
                         if cfg.grad_noise_decay is None:
                             grad_noise_scale = cfg.grad_noise_scale
                         elif cfg.grad_noise_decay == 'annealing':
@@ -569,8 +572,7 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                                 cfg.global_step + 1, cfg._FLOATX), -gamma)
 
                             summaries.append(tf.summary.scalar(
-                                "Tower%d_NoiseGrad" % dev_idx,
-                                grad_noise_scale))
+                                device + "_NoiseGrad", grad_noise_scale))
 
                         elif cfg.grad_noise_decay == 'neural_gpu':
                             eta = cfg.grad_noise_scale
@@ -580,7 +582,7 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                                     cfg.global_step + 1, cfg._FLOATX), -gamma))
 
                             summaries.append(tf.summary.scalar(
-                                "Tower%d_NoiseGrad" % dev_idx,
+                                device + "_NoiseGrad",
                                 grad_noise_scale))
 
                         else:
@@ -590,8 +592,8 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                                                   cfg.grad_multiplier,
                                                   cfg.max_grad_norm)
 
+            # Out of name scope, in device
             if is_training:
-
                 # Add histograms for variables, grads and grad norms.
                 for gradient, variable in grads:
                     if isinstance(gradient, tf.IndexedSlices):
@@ -599,6 +601,7 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                     else:
                         grad_values = gradient
 
+                    # TODO Why do we need GPU%d here? Use namescope
                     if grad_values is not None:
                         var_name = variable.name.replace(":", "_")
                         var_name = var_name.replace(
@@ -606,72 +609,69 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
                         if cfg.group_summaries and var_name.count('/') >= 2:
                             var_name = var_name.replace("/", "_", 1)
                         summaries.append(tf.summary.histogram(
-                            "Tower%d_Gradients_%s" % (dev_idx, var_name),
+                            "%s_Gradients_%s" % (device, var_name),
                             grad_values))
 
                         summaries.append(tf.summary.scalar(
-                            "Tower%d_GradientNorm_%s" % (dev_idx, var_name),
+                            "%s_GradientNorm_%s" % (device, var_name),
                             tf.global_norm([grad_values])))
 
                 summaries.append(tf.summary.scalar(
-                    "Tower%d_Global_norm/clipped_grad_norm" % dev_idx,
+                    "%s_Global_norm/clipped_grad_norm" % device,
                     tf.global_norm(list(zip(*grads))[0])))
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
 
             # Print regularization
-            for v in tf.get_collection(
-                    tf.GraphKeys.REGULARIZATION_LOSSES):
+            for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
                 tf.logging.debug('Regularization losses:\n{}'.format(v))
 
-    if s_gpus == cfg.num_splits:
-        num_gpus = [cfg.num_splits]
-    else:
-        # List containing the number of gpus in the full and subset case
-        # respectively at the first and second position
-        num_gpus = [cfg.num_splits, s_gpus]
-
-    (preds, labels, softmax_preds, mask, preds_flat,
-     avg_tower_loss, grads_and_vars,
-     train_op, m_iou, per_class_iou, cm_update_op,
-     reset_cm_op) = ([None] * 2 for _ in range(12))
-    update_ops = [[], []]
-    for idx, n_gpus in enumerate(num_gpus):
-        preds[idx] = tf.concat(tower_preds[:n_gpus], axis=0),
+    # Merge the towers on CPU
+    outs = {}
+    for case, this_splits in zip(['full', 'small'],
+                                 [cfg.num_splits, small_num_splits]):
+        if this_splits is None:
+            outs[case] = None
+            continue
+        preds = tf.concat(tower_preds[:this_splits], axis=0)
         # Convert from list of tensors to tensor, and average
-        softmax_preds[idx] = tf.concat(tower_soft_preds[:n_gpus], axis=0)
+        softmax_preds = tf.concat(tower_soft_preds[:this_splits], axis=0)
 
         # Concatenate the per-gpu placeholders to get a placeholder for the
         # full list of gpus and one for the subset to be used for
         # the minibatch with less batches
-        labels[idx] = tf.concat(labels_per_gpu[:n_gpus], axis=0)
+        labels = tf.concat(labels_per_gpu[:this_splits], axis=0)
 
-        # Compute the mean IoU
-        # TODO would it be better to use less precision here?
-        mask[idx] = tf.ones_like(labels[idx])
+        # Compute the (potentially masked) mean IoU
+        mask = tf.ones_like(labels)
         if len(cfg.void_labels):
-            mask[idx] = tf.cast(tf.less_equal(labels[idx], nclasses), tf.int32)
-        preds_flat[idx] = tf.reshape(preds[idx], [-1])
+            mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
+        preds_flat = tf.reshape(preds, [-1])
+        m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
+            labels, preds_flat, nclasses, mask)
 
-        (m_iou[idx], per_class_iou[idx],
-         cm_update_op[idx], reset_cm_op[idx]) = compute_mean_iou(
-            labels[idx], preds_flat[idx], nclasses, mask[idx])
+        # Compute the average *per variable* over the towers
+        avg_tower_loss = tf.reduce_mean(tower_losses[:this_splits])
 
-        # Compute the average *per variable* across the towers
-        avg_tower_loss[idx] = tf.reduce_mean(tower_losses[:n_gpus])
-
+        # Gradient descent
         if is_training:
             # Impose graph dependency so that update operations are computed
             # even if they're are not explicit in the outputs os session.run
-            grads_and_vars[idx] = average_gradients(tower_grads[:n_gpus])
-            for i in range(n_gpus):
-                update_ops[idx] += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
-                                                     scope='GPU{}'.format(i))
-            with tf.control_dependencies(update_ops[idx]):
-                train_op[idx] = optimizer.apply_gradients(
-                    grads_and_vars=grads_and_vars[idx],
+            grads_and_vars = average_gradients(tower_grads[:this_splits])
+            update_ops = []
+            for i in range(this_splits):
+                update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
+                                                scope='gpu{}'.format(i))
+            with tf.control_dependencies(update_ops):
+                train_op = optimizer.apply_gradients(
+                    grads_and_vars=grads_and_vars,
                     global_step=global_step)
+
+            outs[case] = [avg_tower_loss, train_op]
+        else:
+            outs[case] = [preds, softmax_preds, m_iou, per_class_iou,
+                          avg_tower_loss, cm_update_op]
 
         # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients
@@ -685,7 +685,6 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
     #############
     # SUMMARIES #
     #############
-
     # Variables Histograms (training)
     if is_training:
         # Add the histograms for trainable variables
@@ -696,17 +695,12 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
             var_name = 'Variables_' + var_name
             summaries.append(tf.summary.histogram(var_name, var))
 
-    # Trainining or Validation summaries
-    with tf.name_scope('summaries_{}'.format(tower_suffix)):
-
-        # Duplicate summaries: this allow to distiguish between the
-        # avg_tower_loss in the case of full num of gpus and that in
-        # the case of a subset of num of gpus
-        list_summaries = [summaries, summaries[:]]
-        train_summary_op = [[], []]
-        val_summary_op = [[], []]
-        for idx, n_gpus in enumerate(num_gpus):
-
+    # Training or validation summaries
+    with tf.name_scope('summaries_{}'.format(which_set)):
+        for case, this_splits in zip(['full', 'small'],
+                                     [cfg.num_splits, small_num_splits]):
+            if this_splits is None:
+                continue
             # Scalars
             # list_summaries[idx].append(tf.summary.scalar(
             #     'Mean_tower_loss_' + which_set, avg_tower_loss[idx]))
@@ -716,49 +710,26 @@ def build_graph(placeholders, input_shape, build_model, is_training, s_gpus,
             # During the training we want to save informations about the
             # gradients, the trainable variables and the activations.
 
-            if is_training:
-                # Merge only the training summaries of the gpus used.
-                # This is done searching by name since the variables are
-                # always preceded by 'Tower{0,1,2,..}' or 'GPU{0,1,2,..}'
-                training_summaries = []
-                for i in range(n_gpus):
-                    for el in list_summaries[idx]:
-                        if ('GPU%d' % i in el.name or
-                                'Tower%d' % i in el.name):
-                            training_summaries += [el]
-                        # if (i == 0 and
-                        #         'Mean_tower_loss_' + which_set in el.name):
-                        #     training_summaries += [el]
-                train_summary_op[idx] = tf.summary.merge(training_summaries)
-            else:
-                # Same reasoning done for the training summaries (see
-                # above)
-                val_summaries = []
-                for i in range(n_gpus):
-                    for el in list_summaries[idx]:
-                        if ('GPU%d' % i in el.name or
-                            'Tower%d' % i in el.name):
-                            val_summaries += [el]
-                        # if (i == 0 and
-                        #         'Mean_tower_loss_' + which_set in el.name):
-                        #     val_summaries += [el]
-                val_summary_op[idx] = tf.summary.merge(val_summaries)
+            # Merge only the summaries of the gpus used.
+            # This is done searching by name since the variables are
+            # always preceded by 'Tower{0,1,2,..}' or 'gpu{0,1,2,..}'
+            this_summaries = []
+            for i in range(this_splits):
+                for el in summaries:
+                    if ('gpu%d' % i in el.name):
+                        this_summaries += [el]
+                    # TODO ??
+                    # if (i == 0 and
+                    #         'Mean_tower_loss_' + which_set in el.name):
+                    #     training_summaries += [el]
+            summary_op = tf.summary.merge(this_summaries)
 
-    if is_training:
-        return ([[avg_tower_loss[0], train_op[0]],
-                 [avg_tower_loss[1], train_op[1]]],
-                train_summary_op, reset_cm_op)
-    else:
-        return ([[preds[0], softmax_preds[0], m_iou[0], per_class_iou[0],
-                  avg_tower_loss[0], cm_update_op[0]],
-                 [preds[1], softmax_preds[1], m_iou[1], per_class_iou[1],
-                  avg_tower_loss[1], cm_update_op[1]]],
-                val_summary_op, reset_cm_op)
+    return outs, summary_op, reset_cm_op
 
 
 def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
-              val_outs, val_summary_ops, val_reset_cm_op, loss_fn, Dataset,
-              dataset_params, valid_params, sv, saver, s_gpus):
+              val_outs, val_summary_ops, val_reset_cm_ops, loss_fn, Dataset,
+              dataset_params, valid_params, sv, saver, small_num_splits):
 
     # Add TqdmHandler
     handler = TqdmHandler()
@@ -770,7 +741,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
 
-    dataset_params['batch_size'] *= cfg.num_splits
     tf.logging.info('\nTrain dataset params:\n{}\n'.format(dataset_params))
     tf.logging.info('Validation dataset params:\n{}\n\n'.format(valid_params))
     train = Dataset(
@@ -811,6 +781,8 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             t_data_load = time() - iter_start
             x_batch, y_batch = minibatch['data'], minibatch['labels']
             # sh = inputs.shape  # do NOT provide a list of shapes
+
+            # Show optical flow for debug
             if pygtk and cfg.debug_of:
                 for x_b in x_batch:
                     for x_frame in x_b:
@@ -821,60 +793,51 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                                                     cv2.COLOR_RGB2BGR)
                         cv2.imshow("rgb-optflow", rgb_of_frame)
                         cv2.waitKey(100)
+
             # reset_states(model, sh)
-
-            # Compute the actual number of gpus used
-            # for the current batch
-            if x_batch.shape[0] != dataset_params['batch_size']:
-                this_n_gpus = s_gpus['train']
-            else:
-                this_n_gpus = cfg.num_splits
-
-            x_batch_chunks, y_batch_chunks = split_in_gpu_chunks(x_batch,
-                                                                 y_batch,
-                                                                 this_n_gpus)
-
-            # Create dictionary to feed the input placeholders
-            # placeholders = [inputs, labels, which_set,
-            #                 input_split_dim, labels_split_dim]
 
             # Do not add noise if loss is less than threshold
             # TODO: It should be IoU or any other metric, but in this
             # case our loss is Dice Coefficient so it's fine
             loss_value = -1.0 if loss_value < -cfg.thresh_loss else loss_value
-            in_values = x_batch_chunks + y_batch_chunks + [loss_value]
-            if x_batch.shape[0] != dataset_params['batch_size']:
-                s_placeholders = (placeholders[0][:s_gpus['train']] +
-                                  placeholders[1][:s_gpus['train']] +
-                                  [placeholders[2]])
-                feed_dict = {p: v for(p, v) in zip(s_placeholders,
-                                                   in_values)}
-            else:
-                f_placeholders = (placeholders[0] + placeholders[1] +
-                                  [placeholders[2]])
-                feed_dict = {p: v for (p, v) in zip(f_placeholders, in_values)}
 
-            # train_op does not return anything, but must be in the
-            # outputs to update the gradient
+            # Is this batch shorter than batch_size?
+            if x_batch.shape[0] != dataset_params['batch_size']:
+                this_n_splits = small_num_splits['train']
+                this_outs = train_outs['small']
+            else:
+                this_n_splits = cfg.num_splits
+                this_outs = train_outs['full']
+
+            # Get the per-device inputs
+            x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
+                                                             y_batch,
+                                                             this_n_splits)
+
+            # Create a dictionary to feed the placeholders
+            [inputs_per_gpu, labels_per_gpu, prev_err] = placeholders
+            # The zip will only consider the placeholders we need to
+            # fill (i.e., up to this_n_splits)
+            in_vals = zip(inputs_per_gpu, x_batch_chunks)
+            in_vals.extend(zip(labels_per_gpu, y_batch_chunks))
+            in_vals.extend([(prev_err, loss_value)])
+            feed_dict = {p: v for(p, v) in in_vals}
+
+            # Compute (summaries and) loss
             if cum_iter % cfg.train_summary_freq == 0:
-                if x_batch.shape[0] != dataset_params['batch_size']:
-                    t_outs = train_outs[1] + [train_summary_op[1]]
-                else:
-                    t_outs = train_outs[0] + [train_summary_op[0]]
                 loss_value, _, summary_str = cfg.sess.run(
-                    t_outs, feed_dict=feed_dict)
+                    this_outs + [train_summary_op],
+                    feed_dict=feed_dict)
                 sv.summary_computed(cfg.sess, summary_str)
                 # Write Mean_tower_loss summary
+                # TODO Why here??
                 summary = tf.Summary.Value(tag='Mean_tower_loss_train',
                                            simple_value=loss_value)
                 summary_str = tf.Summary(value=[summary])
                 sv.summary_computed(cfg.sess, summary_str)
             else:
-                if x_batch.shape[0] != dataset_params['batch_size']:
-                    t_outs = train_outs[1]
-                else:
-                    t_outs = train_outs[0]
-                loss_value, _ = cfg.sess.run(t_outs, feed_dict=feed_dict)
+                loss_value, _ = cfg.sess.run(this_outs,
+                                             feed_dict=feed_dict)
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id+1))
@@ -896,20 +859,18 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                 patience_counter >= cfg.patience):
             estop = True
 
-        # TODO use tf.contrib.learn.monitors.ValidationMonitor?
         # Validate if last epoch, early stop or we reached valid_every
         if last_epoch or estop or not val_skip:
-            # Validate
             mean_iou = {}
             from validate import validate
             for s in cfg.val_on_sets:
                 mean_iou[s] = validate(
                     val_placeholders,
-                    val_outs[s],
-                    val_summary_ops[s],
-                    val_reset_cm_op[s],
-                    s_gpus,
-                    which_set=s,
+                    val_outs['eval_' + s],
+                    val_summary_ops['eval_' + s],
+                    val_reset_cm_ops['eval_' + s],
+                    small_num_splits['eval_' + s],
+                    which_set='eval_' + s,
                     epoch_id=epoch_id)
 
             # TODO gsheet
