@@ -328,7 +328,8 @@ def save_images(img_queue, save_basedir, sentinel):
             # cfg.sv.coord.request_stop(e)
             # raise
             # break
-            tf.logging.error('Error in save_images!! ' + str(e))
+            from traceback import format_exc
+            tf.logging.error('Error in save_images!!\n' + format_exc(e))
             img_queue.task_done()
             continue
 
