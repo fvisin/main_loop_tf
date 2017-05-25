@@ -323,12 +323,10 @@ def __run(build_model):
             # Model compilation
             # -----------------
             train_outs, train_summary_op, train_reset_cm_op = build_graph(
-                placeholders, cfg.input_shape, cfg.Optimizer, cfg.weight_decay,
-                cfg.loss_fn, build_model, True)
+                placeholders, cfg.input_shape, build_model, True)
 
             val_outs, val_summary_ops, val_reset_cm_op = build_graph(
-                val_placeholders, cfg.val_input_shape, cfg.Optimizer,
-                cfg.weight_decay, cfg.loss_fn, build_model, False)
+                val_placeholders, cfg.val_input_shape, build_model, False)
             if cfg.hyperparams_summaries is not None:
                 sum_text = []
                 for (key_header,
@@ -420,9 +418,11 @@ def __run(build_model):
                         which_set=s)
 
 
-def build_graph(placeholders, input_shape, optimizer, weight_decay, loss_fn,
-                build_model, is_training):
+def build_graph(placeholders, input_shape, build_model, is_training):
     cfg = gflags.cfg
+    optimizer = cfg.Optimizer
+    weight_decay = cfg.weight_decay
+    loss_fn = cfg.loss_fn
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
