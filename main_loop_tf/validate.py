@@ -1,3 +1,7 @@
+try:
+    from itertools import izip_longest as zip_longest
+except:
+    from itertools import zip_longest
 import math
 import numpy as np
 import os
@@ -17,7 +21,7 @@ from utils import split_in_chunks, fig2array
 
 def validate(placeholders,
              outs,
-             summary_op,
+             summary_ops,
              reset_cm_op,
              small_num_splits,
              which_set='valid',
@@ -82,10 +86,9 @@ def validate(placeholders,
         # Is this batch shorter than batch_size?
         if x_batch.shape[0] != cfg.valid_params['batch_size']:
             this_n_splits = small_num_splits
-            this_outs = outs['small']
         else:
             this_n_splits = cfg.num_splits
-            this_outs = outs['full']
+        summary_op = summary_ops[this_n_splits - 1]
 
         # TODO: check the confusion matrix!
         # Reset the confusion matrix if we are switching video
@@ -115,12 +118,15 @@ def validate(placeholders,
         x_batch_chunks, y_batch_chunks = split_in_chunks(x_in, y_in,
                                                          this_n_splits)
 
-        # Create a dictionary to feed the placeholders
-        # The zip will only consider the placeholders we need to
-        # fill (i.e., up to this_n_splits)
-        [inputs_per_gpu, labels_per_gpu] = placeholders
-        in_vals = zip(inputs_per_gpu, x_batch_chunks)
-        in_vals.extend(zip(labels_per_gpu, y_batch_chunks))
+        # Fill the placeholders with data up to this_n_splits, and
+        # then repeat one of the chunks. Note that this will be
+        # ignored later on (see comment where placeholders are created)
+        [inputs_per_gpu, labels_per_gpu, n_splits] = placeholders
+        in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
+                                   fillvalue=x_batch_chunks[0]))
+        in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
+                                        fillvalue=y_batch_chunks[0])))
+        in_vals.extend([(n_splits, this_n_splits)])
         feed_dict = {p: v for(p, v) in in_vals}
 
         if this_set.set_has_GT:
@@ -137,17 +143,13 @@ def validate(placeholders,
             # the summary
             if cidx % cfg.val_summary_freq == 0:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _, summary_str) = cfg.sess.run(this_outs + [summary_op],
+                 _, summary_str) = cfg.sess.run(outs + [summary_op],
                                                 feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
-                summary = tf.Summary.Value(
-                    tag='Mean_tower_loss_val_' + which_set, simple_value=loss)
-                summary_str = tf.Summary(value=[summary])
-                cfg.sv.summary_computed(cfg.sess, summary_str)
             else:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _) = cfg.sess.run(this_outs, feed_dict=feed_dict)
+                 _) = cfg.sess.run(outs, feed_dict=feed_dict)
             tot_loss += loss
 
             # If fg/bg, just consider the foreground class
@@ -165,12 +167,12 @@ def validate(placeholders,
         else:
             if cidx % cfg.val_summary_freq == 0:
                 y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                    this_outs[:2] + [summary_op], feed_dict=feed_dict)
+                    outs[:2] + [summary_op], feed_dict=feed_dict)
                 mIoU = 0
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
             else:
-                y_pred_batch, y_soft_batch = cfg.sess.run(this_outs[:2],
+                y_pred_batch, y_soft_batch = cfg.sess.run(outs[:2],
                                                           feed_dict=feed_dict)
         pbar.update(1)
         # TODO there is no guarantee that this will be processed

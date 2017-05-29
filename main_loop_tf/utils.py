@@ -212,6 +212,17 @@ def fig2array(fig):
     return buf
 
 
+def squash_maybe(scope_str, var_name):
+    cfg = gflags.cfg
+    if cfg.group_summaries and var_name.count('/') >= 2:
+        # Squash the first two levels into the name_scope
+        # to merge the summaries that belong to the same
+        # part of the model together in tensorboard
+        scope_str = '_'.join([scope_str] + var_name.split('/')[:2])
+        var_name = '/'.join(var_name.split('/')[2:])
+    return scope_str, var_name
+
+
 class TqdmHandler(logging.StreamHandler):
     # From https://github.com/tqdm/tqdm/issues/193#issuecomment-233212170
     def __init__(self):
