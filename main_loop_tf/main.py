@@ -9,14 +9,12 @@ import os
 import sys
 from time import time
 
-import copy
 import dataset_loaders
 import numpy as np
 import tensorflow as tf
 from tensorflow import nn
 from tensorflow.contrib import slim
 from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits
-from tensorflow.python.framework import ops
 from tensorflow.python.training import training
 from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
