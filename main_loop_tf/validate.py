@@ -23,7 +23,6 @@ def validate(placeholders,
              outs,
              summary_ops,
              reset_cm_op,
-             small_num_splits,
              which_set='valid',
              epoch_id=None,
              nthreads=2):
@@ -79,16 +78,25 @@ def validate(placeholders,
 
         ret = this_set.next()
         x_batch, y_batch = ret['data'], ret['labels']
+        assert all(el == ret['subset'][0] for el in ret['subset'])
         subset = ret['subset'][0]
         f_batch = ret['filenames']
         raw_data_batch = ret['raw_data']
 
         # Is this batch shorter than batch_size?
-        if x_batch.shape[0] != cfg.valid_params['batch_size']:
-            this_n_splits = small_num_splits
-        else:
-            this_n_splits = cfg.num_splits
-        summary_op = summary_ops[this_n_splits - 1]
+        # Check if this batch will not be processed by all the devices.
+        # When the sequence is shorter than seq_length or the number of
+        # batches is smaller than batch_size, the batch will be smaller
+        # than usual. When this happens we might not be able to feed all
+        # the CPUs/GPUs altogether. In that case here we compute the
+        # number of GPUs that we can use for the current batch
+        batch_size = cfg.val_batch_size
+        len_batch = len(x_batch)
+        # Spread the batch over the lowest number of GPUs
+        this_num_splits = len_batch // batch_size
+        if len_batch % batch_size != 0:
+            this_num_splits += 1
+        summary_op = summary_ops[this_num_splits - 1]
 
         # TODO: check the confusion matrix!
         # Reset the confusion matrix if we are switching video
@@ -116,17 +124,17 @@ def validate(placeholders,
         #     x_in = [x_in[..., :3], x_in[..., 3:]]
 
         x_batch_chunks, y_batch_chunks = split_in_chunks(x_in, y_in,
-                                                         this_n_splits)
+                                                         this_num_splits)
 
-        # Fill the placeholders with data up to this_n_splits, and
+        # Fill the placeholders with data up to this_num_splits, and
         # then repeat one of the chunks. Note that this will be
         # ignored later on (see comment where placeholders are created)
-        [inputs_per_gpu, labels_per_gpu, n_splits] = placeholders
+        [inputs_per_gpu, labels_per_gpu, num_splits] = placeholders
         in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
                                    fillvalue=x_batch_chunks[0]))
         in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
                                         fillvalue=y_batch_chunks[0])))
-        in_vals.extend([(n_splits, this_n_splits)])
+        in_vals.extend([(num_splits, this_num_splits)])
         feed_dict = {p: v for(p, v) in in_vals}
 
         if this_set.set_has_GT:
