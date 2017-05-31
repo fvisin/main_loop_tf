@@ -91,10 +91,10 @@ def validate(placeholders,
         # the CPUs/GPUs altogether. In that case here we compute the
         # number of GPUs that we can use for the current batch
         batch_size = cfg.val_batch_size
-        len_batch = len(x_batch)
+        this_len_batch = len(x_batch)
         # Spread the batch over the lowest number of GPUs
-        this_num_splits = len_batch // batch_size
-        if len_batch % batch_size != 0:
+        this_num_splits = this_len_batch // batch_size
+        if this_len_batch % batch_size != 0:
             this_num_splits += 1
         summary_op = summary_ops[this_num_splits - 1]
 
@@ -129,12 +129,14 @@ def validate(placeholders,
         # Fill the placeholders with data up to this_num_splits, and
         # then repeat one of the chunks. Note that this will be
         # ignored later on (see comment where placeholders are created)
-        [inputs_per_gpu, labels_per_gpu, num_splits] = placeholders
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches] = placeholders
         in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
                                    fillvalue=x_batch_chunks[0]))
         in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
                                         fillvalue=y_batch_chunks[0])))
         in_vals.extend([(num_splits, this_num_splits)])
+        in_vals.extend([(num_batches, this_len_batch)])
         feed_dict = {p: v for(p, v) in in_vals}
 
         if this_set.set_has_GT:

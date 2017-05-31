@@ -281,6 +281,7 @@ def __run(build_model):
         val_inputs_per_gpu = []
         labels_per_gpu = []
         num_splits = tf.placeholder(np.int32, shape=None, name='num_splits')
+        num_batches = tf.placeholder(np.int32, shape=None, name='num_batches')
         for i, _ in enumerate(range(cfg.num_splits)):
             inputs_per_gpu.append(tf.placeholder(
                 dtype=cfg._FLOATX,
@@ -295,8 +296,10 @@ def __run(build_model):
                 shape=[None],  # flattened
                 name='labels_per_gpu_%i' % i))
         prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX, name='prev_err')
-        placeholders = [inputs_per_gpu, labels_per_gpu, num_splits, prev_err]
-        val_placeholders = [val_inputs_per_gpu, labels_per_gpu, num_splits]
+        placeholders = [inputs_per_gpu, labels_per_gpu, num_splits,
+                        num_batches, prev_err]
+        val_placeholders = [val_inputs_per_gpu, labels_per_gpu, num_splits,
+                            num_batches]
 
         # Learning rate schedule
         if cfg.lr_decay is None:
@@ -482,10 +485,12 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     reuse_variables = not is_training
 
     if is_training:
-        [inputs_per_gpu, labels_per_gpu, num_splits, prev_err] = placeholders
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches, prev_err] = placeholders
         summaries_str = 'train_summaries_%s'
     else:
-        [inputs_per_gpu, labels_per_gpu, num_splits] = placeholders
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches] = placeholders
         summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
     # Init variables
@@ -624,27 +629,24 @@ def build_graph(placeholders, input_shape, build_model, which_set):
 
     # Merge the towers on CPU
     preds = tf.concat(tower_preds, axis=0)
-    preds = preds[:num_splits]
+    preds = preds[:num_batches]
+    preds_flat = tf.reshape(preds, [-1])
     tf.summary.scalar('batch_size_' + which_set, tf.shape(preds)[0], summaries)
 
     # Convert from list of tensors to tensor, and average
     softmax_preds = tf.concat(tower_soft_preds, axis=0)
-    softmax_preds = softmax_preds[:num_splits]
+    softmax_preds = softmax_preds[:num_batches]
 
     # Concatenate the per-gpu placeholders to get a placeholder for the
     # full list of gpus and one for the subset to be used for
     # the minibatch with less batches
     labels = tf.concat(labels_per_gpu, axis=0)
-    labels = tf.Print(labels, [tf.shape(labels)], 'Labels: ',
-                      summarize=10)
-    labels = labels[:num_splits * tf.shape(labels_per_gpu[0])[0]]
-    # labels = tf.reshape(labels, [-1])
+    labels = labels[:tf.shape(tf.reshape(preds, [-1]))[0]]
 
     # Compute the (potentially masked) mean IoU
     mask = tf.ones_like(labels)
     if len(cfg.void_labels):
         mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
-    preds_flat = tf.reshape(preds, [-1])
     m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
         labels, preds_flat, nclasses, mask)
 
@@ -653,8 +655,7 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     tower_losses = tower_losses[:num_splits]
     avg_tower_loss = tf.reduce_mean(tower_losses)
     scope_str = dev_set_str + '_%s'
-    tf.summary.scalar(scope_str % 'Mean_tower_loss',
-                      avg_tower_loss, summaries)
+    tf.summary.scalar(scope_str % 'Mean_tower_loss', avg_tower_loss, summaries)
 
     # Gradient descent
     if is_training:
@@ -801,10 +802,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             # the CPUs/GPUs altogether. In that case here we compute the
             # number of GPUs that we can use for the current batch
             batch_size = cfg.batch_size
-            len_batch = len(x_batch)
+            this_len_batch = len(x_batch)
             # Spread the batch over the lowest number of GPUs
-            this_num_splits = len_batch // batch_size
-            if len_batch % batch_size != 0:
+            this_num_splits = this_len_batch // batch_size
+            if this_len_batch % batch_size != 0:
                 this_num_splits += 1
             this_train_outs = ([train_outs[0]] +
                                [train_outs[1][this_num_splits - 1]])
@@ -818,13 +819,14 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             # Fill the placeholders with data up to this_num_splits, and
             # then repeat one of the chunks. Note that this will be
             # ignored later on (see comment where placeholders are created)
-            [inputs_per_gpu, labels_per_gpu, num_splits,
+            [inputs_per_gpu, labels_per_gpu, num_splits, num_batches,
              prev_err] = placeholders
             in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
                                        fillvalue=x_batch_chunks[0]))
             in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
                                             fillvalue=y_batch_chunks[0])))
             in_vals.extend([(num_splits, this_num_splits)])
+            in_vals.extend([(num_batches, this_len_batch)])
             in_vals.extend([(prev_err, loss_value)])
             feed_dict = {p: v for(p, v) in in_vals}
 
