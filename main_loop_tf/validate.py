@@ -173,7 +173,7 @@ def validate(placeholders,
                 mIoU = np.mean(per_subset_IoUs.values())
 
             pbar.set_postfix({
-                'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
+                'loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
                 'mIoU': '{:.3f}'.format(mIoU)})
         else:
             if cidx % cfg.val_summary_freq == 0:

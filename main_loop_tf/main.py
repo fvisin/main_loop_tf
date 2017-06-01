@@ -107,7 +107,8 @@ def __parse_config(argv=None):
                                                  'main_loop_tf'])
     if cfg.restore_model is None or cfg.restore_model == 'False':
         # If you don't want to reload any model
-        # Change the checkpoints directory if the model has not to be restored
+        # Change the checkpoints directory if the model does not have to be
+        # restored
         cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
                                            cfg.hash)
         incr_num = 0
@@ -218,7 +219,6 @@ def __parse_config(argv=None):
             loss_fn = getattr(loss, cfg.loss_fn)
     cfg.loss_fn = loss_fn
 
-    # TODO Add val_every_iter?
     cfg.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                     max(1, cfg.val_every_epochs) - 1)
 
@@ -395,6 +395,7 @@ def __run(build_model):
             init_op=init_op,
             summary_op=None,
             global_step=cfg.global_step,
+            # TODO add option to restore best rather than last?
             logdir=cfg.checkpoints_dir,
             checkpoint_basename=cfg.model_name,
             saver=saver,
@@ -415,17 +416,6 @@ def __run(build_model):
                 # write Hyper parameters text summaries
                 summary_str = cfg.sess.run(sum_text_op)
                 sv.summary_computed(cfg.sess, summary_str)
-
-            # Supervisor will always restore if a model is there.
-            # TODO we probably need to move the checkpoints if restore
-            # is not True?
-            # if cfg.restore_model:
-            #     # TODO add option to restore best rather than last?
-            #     checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-            #     tf.logging.info('Restoring model from checkpoint ' + checkpoint + '...')
-            #     saver = tf.train.Saver()
-            #     saver.restore(sess, checkpoint)
-            #     tf.logging.info("Model restored.")
 
             if not cfg.do_validation_only:
                 # Start training loop
@@ -613,10 +603,10 @@ def build_graph(placeholders, input_shape, build_model, which_set):
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope)
-                # TODO verify that this is the *clipped* gradient or
-                # improve name
                 with tf.name_scope(dev_set_scope):
-                    tf.summary.scalar("Global_norm/clipped_grad_norm",
+                    name = ('clipped_grad_norm' if cfg.max_grad_norm else
+                            'grad_norm')
+                    tf.summary.scalar('Global_norm/' + name,
                                       tf.global_norm(list(zip(*grads))[0]),
                                       summaries)
 
@@ -631,7 +621,8 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     preds = tf.concat(tower_preds, axis=0)
     preds = preds[:num_batches]
     preds_flat = tf.reshape(preds, [-1])
-    tf.summary.scalar('batch_size_' + which_set, tf.shape(preds)[0], summaries)
+    tf.summary.scalar('control_flow/batch_size_' + which_set,
+                      tf.shape(preds)[0], summaries)
 
     # Convert from list of tensors to tensor, and average
     softmax_preds = tf.concat(tower_soft_preds, axis=0)
@@ -641,8 +632,12 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     # full list of gpus and one for the subset to be used for
     # the minibatch with less batches
     labels = tf.concat(labels_per_gpu, axis=0)
+    # Remove the unused batches from the flattened labels
+    # (equivalent to labels[:np.prod(preds.shape)])
     labels = labels[:tf.shape(tf.reshape(preds, [-1]))[0]]
 
+    # TODO Compute it for training as well (requires a dict of cms per
+    # subset + adding one_subset_per_batch to training as well)
     # Compute the (potentially masked) mean IoU
     mask = tf.ones_like(labels)
     if len(cfg.void_labels):
@@ -759,6 +754,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
 
     while not sv.should_stop():
         epoch_id = cum_iter // train.nbatches
+        summary = tf.Summary.Value(tag='control_flow/Epoch',
+                                   simple_value=epoch_id + 1)
+        summary_str = tf.Summary(value=[summary])
+        sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
         pbar = tqdm(total=train.nbatches,
                     bar_format='{n_fmt}/{total_fmt}{desc}'
                                '{percentage:3.0f}%|{bar}| '
@@ -848,6 +847,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
 
         # It's the end of the epoch
         pbar.close()
+        # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
         # Is it also the last epoch?
@@ -856,8 +856,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
 
         # Early stop if patience is over
         patience_counter += 1
-        if (epoch_id >= cfg.min_epochs and
-                patience_counter >= cfg.patience):
+        if epoch_id >= cfg.min_epochs and patience_counter >= cfg.patience:
             estop = True
 
         # Validate if last epoch, early stop or we reached valid_every
