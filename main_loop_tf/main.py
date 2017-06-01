@@ -656,12 +656,13 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     if is_training:
         update_ops = []
         train_ops = []
-        for i in range(len(inputs_per_gpu)):
-            update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
-                                            scope='gpu{}'.format(i))
         # Return a *list* of gradient update ops. Each t-th element of the
         # list updates the gradients of the devices *up to the t-th device*
-        for t in range(len(tower_grads)):
+        for t, d in enumerate(devices):
+            # Recover device name_space
+            d = d.replace('/', '').replace(':', '').lower()
+            update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=d)
+
             if t == 0:
                 grads_and_vars = average_gradients([tower_grads[0]])
             else:
