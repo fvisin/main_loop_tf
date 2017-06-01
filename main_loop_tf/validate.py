@@ -204,15 +204,15 @@ def validate(placeholders,
     if cfg.summary_per_subset:
         # Write the IoUs per subset (i.e., video) and (potentially) class and
         # their average
-        write_IoUs_summaries(per_subset_IoUs, step=cidx,
+        write_IoUs_summaries(per_subset_IoUs, step=epoch_id,
                              class_labels=class_labels)
-        write_IoUs_summaries({'mean_per_video': mIoU}, step=cidx)
+        write_IoUs_summaries({'mean_per_video': mIoU}, step=epoch_id)
     else:
         # Write the IoUs (potentially per class) and the average IoU over all
         # the sequences
-        write_IoUs_summaries({'global': per_class_IoU}, step=cidx,
+        write_IoUs_summaries({'': per_class_IoU}, step=epoch_id,
                              class_labels=class_labels)
-        write_IoUs_summaries({'global_mean': mIoU}, step=cidx)
+        write_IoUs_summaries({'global_avg': mIoU}, step=epoch_id)
 
     img_queue.join()  # Wait for the threads to be done
     this_set.finish()  # Close the dataset
@@ -220,21 +220,58 @@ def validate(placeholders,
 
 
 def write_IoUs_summaries(IoUs, step=None, class_labels=[]):
+    '''Write per-video, per-class and global IoU summaries in TensorBoard
+
+    Arguments
+    ---------
+    IoUs: dictionary
+        A dictionary if IoUs per "category". The keys of the dictionary
+        can be the subsets (i.e., videos) or more other kinds of
+        categories. The values can either be a single IoU scalar
+        or a list.
+    step: int
+        The current cumulative (i.e., global, not limited to this round
+        of validation) iteration, used as x coordinate in TensorBoard.
+    class_labels: list
+        A list of labels for each class in the dataset. When this is
+        provided and the per-key values are lists of the same length as
+        class_labels, for each subset (or more generally, for each key
+        of IoUs) the per-class IoUs will be printed along with the
+        average over the classes.
+    '''
     cfg = gflags.cfg
 
-    def write_summary(lab, val):
-        summary = tf.Summary.Value(tag='IoUs/' + lab, simple_value=val)
+    def write_summary(labs, val):
+        '''Write a single summary in TensorBoard
+
+        Arguments
+        ---------
+        labs: list
+            A list of labels. The labels will be joined with underscores
+            unless None or empty.
+        val: int or float or iterable
+            The value to be visualized in Tensorboard.
+        '''
+        assert isinstance(labs, (tuple, list))
+        labs = '_'.join([el for el in labs if el not in (None, '')])
+        summary = tf.Summary.Value(tag='IoUs/' + labs, simple_value=val)
         summary_str = tf.Summary(value=[summary])
         cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
-    for label, IoU in IoUs.iteritems():
-        # Write per class value if labels are provided and consistent
-        if len(class_labels) > 2 and len(class_labels) == len(IoU):
-            for class_val, class_label in zip(IoU, class_labels):
-                write_summary('per_class_{}_{}_IoU'.format(label, class_label),
-                              class_val)
+    for labs, vals in IoUs.iteritems():
+        # Write per-class IoU if labels are provided and the number of
+        # items in IoU is equal to the number of labels
+        if len(class_labels) > 2 and len(class_labels) == len(vals):
+            cum_IoU = []
+            # Write per-subset, per-class IoU
+            for class_val, class_label in zip(vals, class_labels):
+                write_summary((labs, '{}_IoU'.format(class_label)), class_val)
+                cum_IoU.append(class_val)
+            # Write avg per-subset
+            write_summary((labs, 'class_avg_IoU'), class_val)
+        # Write per-subset IoU
         else:
-            write_summary('{}_IoU'.format(label), IoU)
+            write_summary((labs, 'IoU'), vals)
 
 
 def save_images(img_queue, save_basedir, sentinel):
