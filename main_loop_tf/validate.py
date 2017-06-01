@@ -99,12 +99,13 @@ def validate(placeholders,
         summary_op = summary_ops[this_num_splits - 1]
 
         # TODO: check the confusion matrix!
-        # Reset the confusion matrix if we are switching video
+        # Reset the confusion matrix when we switch video
         if this_set.set_has_GT and (not prev_subset or
                                     subset != prev_subset):
-            tf.logging.info('Reset confusion matrix! {} --> {}'.format(
-                prev_subset, subset))
-            cfg.sess.run(reset_cm_op)
+            if cfg.summary_per_subset:
+                tf.logging.info('Reset confusion matrix! {} --> {}'.format(
+                    prev_subset, subset))
+                cfg.sess.run(reset_cm_op)
             if cfg.stateful_validation:
                 if subset == 'default':
                     raise RuntimeError(
