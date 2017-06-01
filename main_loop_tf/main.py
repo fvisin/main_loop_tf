@@ -344,7 +344,7 @@ def __run(build_model):
         # Gradient Average and the rest of the operations are on CPU
         with tf.device('/cpu:0'):
             # Build the training graph
-            train_outs, train_summary_ops, train_reset_cm_op = build_graph(
+            train_outs, train_summary_ops, _ = build_graph(
                 placeholders,
                 cfg.input_shape,
                 build_model,
