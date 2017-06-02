@@ -71,10 +71,11 @@ def validate(placeholders,
     # Reset Confusion Matrix at the beginning of validation
     cfg.sess.run(reset_cm_op)
 
+    cidx = (epoch_id*this_set.nbatches)
+    frame_idx = cidx
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():  # Stop requested
             break
-        cidx = (epoch_id*this_set.nbatches) + bidx
 
         ret = this_set.next()
         x_batch, y_batch = ret['data'], ret['labels']
@@ -185,14 +186,16 @@ def validate(placeholders,
             else:
                 y_pred_batch, y_soft_batch = cfg.sess.run(outs[:2],
                                                           feed_dict=feed_dict)
-        pbar.update(1)
         # TODO there is no guarantee that this will be processed
         # in order. We could use condition variables, e.g.,
         # http://python.active-venture.com/lib/condition-objects.html
         #
         # Save image summary for learning visualization
-        img_queue.put((cidx, this_set, x_batch, y_batch, f_batch, subset,
+        img_queue.put((frame_idx, this_set, x_batch, y_batch, f_batch, subset,
                        raw_data_batch, y_pred_batch, y_soft_batch))
+        cidx += 1
+        frame_idx += len(x_batch)
+        pbar.update(1)
     pbar.close()
 
     # Kill the threads
@@ -375,6 +378,7 @@ def save_images(img_queue, save_basedir, sentinel):
                     save_samples_and_animations(sample_in, of, y_pred, y_in,
                                                 cmap, nclasses, labels, subset,
                                                 save_basedir, f, bidx)
+                bidx += 1  # Make sure every batch is in a separate frame
             img_queue.task_done()
         except Queue.Empty:
             continue
