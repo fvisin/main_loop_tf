@@ -498,8 +498,8 @@ def build_graph(placeholders, input_shape, build_model, which_set):
         device_str = device.replace('/', '').replace(':', '').lower()
         dev_set_str = '{}_{}'.format(device_str, which_set)
         summaries.append(summaries_str % device_str)  # will be reversed
-        with tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
-            tf.name_scope('{}_{}'.format(device_str, which_set)), \
+        with tf.name_scope('{}_{}'.format(device_str, which_set)), \
+                tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
                 tf.device(device):
             reuse_variables = True
 
@@ -598,7 +598,7 @@ def build_graph(placeholders, input_shape, build_model, which_set):
                                 scope_str % ('GradientNorm', var_name),
                                 tf.global_norm([grad_vals]), summaries)
                             tf.summary.histogram(
-                                scope_str % ('Gradient', var_name),
+                                scope_str % ('GradientHist', var_name),
                                 grad_vals, summaries)
 
                 # Remove the name_scopes (the one from the variable_scope and
@@ -618,20 +618,20 @@ def build_graph(placeholders, input_shape, build_model, which_set):
             tf.logging.debug('Regularization losses:\n{}'.format(v))
 
     # Merge the towers on CPU
-    preds = tf.concat(tower_preds, axis=0)
+    preds = tf.concat(tower_preds, axis=0, name='concat_preds')
     preds = preds[:num_batches]
     preds_flat = tf.reshape(preds, [-1])
     tf.summary.scalar('control_flow/batch_size_' + which_set,
                       tf.shape(preds)[0], summaries)
 
     # Convert from list of tensors to tensor, and average
-    softmax_preds = tf.concat(tower_soft_preds, axis=0)
+    softmax_preds = tf.concat(tower_soft_preds, axis=0, name='concat_softmax')
     softmax_preds = softmax_preds[:num_batches]
 
     # Concatenate the per-gpu placeholders to get a placeholder for the
     # full list of gpus and one for the subset to be used for
     # the minibatch with less batches
-    labels = tf.concat(labels_per_gpu, axis=0)
+    labels = tf.concat(labels_per_gpu, axis=0, name='concat_labels')
     # Remove the unused batches from the flattened labels
     # (equivalent to labels[:np.prod(preds.shape)])
     labels = labels[:tf.shape(tf.reshape(preds, [-1]))[0]]
@@ -646,9 +646,9 @@ def build_graph(placeholders, input_shape, build_model, which_set):
         labels, preds_flat, nclasses, mask)
 
     # Compute the average *per variable* over the towers
-    tower_losses = tf.stack(tower_losses, axis=0)
-    tower_losses = tower_losses[:num_splits]
-    avg_tower_loss = tf.reduce_mean(tower_losses)
+    losses = tf.stack(tower_losses, axis=0, name='concat_losses')
+    losses = losses[:num_splits]
+    avg_tower_loss = tf.reduce_mean(losses)
     scope_str = dev_set_str + '_%s'
     tf.summary.scalar(scope_str % 'Mean_tower_loss', avg_tower_loss, summaries)
 
