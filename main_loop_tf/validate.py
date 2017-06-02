@@ -304,8 +304,13 @@ def save_images(img_queue, save_basedir, sentinel):
             cmap = mpl.colors.ListedColormap(cmap)
             labels = this_set.mask_labels
 
-            assert len(x_batch) == len(y_batch) == len(f_batch) == \
-                len(y_pred_batch) == len(y_soft_batch) == len(raw_data_batch)
+            lengths = (len(x_batch), len(y_batch), len(f_batch),
+                       len(y_pred_batch), len(y_soft_batch),
+                       len(raw_data_batch))
+            assert all(el == lengths[0] for el in lengths), (
+                'x_batch: {}\ny_batch: {}\nf_batch: {}\ny_pred_batch: {}\n'
+                'y_soft_batch: {}\nraw_data_batch: {}'.format(*lengths))
+
             # Save samples, iterating over each element of the batch
             for x, y, f, y_pred, y_soft_pred, raw_data in zip(
                     x_batch,
