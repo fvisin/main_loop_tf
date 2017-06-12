@@ -1,5 +1,9 @@
 from copy import deepcopy
 import hashlib
+try:
+    from itertools import izip_longest as zip_longest
+except:
+    from itertools import zip_longest
 import logging
 import os
 import sys
@@ -10,16 +14,17 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import nn
 from tensorflow.contrib import slim
-from tensorflow.python.framework import ops
+from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits
 from tensorflow.python.training import training
 from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
 import loss
-from utils import (apply_loss, compute_chunk_size, save_repos_hash,
-                   average_gradients, process_gradients, TqdmHandler)
 from loss import mean_iou as compute_mean_iou
+from utils import (apply_loss, split_in_chunks, save_repos_hash,
+                   average_gradients, process_gradients, squash_maybe,
+                   TqdmHandler)
 
 # config module load all flags from source files
 import config  # noqa
@@ -102,7 +107,8 @@ def __parse_config(argv=None):
                                                  'main_loop_tf'])
     if cfg.restore_model is None or cfg.restore_model == 'False':
         # If you don't want to reload any model
-        # Change the checkpoints directory if the model has not to be restored
+        # Change the checkpoints directory if the model does not have to be
+        # restored
         cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir, cfg.model_name,
                                            cfg.hash)
         incr_num = 0
@@ -142,7 +148,7 @@ def __parse_config(argv=None):
                           'Dataset')
     cfg.Dataset = Dataset
     dataset_params = {}
-    dataset_params['batch_size'] = cfg.batch_size
+    dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
     dataset_params['data_augm_kwargs'] = {}
     dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
     dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
@@ -182,12 +188,13 @@ def __parse_config(argv=None):
     cfg.dataset_params = dataset_params
     cfg.valid_params = deepcopy(cfg.dataset_params)
     cfg.valid_params.update({
-        'batch_size': cfg.val_batch_size,
+        'batch_size': cfg.val_batch_size * cfg.num_splits,
         'seq_per_subset': 0,
         'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
         'return_middle_frame_only': False,
+        'one_subset_per_batch': True,  # prevent multiple subsets in one batch
         'use_threads': False,  # prevent shuffling
         # prevent crop
         'data_augm_kwargs': {'return_optical_flow': cfg.of}})
@@ -212,7 +219,6 @@ def __parse_config(argv=None):
             loss_fn = getattr(loss, cfg.loss_fn)
     cfg.loss_fn = loss_fn
 
-    # TODO Add val_every_iter?
     cfg.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                     max(1, cfg.val_every_epochs) - 1)
 
@@ -258,14 +264,44 @@ def __run(build_model):
     with tf.Graph().as_default() as graph:
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                       dtype='int32')
-        inputs = tf.placeholder(shape=cfg.input_shape,
-                                dtype=cfg._FLOATX, name='inputs')
-        val_inputs = tf.placeholder(shape=cfg.val_input_shape,
-                                    dtype=cfg._FLOATX, name='val_inputs')
-        labels = tf.placeholder(shape=[None], dtype='int32', name='labels')
 
-        prev_err = tf.placeholder(shape=(),
-                                  dtype=cfg._FLOATX, name='prev_err')
+        # Create a list of input placeholders for each GPU.
+        # When the batchsize is not big enough to fill all of them we
+        # would want to use a subset of the placeholders, but TF raises
+        # a 'negative shape error' if a placeholder is not fed. Instead,
+        # we provide all of them with values but we use n_spits to
+        # select which of the inputs to process (and perform gradient
+        # descent on) and which to ignore.
+        # At runtime, we replicate the input data to feed all the
+        # placeholders (even if it's internally ignored). We could use
+        # placeholder_with_default to assign a value to it's input but
+        # the batch_size might change dynamically, so we rather
+        # replicate the input at runtime.
+        inputs_per_gpu = []
+        val_inputs_per_gpu = []
+        labels_per_gpu = []
+        num_splits = tf.placeholder(np.int32, shape=None, name='num_splits')
+        num_batches = tf.placeholder(np.int32, shape=None, name='num_batches')
+        for i, _ in enumerate(range(cfg.num_splits)):
+            inputs_per_gpu.append(tf.placeholder(
+                dtype=cfg._FLOATX,
+                shape=cfg.input_shape,
+                name='inputs_per_gpu_%i' % i))
+            val_inputs_per_gpu.append(tf.placeholder(
+                dtype=cfg._FLOATX,
+                shape=cfg.val_input_shape,
+                name='val_inputs_per_gpu_%i' % i))
+            labels_per_gpu.append(tf.placeholder(
+                dtype=np.int32,
+                shape=[None],  # flattened
+                name='labels_per_gpu_%i' % i))
+        prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX, name='prev_err')
+        placeholders = [inputs_per_gpu, labels_per_gpu, num_splits,
+                        num_batches, prev_err]
+        val_placeholders = [val_inputs_per_gpu, labels_per_gpu, num_splits,
+                            num_batches]
+
+        # Learning rate schedule
         if cfg.lr_decay is None:
             lr = cfg.lr
         elif cfg.lr_decay == 'exp':
@@ -300,33 +336,33 @@ def __run(build_model):
                                              staircase=cfg.staircase)
         else:
             raise NotImplementedError()
-
         cfg.Optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
 
-        # TODO is there another way to split the input in chunks when
-        # batchsize is not a multiple of num_splits?
-        # Split in chunks, the size of each is provided in input_split_dim
-        inputs_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                          dtype='int32',
-                                          name='inputs_split_dim')
-        labels_split_dim = tf.placeholder(shape=[cfg.num_splits],
-                                          dtype='int32',
-                                          name='label_split_dim')
-        placeholders = [inputs, labels, inputs_split_dim, labels_split_dim,
-                        prev_err]
-        val_placeholders = [val_inputs, labels, inputs_split_dim,
-                            labels_split_dim]
-
-        # Model parameters on the FIRST device specified in cfg.devides
-        # Gradient Average and the rest on the operations are on CPU
+        # Model compilation
+        # -----------------
+        # Model parameters on the FIRST device specified in cfg.devices
+        # Gradient Average and the rest of the operations are on CPU
         with tf.device('/cpu:0'):
-            # Model compilation
-            # -----------------
-            train_outs, train_summary_op, train_reset_cm_op = build_graph(
-                placeholders, cfg.input_shape, build_model, True)
+            # Build the training graph
+            train_outs, train_summary_ops, _ = build_graph(
+                placeholders,
+                cfg.input_shape,
+                build_model,
+                'train')
 
-            val_outs, val_summary_ops, val_reset_cm_op = build_graph(
-                val_placeholders, cfg.val_input_shape, build_model, False)
+            # Build the validation graphs (reusing variables)
+            val_outs = {}
+            val_summary_ops = {}
+            val_reset_cm_ops = {}
+            for s in ['eval_' + v for v in cfg.val_on_sets]:
+                ret = build_graph(
+                    val_placeholders,
+                    cfg.val_input_shape,
+                    build_model,
+                    s)
+                val_outs[s], val_summary_ops[s], val_reset_cm_ops[s] = ret
+
+            # Add the hyperparameters summaries
             if cfg.hyperparams_summaries is not None:
                 sum_text = []
                 for (key_header,
@@ -352,11 +388,14 @@ def __run(build_model):
                                tf.local_variables_initializer())
             saver = tf.train.Saver(max_to_keep=cfg.checkpoints_to_keep)
 
+        # Start the session
+        # ------------------
         sv = Supervisor(
             graph=graph,
             init_op=init_op,
             summary_op=None,
             global_step=cfg.global_step,
+            # TODO add option to restore best rather than last?
             logdir=cfg.checkpoints_dir,
             checkpoint_basename=cfg.model_name,
             saver=saver,
@@ -378,26 +417,15 @@ def __run(build_model):
                 summary_str = cfg.sess.run(sum_text_op)
                 sv.summary_computed(cfg.sess, summary_str)
 
-            # Supervisor will always restore if a model is there.
-            # TODO we probably need to move the checkpoints if restore
-            # is not True?
-            # if cfg.restore_model:
-            #     # TODO add option to restore best rather than last?
-            #     checkpoint = tf.train.latest_checkpoint(cfg.checkpoints_dir)
-            #     tf.logging.info('Restoring model from checkpoint ' + checkpoint + '...')
-            #     saver = tf.train.Saver()
-            #     saver.restore(sess, checkpoint)
-            #     tf.logging.info("Model restored.")
-
             if not cfg.do_validation_only:
                 # Start training loop
                 main_loop_kwags = {'placeholders': placeholders,
                                    'val_placeholders': val_placeholders,
                                    'train_outs': train_outs,
-                                   'train_summary_op': train_summary_op,
+                                   'train_summary_ops': train_summary_ops,
                                    'val_outs': val_outs,
                                    'val_summary_ops': val_summary_ops,
-                                   'val_reset_cm_op': val_reset_cm_op,
+                                   'val_reset_cm_ops': val_reset_cm_ops,
                                    'loss_fn': cfg.loss_fn,
                                    'Dataset': cfg.Dataset,
                                    'dataset_params': cfg.dataset_params,
@@ -412,13 +440,30 @@ def __run(build_model):
                     from validate import validate
                     mean_iou[s] = validate(
                         val_placeholders,
-                        val_outs,
-                        val_summary_ops[s],
-                        val_reset_cm_op,
-                        which_set=s)
+                        val_outs['eval_' + s],
+                        val_summary_ops['eval_' + s],
+                        val_reset_cm_ops['eval_' + s],
+                        which_set='eval_' + s)
 
 
-def build_graph(placeholders, input_shape, build_model, is_training):
+def build_graph(placeholders, input_shape, build_model, which_set):
+    ''' Build the multiGPU graph of computation
+
+    This function creates a copy of the computation graph on each GPU. The
+    result of the computation of each GPU is stored in a "tower"
+    Note that thanks to the use of name_scopes and variable_scopes, calling
+    this function multiple times does not create multiple copies of the *Ops*
+    and of the *Variables* (respectively), but rather only adds the Ops that
+    change from one call to the other and reuses the same Variables.
+
+    Furthermore, to accommodate for the case where the last minibatch of a set
+    is smaller than batch_size, we create two versions of each operation
+    (e.g., those that compute the summaries), the first that uses all the GPUs
+    (default) and the second that only uses the subset that is possible to use
+    in the reduced batch case. Each returned value is then a list of two ops.
+    This allows to choose at runtime which operations of the graph to call,
+    depending on the batch size.
+    '''
     cfg = gflags.cfg
     optimizer = cfg.Optimizer
     weight_decay = cfg.weight_decay
@@ -426,228 +471,253 @@ def build_graph(placeholders, input_shape, build_model, is_training):
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
-    if is_training:
-        [inputs, labels, input_split_dim,
-         labels_split_dim, prev_err] = placeholders
-    else:
-        [inputs, labels, input_split_dim, labels_split_dim] = placeholders
+    is_training = which_set == 'train'
+    reuse_variables = not is_training
 
-    # Split the input among the GPUs (batchwise)
-    inputs_per_gpu = tf.split(inputs, input_split_dim, 0)
-    labels_per_gpu = tf.split(labels, labels_split_dim, 0)
-    for gpu_input in inputs_per_gpu:
-        gpu_input.set_shape(input_shape)
+    if is_training:
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches, prev_err] = placeholders
+        summaries_str = 'train_summaries_%s'
+    else:
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches] = placeholders
+        summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
     # Init variables
     tower_grads = []
     tower_preds = []
     tower_soft_preds = []
     tower_losses = []
-    summaries = {}
-    if is_training:
-        summaries['training'] = tf.get_collection_ref(key='train_summaries')
-    else:
-        for k in cfg.val_on_sets:
-            summaries[k] = tf.get_collection_ref(key='val_' + k + '_summaries')
-    tower_suffix = 'train' if is_training else 'val'
+    summaries = []
 
-    # inputs_per_gpu, labels_per_gpu are lists
-    for dev_idx, (dev_inputs, dev_labels) in enumerate(zip(inputs_per_gpu,
-                                                           labels_per_gpu)):
-        with tf.device(devices[dev_idx]):
-            reuse_variables = not is_training or dev_idx > 0
-            with tf.name_scope('GPU{}_{}'.format(dev_idx, tower_suffix)):
-                with tf.variable_scope(cfg.model_name, reuse=reuse_variables):
+    # Process backwards, so that the i-th summary includes all the summaries
+    # of the devices up to the i-th
+    for device, dev_inputs, dev_labels in zip(devices[::-1],
+                                              inputs_per_gpu[::-1],
+                                              labels_per_gpu[::-1]):
+        device_str = device.replace('/', '').replace(':', '').lower()
+        dev_set_str = '{}_{}'.format(device_str, which_set)
+        summaries.append(summaries_str % device_str)  # will be reversed
+        with tf.name_scope('{}_{}'.format(device_str, which_set)), \
+                tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
+                tf.device(device):
+            reuse_variables = True
 
-                    net_out = build_model(dev_inputs, is_training)
-                    softmax_pred = slim.softmax(net_out)
-                    tower_soft_preds.append(softmax_pred)
+            # Model output, softmax and prediction
+            net_out = build_model(dev_inputs, is_training)
+            softmax_pred = slim.softmax(net_out)
+            tower_soft_preds.append(softmax_pred)
+            pred = tf.argmax(softmax_pred, axis=-1)
+            tower_preds.append(pred)
 
-                    # Prediction
-                    pred = tf.argmax(softmax_pred, axis=-1)
-                    tower_preds.append(pred)
+            # Loss
+            if loss_fn is not sparse_softmax_cross_entropy_with_logits:
+                # sparse_softmax_cross_entropy applies the
+                # softmax internally
+                net_out = softmax_pred
+            loss = apply_loss(dev_labels, net_out, loss_fn,
+                              weight_decay, is_training,
+                              return_mean_loss=True)
+            tower_losses.append(loss)
 
-                    # Loss
-                    # Use softmax, unless using the
-                    # tf.nn.sparse_softmax_cross_entropy function that
-                    # internally applies it already
-                    if (loss_fn is not
-                            tf.nn.sparse_softmax_cross_entropy_with_logits):
-                        net_out = softmax_pred
-                    loss = apply_loss(dev_labels, net_out, loss_fn,
-                                      weight_decay, is_training,
-                                      return_mean_loss=True)
-                    tower_losses.append(loss)
-                    # Save this GPU's loss summary
-                    for k, s in summaries.iteritems():
-                        s.append(tf.summary.scalar('Loss', loss))
+            # Remove the name_scopes (the one from the variable_scope and
+            # the one from the name_scope) and assign dev_set_str
+            with tf.name_scope(None):
+                with tf.name_scope(dev_set_str + '_stats') as dev_set_scope:
+                    tf.summary.scalar('Loss', loss, summaries)
 
-                    # Gradients
-                    if is_training:
-
-                        # 1) Compute gradients
-                        grads = optimizer.compute_gradients(
-                             loss, colocate_gradients_with_ops=True)
-
-                        # 2) Process gradients, average them later
-
-                        if cfg.grad_noise_decay is None:
-                            grad_noise_scale = cfg.grad_noise_scale
-                        elif cfg.grad_noise_decay == 'annealing':
-
-                            """
-                            Adds annealed gaussian noise to the gradients at
-                            every time step, by decaying the variance at each
-                            time step
-                            g_t <- g_t + N(0, sigma_t^2)
-                            sigma_t^2 = eta / (1 + t)^gamma
-
-                            with eta selected from {0.01, 0.3, 1.0) and
-                            gamma = 0.55
-                            See: "Adding gradient noise improves learning
-                            for very deep networks",
-                            http://arxiv.org/pdf/1511.06807v1.pdf
-                            """
-
-                            eta = cfg.grad_noise_scale ** 0.5
-                            gamma = 0.55 / 2
-                            grad_noise_scale = eta * tf.pow(tf.cast(
-                                cfg.global_step + 1, cfg._FLOATX), -gamma)
-
-                            summaries["training"].append(tf.summary.scalar(
-                                "Tower%d_NoiseGrad" % dev_idx,
-                                grad_noise_scale))
-
-                        elif cfg.grad_noise_decay == 'neural_gpu':
-                            eta = cfg.grad_noise_scale
-                            gamma = 0.55
-                            grad_noise_scale = eta * tf.sqrt(
-                                prev_err * tf.pow(tf.cast(
-                                    cfg.global_step + 1, cfg._FLOATX), -gamma))
-
-                            summaries["training"].append(tf.summary.scalar(
-                                "Tower%d_NoiseGrad" % dev_idx,
-                                grad_noise_scale))
-
-                        else:
-                            raise NotImplementedError()
-                        grads = process_gradients(grads,
-                                                  grad_noise_scale,
-                                                  cfg.grad_multiplier,
-                                                  cfg.max_grad_norm)
-
+            # Gradients
+            # TODO is it possible to move it in a function?
             if is_training:
+
+                # 1) Compute gradients
+                grads = optimizer.compute_gradients(
+                     loss, colocate_gradients_with_ops=True)
+
+                # 2) Process gradients, average them later
+                if cfg.grad_noise_decay is None:
+                    grad_noise_scale = cfg.grad_noise_scale
+                elif cfg.grad_noise_decay == 'annealing':
+
+                    """
+                    Adds annealed gaussian noise to the gradients at
+                    every time step, by decaying the variance at each
+                    time step
+                    g_t <- g_t + N(0, sigma_t^2)
+                    sigma_t^2 = eta / (1 + t)^gamma
+
+                    with eta selected from {0.01, 0.3, 1.0) and
+                    gamma = 0.55
+                    See: "Adding gradient noise improves learning
+                    for very deep networks",
+                    http://arxiv.org/pdf/1511.06807v1.pdf
+                    """
+
+                    eta = cfg.grad_noise_scale ** 0.5
+                    gamma = 0.55 / 2
+                    grad_noise_scale = eta * tf.pow(tf.cast(
+                        cfg.global_step + 1, cfg._FLOATX), -gamma)
+
+                    with tf.name_scope(dev_set_scope):
+                        tf.summary.scalar("NoiseGrad", grad_noise_scale,
+                                          [summaries])
+                elif cfg.grad_noise_decay == 'neural_gpu':
+                    eta = cfg.grad_noise_scale
+                    gamma = 0.55
+                    grad_noise_scale = eta * tf.sqrt(
+                        prev_err * tf.pow(tf.cast(
+                            cfg.global_step + 1, cfg._FLOATX), -gamma))
+
+                    with tf.name_scope(dev_set_scope):
+                        tf.summary.scalar("NoiseGrad", grad_noise_scale,
+                                          [summaries])
+                else:
+                    raise NotImplementedError()
+                grads = process_gradients(grads,
+                                          grad_noise_scale,
+                                          cfg.grad_multiplier,
+                                          cfg.max_grad_norm)
 
                 # Add histograms for variables, grads and grad norms.
                 for gradient, variable in grads:
                     if isinstance(gradient, tf.IndexedSlices):
-                        grad_values = gradient.values
+                        grad_vals = gradient.values
                     else:
-                        grad_values = gradient
+                        grad_vals = gradient
 
-                    if grad_values is not None:
-                        var_name = variable.name.replace(":", "_")
-                        var_name = var_name.replace(
-                            cfg.model_name+"/", "")
-                        if cfg.group_summaries and var_name.count('/') >= 2:
-                            var_name = var_name.replace("/", "_", 1)
-                        summaries["training"].append(
-                            tf.summary.histogram("Tower%d_Gradients_%s" %
-                                                 (dev_idx, var_name),
-                                                 grad_values))
+                    if grad_vals is not None:
+                        # Remove model_name/
+                        var_name = variable.op.name.replace(
+                            cfg.model_name + '/', '')
+                        scope_str = dev_set_str + '_%s'  # metric
+                        scope_str, var_name = squash_maybe(scope_str, var_name)
+                        scope_str += '_%s'  # var name
+                        # Write the summary
+                        with tf.name_scope(None):
+                            tf.summary.scalar(
+                                scope_str % ('GradientNorm', var_name),
+                                tf.global_norm([grad_vals]), summaries)
+                            tf.summary.histogram(
+                                scope_str % ('GradientHist', var_name),
+                                grad_vals, summaries)
 
-                        summaries["training"].append(
-                            tf.summary.scalar("Tower%d_GradientNorm_%s" %
-                                              (dev_idx, var_name),
-                                              tf.global_norm([grad_values])))
-
-                summaries["training"].append(
-                    tf.summary.scalar("Tower%d_Global_norm/clipped_grad_norm" %
-                                      dev_idx,
-                                      tf.global_norm(list(zip(*grads))[0])))
+                # Remove the name_scopes (the one from the variable_scope and
+                # the one from the name_scope)
+                with tf.name_scope(dev_set_scope):
+                    name = ('clipped_grad_norm' if cfg.max_grad_norm else
+                            'grad_norm')
+                    tf.summary.scalar('Global_norm/' + name,
+                                      tf.global_norm(list(zip(*grads))[0]),
+                                      summaries)
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
 
-            # Print regularization
-            for v in tf.get_collection(
-                    tf.GraphKeys.REGULARIZATION_LOSSES):
-                tf.logging.debug('Regularization losses:\n{}'.format(v))
+        # Print regularization
+        for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
+            tf.logging.debug('Regularization losses:\n{}'.format(v))
+
+    # Merge the towers on CPU
+    preds = tf.concat(tower_preds, axis=0, name='concat_preds')
+    preds = preds[:num_batches]
+    preds_flat = tf.reshape(preds, [-1])
+    tf.summary.scalar('control_flow/batch_size_' + which_set,
+                      tf.shape(preds)[0], summaries)
 
     # Convert from list of tensors to tensor, and average
-    preds = tf.concat(tower_preds, axis=0)
-    softmax_preds = tf.concat(tower_soft_preds, axis=0)
+    softmax_preds = tf.concat(tower_soft_preds, axis=0, name='concat_softmax')
+    softmax_preds = softmax_preds[:num_batches]
 
-    # Compute the mean IoU
-    # TODO would it be better to use less precision here?
+    # Concatenate the per-gpu placeholders to get a placeholder for the
+    # full list of gpus and one for the subset to be used for
+    # the minibatch with less batches
+    labels = tf.concat(labels_per_gpu, axis=0, name='concat_labels')
+    # Remove the unused batches from the flattened labels
+    # (equivalent to labels[:np.prod(preds.shape)])
+    labels = labels[:tf.shape(tf.reshape(preds, [-1]))[0]]
+
+    # TODO Compute it for training as well (requires a dict of cms per
+    # subset + adding one_subset_per_batch to training as well)
+    # Compute the (potentially masked) mean IoU
     mask = tf.ones_like(labels)
     if len(cfg.void_labels):
         mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
-    preds_flat = tf.reshape(preds, [-1])
     m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
         labels, preds_flat, nclasses, mask)
-    # Compute the average *per variable* across the towers
-    avg_tower_loss = tf.reduce_mean(tower_losses)
 
+    # Compute the average *per variable* over the towers
+    losses = tf.stack(tower_losses, axis=0, name='concat_losses')
+    losses = losses[:num_splits]
+    avg_tower_loss = tf.reduce_mean(losses)
+    scope_str = dev_set_str + '_%s'
+    tf.summary.scalar(scope_str % 'Mean_tower_loss', avg_tower_loss, summaries)
+
+    # Gradient descent
     if is_training:
-        # Impose graph dependency so that update operations are computed
-        # even if they're are not explicit in the outputs os session.run
-        grads_and_vars = average_gradients(tower_grads)
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        with tf.control_dependencies(update_ops):
-            train_op = optimizer.apply_gradients(grads_and_vars=grads_and_vars,
-                                                 global_step=global_step)
-        # TODO: Averaged gradients visualisation
-        # Add the histograms of the gradients
-        # with tf.name_scope('grad_summaries'):
-        #     for grad, var in grads_and_vars:
-        #         if grad is not None:
-        #             summaries['training'].append(
-        #                 tf.summary.histogram(
-        #                   var.op.name + '/gradients', grad))
+        update_ops = []
+        train_ops = []
+        # Return a *list* of gradient update ops. Each t-th element of the
+        # list updates the gradients of the devices *up to the t-th device*
+        for t, d in enumerate(devices):
+            # Recover device name_space
+            d = d.replace('/', '').replace(':', '').lower()
+            update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope=d)
+
+            if t == 0:
+                grads_and_vars = average_gradients([tower_grads[0]])
+            else:
+                grads_and_vars = average_gradients(tower_grads[:t])
+            # Impose graph dependency so that update operations are computed
+            # even if they're are not explicit in the outputs os session.run
+            with tf.control_dependencies(update_ops):
+                train_ops.append(optimizer.apply_gradients(
+                    grads_and_vars=grads_and_vars,
+                    global_step=global_step))
+
+        outs = [avg_tower_loss, train_ops]
+    else:
+        outs = [preds, softmax_preds, m_iou, per_class_iou,
+                avg_tower_loss, cm_update_op]
+
+    # TODO: Averaged gradients visualisation
+    # Add the histograms of the gradients
+    # with tf.name_scope('grad_summaries'):
+    #     for grad, var in grads_and_vars:
+    #         if grad is not None:
+    #             summaries['training'].append(
+    #                 tf.summary.histogram(
+    #                   var.op.name + '/gradients', grad))
 
     #############
     # SUMMARIES #
     #############
-
-    # Variables Histograms (training)
+    # Variables Histograms
     if is_training:
         # Add the histograms for trainable variables
         for var in tf.trainable_variables():
-            var_name = var.op.name.replace(cfg.model_name+'/', "")
-            if cfg.group_summaries and var_name.count('/') >= 2:
-                var_name = var_name.replace("/", "_", 1)
-            var_name = 'Variables_' + var_name
-            summaries['training'].append(tf.summary.histogram(var_name, var))
+            var_name = var.op.name
+            scope_str, var_name = squash_maybe(dev_set_str, var_name)
+            scope_str += '_%s_%s'  # metric, var
+            scope_str = dev_set_str + '_%s_'  # metric
+            scope_str, var_name = squash_maybe(scope_str, var_name)
+            scope_str += '_%s'  # var name
+            tf.summary.histogram(scope_str % ('Trainable_vars_activations',
+                                              var_name),
+                                 var, summaries)
 
-    # Trainining or Validation summaries
-    with tf.name_scope('summaries_{}'.format(tower_suffix)):
+    # Merge only the summaries of the gpus used.
+    # Create a list of summary ops, that update the summaries *UP TO*
+    # the device with the same index. E.g., summary_ops[2] will update
+    # the summaries for devices[:2]
+    summary_ops = []
+    for _, s in enumerate(summaries[::-1]):
+        summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
-        # Scalars
-        for k, s in summaries.iteritems():
-            s.append(tf.summary.scalar('Mean_tower_loss_' + k, avg_tower_loss))
-            # We do it more fine-grained in validation.py
-            # s.append(tf.summary.scalar('Mean_IoU_' + k, m_iou))
-
-        # During the training we want to save informations about the
-        # gradients, the trainable variables and the activations.
-
-        if is_training:
-            train_summary_op = tf.summary.merge(summaries['training'])
-        else:
-            val_summary_ops = {}
-            for k, s in summaries.iteritems():
-                val_summary_ops[k] = tf.summary.merge(s)
-
-    if is_training:
-        return [avg_tower_loss, train_op], train_summary_op, reset_cm_op
-    else:
-        return ([preds, softmax_preds, m_iou, per_class_iou, avg_tower_loss,
-                 cm_update_op], val_summary_ops, reset_cm_op)
+    return outs, summary_ops, reset_cm_op
 
 
-def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
-              val_outs, val_summary_ops, val_reset_cm_op, loss_fn, Dataset,
+def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
+              val_outs, val_summary_ops, val_reset_cm_ops, loss_fn, Dataset,
               dataset_params, valid_params, sv, saver):
 
     # Add TqdmHandler
@@ -660,7 +730,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
     cfg = gflags.cfg
     max_epochs = cfg.max_epochs
 
-    dataset_params['batch_size'] *= cfg.num_splits
     tf.logging.info('\nTrain dataset params:\n{}\n'.format(dataset_params))
     tf.logging.info('Validation dataset params:\n{}\n\n'.format(valid_params))
     train = Dataset(
@@ -686,6 +755,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
     while not sv.should_stop():
         epoch_id = cum_iter // train.nbatches
+        summary = tf.Summary.Value(tag='control_flow/Epoch',
+                                   simple_value=epoch_id + 1)
+        summary_str = tf.Summary(value=[summary])
+        sv.summary_computed(cfg.sess, summary_str, global_step=epoch_id)
         pbar = tqdm(total=train.nbatches,
                     bar_format='{n_fmt}/{total_fmt}{desc}'
                                '{percentage:3.0f}%|{bar}| '
@@ -701,10 +774,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
             t_data_load = time() - iter_start
             x_batch, y_batch = minibatch['data'], minibatch['labels']
             # sh = inputs.shape  # do NOT provide a list of shapes
-            x_in = x_batch
-            y_in = y_batch.flatten()
+
+            # Show optical flow for debug
             if pygtk and cfg.debug_of:
-                for x_b in x_in:
+                for x_b in x_batch:
                     for x_frame in x_b:
                         rgb_of_frame = np.concatenate(
                             [x_frame[..., :3], x_frame[..., 3:]],
@@ -713,36 +786,59 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
                                                     cv2.COLOR_RGB2BGR)
                         cv2.imshow("rgb-optflow", rgb_of_frame)
                         cv2.waitKey(100)
+
             # reset_states(model, sh)
-
-            # TODO evaluate if it's possible to pass num_splits inputs in
-            # a list, rather than the input as a whole and the shape of
-            # the splits as a tensor.
-
-            split_dim, labels_split_dim = compute_chunk_size(
-                x_batch.shape[0], np.prod(train.data_shape[:2]))
-
-            # Create dictionary to feed the input placeholders
-            # placeholders = [inputs, labels, which_set,
-            #                 input_split_dim, labels_split_dim]
 
             # Do not add noise if loss is less than threshold
             # TODO: It should be IoU or any other metric, but in this
             # case our loss is Dice Coefficient so it's fine
             loss_value = -1.0 if loss_value < -cfg.thresh_loss else loss_value
-            in_values = [x_in, y_in, split_dim, labels_split_dim,
-                         1 + loss_value]
-            feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
 
-            # train_op does not return anything, but must be in the
-            # outputs to update the gradient
+            # Is this batch shorter than batch_size?
+            # Check if this batch will not be processed by all the devices.
+            # When the sequence is shorter than seq_length or the number of
+            # batches is smaller than batch_size, the batch will be smaller
+            # than usual. When this happens we might not be able to feed all
+            # the CPUs/GPUs altogether. In that case here we compute the
+            # number of GPUs that we can use for the current batch
+            batch_size = cfg.batch_size
+            this_len_batch = len(x_batch)
+            # Spread the batch over the lowest number of GPUs
+            this_num_splits = this_len_batch // batch_size
+            if this_len_batch % batch_size != 0:
+                this_num_splits += 1
+            this_train_outs = ([train_outs[0]] +
+                               [train_outs[1][this_num_splits - 1]])
+            this_summary_op = train_summary_ops[this_num_splits - 1]
+
+            # Get the per-device inputs
+            x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
+                                                             y_batch,
+                                                             this_num_splits)
+
+            # Fill the placeholders with data up to this_num_splits, and
+            # then repeat one of the chunks. Note that this will be
+            # ignored later on (see comment where placeholders are created)
+            [inputs_per_gpu, labels_per_gpu, num_splits, num_batches,
+             prev_err] = placeholders
+            in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
+                                       fillvalue=x_batch_chunks[0]))
+            in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
+                                            fillvalue=y_batch_chunks[0])))
+            in_vals.extend([(num_splits, this_num_splits)])
+            in_vals.extend([(num_batches, this_len_batch)])
+            in_vals.extend([(prev_err, loss_value)])
+            feed_dict = {p: v for(p, v) in in_vals}
+
+            # Compute (summaries and) loss
             if cum_iter % cfg.train_summary_freq == 0:
                 loss_value, _, summary_str = cfg.sess.run(
-                    train_outs + [train_summary_op],
+                    this_train_outs + [this_summary_op],
                     feed_dict=feed_dict)
                 sv.summary_computed(cfg.sess, summary_str)
             else:
-                loss_value, _ = cfg.sess.run(train_outs, feed_dict=feed_dict)
+                loss_value, _ = cfg.sess.run(this_train_outs,
+                                             feed_dict=feed_dict)
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id+1))
@@ -752,6 +848,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
         # It's the end of the epoch
         pbar.close()
+        # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
         # Is it also the last epoch?
@@ -760,23 +857,20 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_op,
 
         # Early stop if patience is over
         patience_counter += 1
-        if (epoch_id >= cfg.min_epochs and
-                patience_counter >= cfg.patience):
+        if epoch_id >= cfg.min_epochs and patience_counter >= cfg.patience:
             estop = True
 
-        # TODO use tf.contrib.learn.monitors.ValidationMonitor?
         # Validate if last epoch, early stop or we reached valid_every
         if last_epoch or estop or not val_skip:
-            # Validate
             mean_iou = {}
             from validate import validate
             for s in cfg.val_on_sets:
                 mean_iou[s] = validate(
                     val_placeholders,
-                    val_outs,
-                    val_summary_ops[s],
-                    val_reset_cm_op,
-                    which_set=s,
+                    val_outs['eval_' + s],
+                    val_summary_ops['eval_' + s],
+                    val_reset_cm_ops['eval_' + s],
+                    which_set='eval_' + s,
                     epoch_id=epoch_id)
 
             # TODO gsheet

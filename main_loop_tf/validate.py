@@ -1,3 +1,7 @@
+try:
+    from itertools import izip_longest as zip_longest
+except:
+    from itertools import zip_longest
 import math
 import numpy as np
 import os
@@ -12,13 +16,13 @@ import gflags
 from tqdm import tqdm
 import tensorflow as tf
 
-from utils import compute_chunk_size, fig2array
+from utils import split_in_chunks, fig2array
 
 
 def validate(placeholders,
-             eval_outs,
-             val_summary_op,
-             val_reset_cm_op,
+             outs,
+             summary_ops,
+             reset_cm_op,
              which_set='valid',
              epoch_id=None,
              nthreads=2):
@@ -28,10 +32,11 @@ def validate(placeholders,
         warn('Forcing resize_images to False in evaluation.')
         cfg.valid_params.update({'resize_images': False})
 
-    cfg.valid_params['batch_size'] *= cfg.num_splits
     this_set = cfg.Dataset(
         which_set=which_set,
         **cfg.valid_params)
+
+    # Prepare the threads to save the images
     save_basedir = os.path.join('samples', cfg.model_name,
                                 this_set.which_set)
     img_queue = Queue.Queue(maxsize=10)
@@ -64,25 +69,44 @@ def validate(placeholders,
     prev_subset = None
     per_subset_IoUs = {}
     # Reset Confusion Matrix at the beginning of validation
-    cfg.sess.run(val_reset_cm_op)
+    cfg.sess.run(reset_cm_op)
 
+    cidx = (epoch_id*this_set.nbatches)
+    frame_idx = cidx
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():  # Stop requested
             break
-        cidx = (epoch_id*this_set.nbatches) + bidx
 
         ret = this_set.next()
         x_batch, y_batch = ret['data'], ret['labels']
+        assert all(el == ret['subset'][0] for el in ret['subset'])
         subset = ret['subset'][0]
         f_batch = ret['filenames']
         raw_data_batch = ret['raw_data']
 
-        # Reset the confusion matrix if we are switching video
+        # Is this batch shorter than batch_size?
+        # Check if this batch will not be processed by all the devices.
+        # When the sequence is shorter than seq_length or the number of
+        # batches is smaller than batch_size, the batch will be smaller
+        # than usual. When this happens we might not be able to feed all
+        # the CPUs/GPUs altogether. In that case here we compute the
+        # number of GPUs that we can use for the current batch
+        batch_size = cfg.val_batch_size
+        this_len_batch = len(x_batch)
+        # Spread the batch over the lowest number of GPUs
+        this_num_splits = this_len_batch // batch_size
+        if this_len_batch % batch_size != 0:
+            this_num_splits += 1
+        summary_op = summary_ops[this_num_splits - 1]
+
+        # TODO: check the confusion matrix!
+        # Reset the confusion matrix when we switch video
         if this_set.set_has_GT and (not prev_subset or
                                     subset != prev_subset):
-            tf.logging.info('Reset confusion matrix! {} --> {}'.format(
-                prev_subset, subset))
-            cfg.sess.run(val_reset_cm_op)
+            if cfg.summary_per_subset:
+                tf.logging.info('Reset confusion matrix! {} --> {}'.format(
+                    prev_subset, subset))
+                cfg.sess.run(reset_cm_op)
             if cfg.stateful_validation:
                 if subset == 'default':
                     raise RuntimeError(
@@ -90,11 +114,6 @@ def validate(placeholders,
                         'dataset should provide `subset`')
                 # reset_states(model, x_batch.shape)
             prev_subset = subset
-
-        # TODO remove duplication of code
-        # Compute the shape of the input chunk for each GPU
-        split_dim, lab_split_dim = compute_chunk_size(
-            x_batch.shape[0], np.prod(this_set.data_shape[:2]))
 
         if cfg.seq_length and cfg.seq_length > 1:
             x_in = x_batch
@@ -105,9 +124,22 @@ def validate(placeholders,
 
         # if cfg.use_second_path:
         #     x_in = [x_in[..., :3], x_in[..., 3:]]
-        y_in = y_in.flatten()
-        in_values = [x_in, y_in, split_dim, lab_split_dim]
-        feed_dict = {p: v for (p, v) in zip(placeholders, in_values)}
+
+        x_batch_chunks, y_batch_chunks = split_in_chunks(x_in, y_in,
+                                                         this_num_splits)
+
+        # Fill the placeholders with data up to this_num_splits, and
+        # then repeat one of the chunks. Note that this will be
+        # ignored later on (see comment where placeholders are created)
+        [inputs_per_gpu, labels_per_gpu, num_splits,
+         num_batches] = placeholders
+        in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
+                                   fillvalue=x_batch_chunks[0]))
+        in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
+                                        fillvalue=y_batch_chunks[0])))
+        in_vals.extend([(num_splits, this_num_splits)])
+        in_vals.extend([(num_batches, this_len_batch)])
+        feed_dict = {p: v for(p, v) in in_vals}
 
         if this_set.set_has_GT:
             # Class balance
@@ -123,13 +155,13 @@ def validate(placeholders,
             # the summary
             if cidx % cfg.val_summary_freq == 0:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _, summary_str) = cfg.sess.run(eval_outs + [val_summary_op],
+                 _, summary_str) = cfg.sess.run(outs + [summary_op],
                                                 feed_dict=feed_dict)
                 cfg.sv.summary_computed(cfg.sess, summary_str,
                                         global_step=cidx)
             else:
                 (y_pred_batch, y_soft_batch, mIoU, per_class_IoU, loss,
-                 _) = cfg.sess.run(eval_outs, feed_dict=feed_dict)
+                 _) = cfg.sess.run(outs, feed_dict=feed_dict)
             tot_loss += loss
 
             # If fg/bg, just consider the foreground class
@@ -142,22 +174,28 @@ def validate(placeholders,
                 mIoU = np.mean(per_subset_IoUs.values())
 
             pbar.set_postfix({
-                'val loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
+                'loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
                 'mIoU': '{:.3f}'.format(mIoU)})
         else:
-            y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
-                eval_outs[:2] + [val_summary_op], feed_dict=feed_dict)
-            mIoU = 0
-            summary_str = cfg.sess.run(val_summary_op, feed_dict=feed_dict)
-            cfg.sv.summary_computed(cfg.sess, summary_str, global_step=cidx)
-        pbar.update(1)
+            if cidx % cfg.val_summary_freq == 0:
+                y_pred_batch, y_soft_batch, summary_str = cfg.sess.run(
+                    outs[:2] + [summary_op], feed_dict=feed_dict)
+                mIoU = 0
+                cfg.sv.summary_computed(cfg.sess, summary_str,
+                                        global_step=cidx)
+            else:
+                y_pred_batch, y_soft_batch = cfg.sess.run(outs[:2],
+                                                          feed_dict=feed_dict)
         # TODO there is no guarantee that this will be processed
         # in order. We could use condition variables, e.g.,
         # http://python.active-venture.com/lib/condition-objects.html
         #
         # Save image summary for learning visualization
-        img_queue.put((cidx, this_set, x_batch, y_batch, f_batch, subset,
+        img_queue.put((frame_idx, this_set, x_batch, y_batch, f_batch, subset,
                        raw_data_batch, y_pred_batch, y_soft_batch))
+        cidx += 1
+        frame_idx += len(x_batch)
+        pbar.update(1)
     pbar.close()
 
     # Kill the threads
@@ -169,15 +207,15 @@ def validate(placeholders,
     if cfg.summary_per_subset:
         # Write the IoUs per subset (i.e., video) and (potentially) class and
         # their average
-        write_IoUs_summaries(per_subset_IoUs, step=cidx,
+        write_IoUs_summaries(per_subset_IoUs, step=epoch_id,
                              class_labels=class_labels)
-        write_IoUs_summaries({'mean_per_video': mIoU}, step=cidx)
+        write_IoUs_summaries({'mean_per_video': mIoU}, step=epoch_id)
     else:
         # Write the IoUs (potentially per class) and the average IoU over all
         # the sequences
-        write_IoUs_summaries({'global': per_class_IoU}, step=cidx,
+        write_IoUs_summaries({'': per_class_IoU}, step=epoch_id,
                              class_labels=class_labels)
-        write_IoUs_summaries({'global_mean': mIoU}, step=cidx)
+        write_IoUs_summaries({'global_avg': mIoU}, step=epoch_id)
 
     img_queue.join()  # Wait for the threads to be done
     this_set.finish()  # Close the dataset
@@ -185,21 +223,58 @@ def validate(placeholders,
 
 
 def write_IoUs_summaries(IoUs, step=None, class_labels=[]):
+    '''Write per-video, per-class and global IoU summaries in TensorBoard
+
+    Arguments
+    ---------
+    IoUs: dictionary
+        A dictionary if IoUs per "category". The keys of the dictionary
+        can be the subsets (i.e., videos) or more other kinds of
+        categories. The values can either be a single IoU scalar
+        or a list.
+    step: int
+        The current cumulative (i.e., global, not limited to this round
+        of validation) iteration, used as x coordinate in TensorBoard.
+    class_labels: list
+        A list of labels for each class in the dataset. When this is
+        provided and the per-key values are lists of the same length as
+        class_labels, for each subset (or more generally, for each key
+        of IoUs) the per-class IoUs will be printed along with the
+        average over the classes.
+    '''
     cfg = gflags.cfg
 
-    def write_summary(lab, val):
-        summary = tf.Summary.Value(tag='IoUs/' + lab, simple_value=val)
+    def write_summary(labs, val):
+        '''Write a single summary in TensorBoard
+
+        Arguments
+        ---------
+        labs: list
+            A list of labels. The labels will be joined with underscores
+            unless None or empty.
+        val: int or float or iterable
+            The value to be visualized in Tensorboard.
+        '''
+        assert isinstance(labs, (tuple, list))
+        labs = '_'.join([el for el in labs if el not in (None, '')])
+        summary = tf.Summary.Value(tag='IoUs/' + labs, simple_value=val)
         summary_str = tf.Summary(value=[summary])
         cfg.sv.summary_computed(cfg.sess, summary_str, global_step=step)
 
-    for label, IoU in IoUs.iteritems():
-        if len(class_labels) and len(class_labels) == len(IoU):
-            # Write per class value if labels are provided and consistent
-            for class_val, class_label in zip(IoU, class_labels):
-                write_summary('per_class_{}_{}_IoU'.format(label, class_label),
-                              class_val)
+    for labs, vals in IoUs.iteritems():
+        # Write per-class IoU if labels are provided and the number of
+        # items in IoU is equal to the number of labels
+        if len(class_labels) > 2 and len(class_labels) == len(vals):
+            cum_IoU = []
+            # Write per-subset, per-class IoU
+            for class_val, class_label in zip(vals, class_labels):
+                write_summary((labs, '{}_IoU'.format(class_label)), class_val)
+                cum_IoU.append(class_val)
+            # Write avg per-subset
+            write_summary((labs, 'class_avg_IoU'), class_val)
+        # Write per-subset IoU
         else:
-            write_summary('{}_IoU'.format(label), IoU)
+            write_summary((labs, 'IoU'), vals)
 
 
 def save_images(img_queue, save_basedir, sentinel):
@@ -232,8 +307,13 @@ def save_images(img_queue, save_basedir, sentinel):
             cmap = mpl.colors.ListedColormap(cmap)
             labels = this_set.mask_labels
 
-            assert len(x_batch) == len(y_batch) == len(f_batch) == \
-                len(y_pred_batch) == len(y_soft_batch) == len(raw_data_batch)
+            lengths = (len(x_batch), len(y_batch), len(f_batch),
+                       len(y_pred_batch), len(y_soft_batch),
+                       len(raw_data_batch))
+            assert all(el == lengths[0] for el in lengths), (
+                'x_batch: {}\ny_batch: {}\nf_batch: {}\ny_pred_batch: {}\n'
+                'y_soft_batch: {}\nraw_data_batch: {}'.format(*lengths))
+
             # Save samples, iterating over each element of the batch
             for x, y, f, y_pred, y_soft_pred, raw_data in zip(
                     x_batch,
@@ -298,6 +378,7 @@ def save_images(img_queue, save_basedir, sentinel):
                     save_samples_and_animations(sample_in, of, y_pred, y_in,
                                                 cmap, nclasses, labels, subset,
                                                 save_basedir, f, bidx)
+                bidx += 1  # Make sure every batch is in a separate frame
             img_queue.task_done()
         except Queue.Empty:
             continue
@@ -306,7 +387,8 @@ def save_images(img_queue, save_basedir, sentinel):
             # cfg.sv.coord.request_stop(e)
             # raise
             # break
-            tf.logging.error('Error in save_images!! ' + str(e))
+            from traceback import format_exc
+            tf.logging.error('Error in save_images!!\n' + format_exc(e))
             img_queue.task_done()
             continue
 

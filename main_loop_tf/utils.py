@@ -22,25 +22,20 @@ sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
 
-def compute_chunk_size(batch_size, npixels):
+def split_in_chunks(x_batch, y_batch, gpus_used):
     '''Return the splits per gpu
 
     Return
-        * the number of batches per gpu
-        * the number of labels elements per gpu
+        * the batches per gpu
+        * the labels elements per gpu
     '''
-    cfg = gflags.cfg
 
-    # Compute the shape of the input chunk for each GPU
-    a_device_shape = int(batch_size / cfg.num_splits)
-    split_dim = [a_device_shape] * cfg.num_splits
-    if batch_size % cfg.num_splits != 0:
-        # Fill the last device with what remains
-        split_dim[-1] = batch_size % cfg.num_splits
-    # Labels are flattened, so we need to take into account the
-    # pixels as well
-    labels_split_dim = [el * npixels for el in split_dim]
-    return split_dim, labels_split_dim
+    x_batch_chunks = np.array_split(x_batch, gpus_used)
+    y_batch_chunks = np.array_split(y_batch, gpus_used)
+    for i in range(gpus_used):
+        y_batch_chunks[i] = y_batch_chunks[i].flatten()
+
+    return x_batch_chunks, y_batch_chunks
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
@@ -215,6 +210,17 @@ def fig2array(fig):
     buf.shape = (h, w, 3)
 
     return buf
+
+
+def squash_maybe(scope_str, var_name):
+    cfg = gflags.cfg
+    if cfg.group_summaries and var_name.count('/') >= 2:
+        # Squash the first two levels into the name_scope
+        # to merge the summaries that belong to the same
+        # part of the model together in tensorboard
+        scope_str = '_'.join([scope_str] + var_name.split('/')[:2])
+        var_name = '/'.join(var_name.split('/')[2:])
+    return scope_str, var_name
 
 
 class TqdmHandler(logging.StreamHandler):
