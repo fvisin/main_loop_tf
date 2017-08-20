@@ -23,10 +23,10 @@ gflags.DEFINE_bool('staircase', False, 'Whether to apply decay in a '
                    'fashion.')
 
 # Specific params for Piecewise Constant
-gflags_ext.DEFINE_intlistlist('lr_boundaries', None,
-                              'A list of Tensors or ints or floats'
-                              'with strictly increasing entries, and with all'
-                              'elements having the same type as the index.')
+gflags_ext.DEFINE_intlist('lr_boundaries', None,
+                          'A list of Tensors or ints or floats'
+                          'with strictly increasing entries, and with all'
+                          'elements having the same type as the index.')
 gflags_ext.DEFINE_floatlist('lr_values', None, 'List of learning rate')
 
 # Specific params for Exponential Decay

@@ -9,6 +9,7 @@ gflags.DEFINE_string('dataset', None, 'The dataset')
 gflags.DEFINE_string('of', None, 'Whether to have the opt flow as an input')
 gflags.DEFINE_integer('seq_length', None, 'The length of the sequence, in '
                       'case the input is a video', lower_bound=0)
+gflags.DEFINE_string('output_frame', 'last', '[middle/last/all]')
 gflags.DEFINE_integer('seq_per_subset', None, 'Limit the number of sequences '
                       'per subset (i.e., video or prefix or directory).  If '
                       'zero all the possible sequences will be returned',
@@ -35,3 +36,7 @@ gflags.DEFINE_integer('val_overlap', None, 'The overlap (in number of frames) '
                       'of consecutive sequences of the same video for '
                       'validation. If negative not all the frames will be '
                       'returned')
+gflags_ext.DEFINE_multidict('train_extra_params', {},
+                            'Dataset train extra params')
+gflags_ext.DEFINE_multidict('val_extra_params', {},
+                            'Dataset valid extra params')

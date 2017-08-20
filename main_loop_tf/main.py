@@ -12,15 +12,11 @@ from time import time
 import dataset_loaders
 import numpy as np
 import tensorflow as tf
-from tensorflow import nn
-from tensorflow.contrib import slim
-from tensorflow.python.ops.nn import sparse_softmax_cross_entropy_with_logits
 from tensorflow.python.training import training
 from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
-import loss
 from loss import mean_iou as compute_mean_iou
 from utils import (apply_loss, split_in_chunks, save_repos_hash,
                    average_gradients, process_gradients, squash_maybe,
@@ -55,10 +51,10 @@ gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
                      'Supervisor')
 
 
-def run(argv, build_model):
+def run(argv, build_model, build_loss):
     __parse_config(argv)
     # Run main with the remaining arguments
-    __run(build_model)
+    __run(build_model, build_loss)
 
 
 def __parse_config(argv=None):
@@ -142,12 +138,14 @@ def __parse_config(argv=None):
 
     # Dataset
     try:
-        Dataset = getattr(dataset_loaders, cfg.dataset)
+        Dataset = getattr(dataset_loaders, cfg.dataset + 'Dataset')
     except AttributeError:
         Dataset = getattr(dataset_loaders, cfg.dataset.capitalize() +
                           'Dataset')
+
     cfg.Dataset = Dataset
-    dataset_params = {}
+    # Add dataset extra parameters specific for the dataset
+    dataset_params = cfg.train_extra_params
     dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
     dataset_params['data_augm_kwargs'] = {}
     dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
@@ -161,24 +159,11 @@ def __parse_config(argv=None):
     if cfg.seq_length:
         dataset_params['seq_length'] = cfg.seq_length
 
-        cfg.input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
-        cfg.val_input_shape = [None, cfg.seq_length] + list(Dataset.data_shape)
-
-        if cfg.of:
-            cfg.input_shape[-1] = 6
-            cfg.val_input_shape[-1] = 6
-
-        if cfg.crop_size:
-            cfg.input_shape[2:4] = cfg.crop_size
         ret_ext_seq = cfg.return_extended_sequences
         ret_middle_frame = cfg.return_middle_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
         dataset_params['return_middle_frame_only'] = ret_middle_frame
-    else:
-        cfg.input_shape = [None] + list(Dataset.data_shape)
-        cfg.val_input_shape = [None] + list(Dataset.data_shape)
-        if cfg.crop_size:
-            cfg.input_shape[1:3] = cfg.crop_size
+
     dataset_params['use_threads'] = cfg.use_threads
     dataset_params['nthreads'] = cfg.nthreads
     dataset_params['remove_per_img_mean'] = cfg.remove_per_img_mean
@@ -198,11 +183,46 @@ def __parse_config(argv=None):
         'use_threads': False,  # prevent shuffling
         # prevent crop
         'data_augm_kwargs': {'return_optical_flow': cfg.of}})
+    # Add dataset extra parameters specific for each dataset
+    cfg.valid_params.update(cfg.val_extra_params)
+
+    # Create temporary dataset object (training/validation) to get
+    # dynamic class elements (e.g. data_shape)
+    train_temp = Dataset(
+        which_set='train',
+        return_list=False,
+        **dataset_params)
+    valid_temp = Dataset(
+        which_set='valid',
+        **cfg.valid_params)
+
+    if cfg.seq_length:
+        cfg.input_shape = [None, cfg.seq_length] + list(
+            train_temp.next()['data'].shape[2:])
+        cfg.val_input_shape = [None, cfg.seq_length] + list(
+            valid_temp.next()['data'].shape[2:])
+
+        if cfg.of:
+            cfg.input_shape[-1] = 6
+            cfg.val_input_shape[-1] = 6
+
+        if cfg.crop_size:
+            cfg.input_shape[2:4] = cfg.crop_size
+    else:
+        cfg.input_shape = [None] + list(train_temp.next()['data'].shape[1:])
+        cfg.val_input_shape = [None] + list(
+            valid_temp.next()['data'].shape[1:])
+        if cfg.crop_size:
+            cfg.input_shape[1:3] = cfg.crop_size
+
     cfg.void_labels = getattr(Dataset, 'void_labels', [])
     cfg.nclasses = Dataset.non_void_nclasses
     cfg.nclasses_w_void = Dataset.nclasses
     tf.logging.info('{} classes ({} non-void):'.format(cfg.nclasses_w_void,
                                                        cfg.nclasses))
+    # Destroy temporary dataset objects
+    train_temp.finish()
+    valid_temp.finish()
 
     # Optimization
     try:
@@ -210,20 +230,12 @@ def __parse_config(argv=None):
     except AttributeError:
         cfg.Optimizer = getattr(training, cfg.optimizer.capitalize() +
                                 'Optimizer')
-    try:
-        loss_fn = getattr(nn, cfg.loss_fn)
-    except AttributeError:
-        try:
-            loss_fn = getattr(nn, cfg.loss_fn.capitalize())
-        except AttributeError:
-            loss_fn = getattr(loss, cfg.loss_fn)
-    cfg.loss_fn = loss_fn
 
     cfg.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                     max(1, cfg.val_every_epochs) - 1)
 
 
-def __run(build_model):
+def __run(build_model, build_loss):
     cfg = gflags.cfg
 
     # ============ Class balance
@@ -301,6 +313,7 @@ def __run(build_model):
         val_placeholders = [val_inputs_per_gpu, labels_per_gpu, num_splits,
                             num_batches]
 
+        # TODO: move LR schedule inside Object Optimizer, to be created
         # Learning rate schedule
         if cfg.lr_decay is None:
             lr = cfg.lr
@@ -334,6 +347,10 @@ def __run(build_model):
                                              cfg.decay_steps,
                                              cfg.decay_rate,
                                              staircase=cfg.staircase)
+
+        elif cfg.lr_decay == 'STN':
+            epoch = tf.cast(cfg.global_step / cfg.decay_steps, tf.int32)
+            lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
         else:
             raise NotImplementedError()
         cfg.Optimizer = cfg.Optimizer(learning_rate=lr, **cfg.optimizer_params)
@@ -348,6 +365,7 @@ def __run(build_model):
                 placeholders,
                 cfg.input_shape,
                 build_model,
+                build_loss,
                 'train')
 
             # Build the validation graphs (reusing variables)
@@ -359,6 +377,7 @@ def __run(build_model):
                     val_placeholders,
                     cfg.val_input_shape,
                     build_model,
+                    build_loss,
                     s)
                 val_outs[s], val_summary_ops[s], val_reset_cm_ops[s] = ret
 
@@ -446,7 +465,7 @@ def __run(build_model):
                         which_set='eval_' + s)
 
 
-def build_graph(placeholders, input_shape, build_model, which_set):
+def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     ''' Build the multiGPU graph of computation
 
     This function creates a copy of the computation graph on each GPU. The
@@ -484,10 +503,10 @@ def build_graph(placeholders, input_shape, build_model, which_set):
         summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
     # Init variables
+    tower_preds = {}
     tower_grads = []
-    tower_preds = []
-    tower_soft_preds = []
     tower_losses = []
+    tower_loss_components = []
     summaries = []
 
     # Process backwards, so that the i-th summary includes all the summaries
@@ -504,30 +523,54 @@ def build_graph(placeholders, input_shape, build_model, which_set):
             reuse_variables = True
 
             # Model output, softmax and prediction
-            net_out = build_model(dev_inputs, is_training)
-            softmax_pred = slim.softmax(net_out)
-            tower_soft_preds.append(softmax_pred)
-            pred = tf.argmax(softmax_pred, axis=-1)
-            tower_preds.append(pred)
+            pred_dict = build_model(dev_inputs, is_training)
+
+            assert pred_dict is not None and isinstance(pred_dict, dict), """
+                Your model should return a dictionary"""
+            assert 'out_preact' in pred_dict, """Your model function should
+                return a dictionary with attribute 'out_preact'!"""
+            assert 'out_act' in pred_dict, """Your model function should
+                return a dictionary with attribute 'out_act'!"""
+            assert 'pred' in pred_dict, """Your model function should
+                return a dictionary with at least attribute 'pred'!"""
+
+            # Group outputs from each tower
+            if tower_preds:
+                for k, v in pred_dict.iteritems():
+                    tower_preds[k].append(v)
+            else:
+                for k, v in pred_dict.iteritems():
+                    tower_preds[k] = [v]
 
             # Loss
-            if loss_fn is not sparse_softmax_cross_entropy_with_logits:
-                # sparse_softmax_cross_entropy applies the
-                # softmax internally
-                net_out = softmax_pred
-            loss = apply_loss(dev_labels, net_out, loss_fn,
-                              weight_decay, is_training,
-                              return_mean_loss=True)
+            # Use preactivation because softmax is already in xEntropy
+
+            # TODO: create **loss_params to  be defined in model repo
+            loss_dict = build_loss(dev_labels, pred_dict, loss_fn,
+                                   l2_reg=weight_decay)
+
+            assert loss_dict is not None and isinstance(loss_dict, dict), """
+                Your loss should return a dictionary"""
+            assert 'loss' in loss_dict, """Your loss function should
+                return a dictionary with attribute 'loss'!"""
+            assert 'components' in loss_dict, """Your loss function should
+                return a dictionary with attribute 'loss'!"""
+            assert 'components_names' in loss_dict, """Your loss function should
+                return a dictionary with attribute 'loss'!"""
+
+            loss = loss_dict['loss']
             tower_losses.append(loss)
+            tower_loss_components.append(loss_dict['components'])
 
             # Remove the name_scopes (the one from the variable_scope and
             # the one from the name_scope) and assign dev_set_str
+            # TODO: maybe need to use this later
             with tf.name_scope(None):
                 with tf.name_scope(dev_set_str + '_stats') as dev_set_scope:
                     tf.summary.scalar('Loss', loss, summaries)
 
             # Gradients
-            # TODO is it possible to move it in a function?
+            # TODO: Move inside Object Optimizer to be created
             if is_training:
 
                 # 1) Compute gradients
@@ -618,15 +661,17 @@ def build_graph(placeholders, input_shape, build_model, which_set):
             tf.logging.debug('Regularization losses:\n{}'.format(v))
 
     # Merge the towers on CPU
-    preds = tf.concat(tower_preds, axis=0, name='concat_preds')
-    preds = preds[:num_batches]
-    preds_flat = tf.reshape(preds, [-1])
-    tf.summary.scalar('control_flow/batch_size_' + which_set,
-                      tf.shape(preds)[0], summaries)
+    # Towers contain dictionary
+    preds = {}
+    for k, v in tower_preds.iteritems():
+        # Convert from list of tensors to catenated tensor
+        preds[k] = tf.concat(tower_preds[k], axis=0, name='concat_%s' % k)
+        preds[k] = preds[k][:num_batches]
 
-    # Convert from list of tensors to tensor, and average
-    softmax_preds = tf.concat(tower_soft_preds, axis=0, name='concat_softmax')
-    softmax_preds = softmax_preds[:num_batches]
+    preds_flat = tf.reshape(preds['pred'], [-1])
+
+    tf.summary.scalar('control_flow/batch_size_' + which_set,
+                      tf.shape(preds['pred'])[0], summaries)
 
     # Concatenate the per-gpu placeholders to get a placeholder for the
     # full list of gpus and one for the subset to be used for
@@ -634,23 +679,41 @@ def build_graph(placeholders, input_shape, build_model, which_set):
     labels = tf.concat(labels_per_gpu, axis=0, name='concat_labels')
     # Remove the unused batches from the flattened labels
     # (equivalent to labels[:np.prod(preds.shape)])
-    labels = labels[:tf.shape(tf.reshape(preds, [-1]))[0]]
+    labels = labels[:tf.shape(tf.reshape(preds['pred'], [-1]))[0]]
 
-    # TODO Compute it for training as well (requires a dict of cms per
-    # subset + adding one_subset_per_batch to training as well)
-    # Compute the (potentially masked) mean IoU
-    mask = tf.ones_like(labels)
-    if len(cfg.void_labels):
-        mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
-    m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
-        labels, preds_flat, nclasses, mask)
+    if cfg.compute_mean_iou:
+        # TODO Compute it for training as well (requires a dict of cms per
+        # subset + adding one_subset_per_batch to training as well)
+        # Compute the (potentially masked) mean IoU
+        mask = tf.ones_like(labels)
+        if len(cfg.void_labels):
+            mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
+        m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
+            labels, preds_flat, nclasses, mask)
+    else:
+        cm_update_op = None
+        reset_cm_op = None
 
     # Compute the average *per variable* over the towers
     losses = tf.stack(tower_losses, axis=0, name='concat_losses')
     losses = losses[:num_splits]
     avg_tower_loss = tf.reduce_mean(losses)
-    scope_str = dev_set_str + '_%s'
+    scope_str = dev_set_str + '_%s/Total_Loss'
     tf.summary.scalar(scope_str % 'Mean_tower_loss', avg_tower_loss, summaries)
+
+    # Compute the average of the loss per each component
+    # (Just for visualization purpose)
+    loss_components = zip(*tower_loss_components)
+    loss_names = loss_dict['components_names']
+    for (comp_name, tower_loss_comp) in zip(loss_names, loss_components):
+        # Compute the average *per variable* over the towers
+        loss_comp = tf.stack(tower_loss_comp, axis=0,
+                             name='concat_losses_comp_%s' % comp_name)
+        loss_comp = loss_comp[:num_splits]
+        avg_tower_loss_comp = tf.reduce_mean(loss_comp)
+        scope_str = dev_set_str + '_%s/%s'
+        tf.summary.scalar(scope_str % ('Mean_tower_loss', comp_name),
+                          avg_tower_loss_comp, summaries)
 
     # Gradient descent
     if is_training:
@@ -676,8 +739,16 @@ def build_graph(placeholders, input_shape, build_model, which_set):
 
         outs = [avg_tower_loss, train_ops]
     else:
-        outs = [preds, softmax_preds, m_iou, per_class_iou,
-                avg_tower_loss, cm_update_op]
+        metrics_out = []
+        if cfg.compute_mean_iou:
+            metrics_out.append(m_iou, per_class_iou)
+
+        outs = {}
+        outs.update(preds)
+        outs.update({'metrics_out': metrics_out,
+                     'avg_tower_loss': avg_tower_loss})
+        if cm_update_op is not None:
+            outs.update({'cm_update_op': cm_update_op})
 
     # TODO: Averaged gradients visualisation
     # Add the histograms of the gradients
@@ -863,6 +934,10 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
         # Validate if last epoch, early stop or we reached valid_every
         if last_epoch or estop or not val_skip:
             mean_iou = {}
+
+            # TODO: ok so far... but validate should be a wrapper too
+            # because it is task dependent and you can have different
+            # metrics or visualizations
             from validate import validate
             for s in cfg.val_on_sets:
                 mean_iou[s] = validate(
