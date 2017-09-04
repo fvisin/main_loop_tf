@@ -5,7 +5,7 @@ from main_loop_tf import gflags_ext
 # Summaries and samples
 gflags.DEFINE_bool('show_samples_summaries', True, 'Whether to save the '
                    'GT/Prediction image summaries')
-gflags.DEFINE_bool('show_heatmaps_summaries', True, 'Whether to save the '
+gflags.DEFINE_bool('show_heatmaps_summaries', False, 'Whether to save the '
                    'summaries of the heatmaps of the softmax distribution '
                    'per each class')
 gflags.DEFINE_bool('save_gif_on_disk', False, 'Whether to save a GIF '

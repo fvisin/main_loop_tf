@@ -43,8 +43,7 @@ gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
                    'the first and last frame of each video to allow for '
                    'middle frame prediction')
-gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
-                   'the middle frame segmentation mask only for each sequence')
+gflags.DEFINE_bool('return_target_frame_only', True, '')
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
 gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
@@ -86,7 +85,7 @@ def __parse_config(argv=None):
                     'debug', 'debug_of', 'devices', 'do_validation_only',
                     'group_summaries', 'help', 'hyperparams_summaries',
                     'max_epochs', 'min_epochs', 'model_name', 'nthreads',
-                    'patience', 'return_middle_frame_only', 'restore_model',
+                    'patience', 'target_frame', 'restore_model',
                     'save_gif_frames_on_disk', 'save_gif_on_disk',
                     'save_raw_predictions_on_disk', 'show_heatmaps_summaries',
                     'show_samples_summaries', 'supervisor_master',
@@ -160,9 +159,10 @@ def __parse_config(argv=None):
         dataset_params['seq_length'] = cfg.seq_length
 
         ret_ext_seq = cfg.return_extended_sequences
-        ret_middle_frame = cfg.return_middle_frame_only
+        ret_target_only = cfg.return_target_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
-        dataset_params['return_middle_frame_only'] = ret_middle_frame
+        dataset_params['return_target_frame_only'] = ret_target_only
+        dataset_params['target_frame'] = cfg.target_frame
 
     dataset_params['use_threads'] = cfg.use_threads
     dataset_params['nthreads'] = cfg.nthreads
@@ -178,7 +178,7 @@ def __parse_config(argv=None):
         'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
-        'return_middle_frame_only': False,
+        'return_target_frame_only': False,
         'one_subset_per_batch': True,  # prevent multiple subsets in one batch
         'use_threads': False,  # prevent shuffling
         # prevent crop
@@ -196,6 +196,8 @@ def __parse_config(argv=None):
         which_set='valid',
         **cfg.valid_params)
 
+    # TODO: check fvisin comment, this is not the correct behavior, but
+    # it's done in order to work with movingMNST iirc
     if cfg.seq_length:
         cfg.input_shape = [None, cfg.seq_length] + list(
             train_temp.next()['data'].shape[2:])
@@ -503,10 +505,9 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
         summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
     # Init variables
-    tower_preds = {}
+    tower_out_dict = {}
+    tower_loss_dict = {}
     tower_grads = []
-    tower_losses = []
-    tower_loss_components = []
     summaries = []
 
     # Process backwards, so that the i-th summary includes all the summaries
@@ -523,30 +524,24 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             reuse_variables = True
 
             # Model output, softmax and prediction
-            pred_dict = build_model(dev_inputs, is_training)
+            model_out_dict = build_model(dev_inputs, is_training)
 
-            assert pred_dict is not None and isinstance(pred_dict, dict), """
+            assert isinstance(model_out_dict, dict), """
                 Your model should return a dictionary"""
-            assert 'out_preact' in pred_dict, """Your model function should
+            assert 'out_preact' in model_out_dict, """Your model function should
                 return a dictionary with attribute 'out_preact'!"""
-            assert 'out_act' in pred_dict, """Your model function should
+            assert 'out_act' in model_out_dict, """Your model function should
                 return a dictionary with attribute 'out_act'!"""
-            assert 'pred' in pred_dict, """Your model function should
+            assert 'pred' in model_out_dict, """Your model function should
                 return a dictionary with at least attribute 'pred'!"""
 
-            # Group outputs from each tower
-            if tower_preds:
-                for k, v in pred_dict.iteritems():
-                    tower_preds[k].append(v)
-            else:
-                for k, v in pred_dict.iteritems():
-                    tower_preds[k] = [v]
+            # Group outputs from each model tower
+            for k, v in model_out_dict.iteritems():
+                tower_out_dict.setdefault(k, []).append(v)
 
             # Loss
-            # Use preactivation because softmax is already in xEntropy
-
             # TODO: create **loss_params to  be defined in model repo
-            loss_dict = build_loss(dev_labels, pred_dict, loss_fn,
+            loss_dict = build_loss(dev_labels, model_out_dict, loss_fn,
                                    l2_reg=weight_decay)
 
             assert loss_dict is not None and isinstance(loss_dict, dict), """
@@ -554,20 +549,20 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             assert 'loss' in loss_dict, """Your loss function should
                 return a dictionary with attribute 'loss'!"""
             assert 'components' in loss_dict, """Your loss function should
-                return a dictionary with attribute 'loss'!"""
-            assert 'components_names' in loss_dict, """Your loss function should
-                return a dictionary with attribute 'loss'!"""
+                return a dictionary with attribute 'components'
+                containing the list of terms that composes the total loss!"""
 
-            loss = loss_dict['loss']
-            tower_losses.append(loss)
-            tower_loss_components.append(loss_dict['components'])
+            # Group outputs from each loss tower
+            for k, v in loss_dict.iteritems():
+                tower_loss_dict.setdefault(k, []).append(v)
 
             # Remove the name_scopes (the one from the variable_scope and
             # the one from the name_scope) and assign dev_set_str
-            # TODO: maybe need to use this later
+            # TODO:
+            # This is the loss per each gpu tower (Maybe useless)
             with tf.name_scope(None):
                 with tf.name_scope(dev_set_str + '_stats') as dev_set_scope:
-                    tf.summary.scalar('Loss', loss, summaries)
+                    tf.summary.scalar('Loss', loss_dict['loss'], summaries)
 
             # Gradients
             # TODO: Move inside Object Optimizer to be created
@@ -575,7 +570,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
                 # 1) Compute gradients
                 grads = optimizer.compute_gradients(
-                     loss, colocate_gradients_with_ops=True)
+                     loss_dict['loss'], colocate_gradients_with_ops=True)
 
                 # 2) Process gradients, average them later
                 if cfg.grad_noise_decay is None:
@@ -662,25 +657,25 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
     # Merge the towers on CPU
     # Towers contain dictionary
-    preds = {}
-    for k, v in tower_preds.iteritems():
+    out_dict = {}
+    for k, v in tower_out_dict.iteritems():
         # Convert from list of tensors to catenated tensor
-        preds[k] = tf.concat(tower_preds[k], axis=0, name='concat_%s' % k)
-        preds[k] = preds[k][:num_batches]
-
-    preds_flat = tf.reshape(preds['pred'], [-1])
+        out_dict[k] = tf.concat(tower_out_dict[k], axis=0,
+                                name='concat_%s' % k)
+        out_dict[k] = out_dict[k][:num_batches]
 
     tf.summary.scalar('control_flow/batch_size_' + which_set,
-                      tf.shape(preds['pred'])[0], summaries)
+                      tf.shape(out_dict['pred'])[0], summaries)
 
     # Concatenate the per-gpu placeholders to get a placeholder for the
     # full list of gpus and one for the subset to be used for
     # the minibatch with less batches
     labels = tf.concat(labels_per_gpu, axis=0, name='concat_labels')
     # Remove the unused batches from the flattened labels
-    # (equivalent to labels[:np.prod(preds.shape)])
-    labels = labels[:tf.shape(tf.reshape(preds['pred'], [-1]))[0]]
+    # (equivalent to labels[:np.prod(out_dict.shape)])
+    labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
 
+    # TODO: add metrics callback
     if cfg.compute_mean_iou:
         # TODO Compute it for training as well (requires a dict of cms per
         # subset + adding one_subset_per_batch to training as well)
@@ -688,14 +683,16 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
         mask = tf.ones_like(labels)
         if len(cfg.void_labels):
             mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
+
+        pred_flat = tf.reshape(out_dict['pred'], [-1])
         m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
-            labels, preds_flat, nclasses, mask)
+            labels, pred_flat, nclasses, mask)
     else:
         cm_update_op = None
         reset_cm_op = None
 
     # Compute the average *per variable* over the towers
-    losses = tf.stack(tower_losses, axis=0, name='concat_losses')
+    losses = tf.stack(tower_loss_dict['loss'], axis=0, name='concat_losses')
     losses = losses[:num_splits]
     avg_tower_loss = tf.reduce_mean(losses)
     scope_str = dev_set_str + '_%s/Total_Loss'
@@ -703,9 +700,12 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
     # Compute the average of the loss per each component
     # (Just for visualization purpose)
-    loss_components = zip(*tower_loss_components)
-    loss_names = loss_dict['components_names']
-    for (comp_name, tower_loss_comp) in zip(loss_names, loss_components):
+    tower_loss_comp_dict = {}
+    for el in tower_loss_dict['components']:
+        for k, v in el.iteritems():
+            tower_loss_comp_dict.setdefault(k, []).append(v)
+
+    for (comp_name, tower_loss_comp) in tower_loss_comp_dict.iteritems():
         # Compute the average *per variable* over the towers
         loss_comp = tf.stack(tower_loss_comp, axis=0,
                              name='concat_losses_comp_%s' % comp_name)
@@ -737,14 +737,14 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     grads_and_vars=grads_and_vars,
                     global_step=global_step))
 
-        outs = [avg_tower_loss, train_ops]
+        outs = {'avg_tower_loss': avg_tower_loss, 'train_ops': train_ops}
     else:
         metrics_out = []
         if cfg.compute_mean_iou:
             metrics_out.append(m_iou, per_class_iou)
 
         outs = {}
-        outs.update(preds)
+        outs.update(out_dict)
         outs.update({'metrics_out': metrics_out,
                      'avg_tower_loss': avg_tower_loss})
         if cm_update_op is not None:
@@ -783,7 +783,6 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     summary_ops = []
     for _, s in enumerate(summaries[::-1]):
         summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
-
     return outs, summary_ops, reset_cm_op
 
 
@@ -825,7 +824,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
         cv2.namedWindow("rgb-optflow")
 
     while not sv.should_stop():
-        epoch_id = cum_iter // train.nbatches
+        epoch_id = (cum_iter+1) // train.nbatches
         summary = tf.Summary.Value(tag='control_flow/Epoch',
                                    simple_value=epoch_id + 1)
         summary_str = tf.Summary(value=[summary])
@@ -878,9 +877,14 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             this_num_splits = this_len_batch // batch_size
             if this_len_batch % batch_size != 0:
                 this_num_splits += 1
-            this_train_outs = ([train_outs[0]] +
-                               [train_outs[1][this_num_splits - 1]])
-            this_summary_op = train_summary_ops[this_num_splits - 1]
+
+            train_dict = {
+                'avg_tower_loss': train_outs['avg_tower_loss'],
+                'train_op': train_outs['train_ops'][this_num_splits - 1]}
+            train_summary_dict = {
+                'avg_tower_loss': train_outs['avg_tower_loss'],
+                'train_op': train_outs['train_ops'][this_num_splits - 1],
+                'summary_op': train_summary_ops[this_num_splits - 1]}
 
             # Get the per-device inputs
             x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
@@ -903,18 +907,19 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
 
             # Compute (summaries and) loss
             if cum_iter % cfg.train_summary_freq == 0:
-                loss_value, _, summary_str = cfg.sess.run(
-                    this_train_outs + [this_summary_op],
+                fetch_dict = cfg.sess.run(
+                    train_summary_dict,
                     feed_dict=feed_dict)
-                sv.summary_computed(cfg.sess, summary_str)
+                sv.summary_computed(cfg.sess, fetch_dict['summary_op'])
             else:
-                loss_value, _ = cfg.sess.run(this_train_outs,
-                                             feed_dict=feed_dict)
+                fetch_dict = cfg.sess.run(train_dict,
+                                          feed_dict=feed_dict)
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id+1))
-            pbar.set_postfix({'D': '{:.2f}s'.format(t_data_load),
-                              'loss': '{:.3f}'.format(loss_value)})
+            pbar.set_postfix(
+                {'D': '{:.2f}s'.format(t_data_load),
+                 'loss': '{:.3f}'.format(fetch_dict['avg_tower_loss'])})
             pbar.update(1)
 
         # It's the end of the epoch

@@ -123,9 +123,9 @@ def validate(placeholders,
 
         if cfg.seq_length and y_batch.shape[1] > 1:
             x_in = x_batch
-            if cfg.output_frame == 'middle':
+            if cfg.target_frame == 'middle':
                 y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
-            if cfg.output_frame == 'last':
+            if cfg.target_frame == 'last':
                 y_in = y_batch[:, cfg.seq_length - 1, ...]
         else:
             x_in = x_batch
@@ -362,9 +362,9 @@ def save_images(img_queue, save_basedir, sentinel):
                 # y_pred = np.expand_dims(y_pred, -1)
                 if len(x.shape) == 4:
                     seq_length = x_batch.shape[1]
-                    if cfg.output_frame == 'middle':
+                    if cfg.target_frame == 'middle':
                         which_frame = seq_length // 2
-                    elif cfg.output_frame == 'last':
+                    elif cfg.target_frame == 'last':
                         which_frame = seq_length - 1
                 else:
                     which_frame = 0
@@ -550,8 +550,9 @@ def save_samples_and_animations(raw_data, of, of_pred, y_pred, y, cmap,
 
     # This element is not used
     if cfg.model_returns_of:
-        grid[5].set_visible(False)
-
+        # grid[5].set_visible(False)
+        abs_diff = np.squeeze(np.abs(y-y_pred))
+        grid[5].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
     # image
     if raw_data.shape[-1] == 1:
         raw_data_cmap = 'gray'
