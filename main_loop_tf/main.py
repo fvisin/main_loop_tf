@@ -512,8 +512,8 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     # Process backwards, so that the i-th summary includes all the summaries
     # of the devices up to the i-th
     for device, dev_inputs, dev_labels in zip(devices[::-1],
-                                              inputs_per_gpu[::-1],
-                                              labels_per_gpu[::-1]):
+                                              inputs_per_gpu,
+                                              labels_per_gpu):
         device_str = device.replace('/', '').replace(':', '').lower()
         dev_set_str = '{}_{}'.format(device_str, which_set)
         summaries.append(summaries_str % device_str)  # will be reversed
