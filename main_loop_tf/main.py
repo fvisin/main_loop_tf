@@ -43,7 +43,7 @@ gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
                    'the first and last frame of each video to allow for '
                    'middle frame prediction')
-gflags.DEFINE_bool('return_middle_frame_only', True, '')
+gflags.DEFINE_bool('return_middle_frame_only', False, '')
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
 gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
@@ -446,7 +446,7 @@ def __run(build_model, build_loss):
                                    'val_outs': val_outs,
                                    'val_summary_ops': val_summary_ops,
                                    'val_reset_cm_ops': val_reset_cm_ops,
-                                   'loss_fn': cfg.loss_fn,
+                                   'loss_fn': cfg.loss_fn_rec,
                                    'Dataset': cfg.Dataset,
                                    'dataset_params': cfg.dataset_params,
                                    'valid_params': cfg.valid_params,
@@ -487,7 +487,8 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     cfg = gflags.cfg
     optimizer = cfg.Optimizer
     weight_decay = cfg.weight_decay
-    loss_fn = cfg.loss_fn
+    loss_fn_rec = cfg.loss_fn_rec
+    loss_fn_segm = cfg.loss_fn_segm
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
@@ -523,7 +524,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             reuse_variables = True
 
             # Model output, softmax and prediction
-            model_out_dict = build_model(dev_inputs, is_training)
+            model_out_dict = build_model(dev_inputs, dev_labels, is_training)
 
             assert isinstance(model_out_dict, dict), """
                 Your model should return a dictionary"""
@@ -540,7 +541,8 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
             # Loss
             # TODO: create **loss_params to  be defined in model repo
-            loss_dict = build_loss(dev_labels, model_out_dict, loss_fn,
+            loss_dict = build_loss(dev_labels, model_out_dict, loss_fn_rec,
+                                   loss_fn_segm,
                                    l2_reg=weight_decay,
                                    inputs=dev_inputs)
 
@@ -671,22 +673,28 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     # full list of gpus and one for the subset to be used for
     # the minibatch with less batches
     labels = tf.concat(labels_per_gpu, axis=0, name='concat_labels')
+    labels_iou = tf.reshape(labels, [-1] +
+                            inputs_per_gpu[0].get_shape().as_list()[1:3] + [1])
+    labels_iou = labels_iou[:, cfg.seq_length // 2, ...]
+    labels_iou = tf.reshape(labels_iou, [-1])
     # Remove the unused batches from the flattened labels
     # (equivalent to labels[:np.prod(out_dict.shape)])
     labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
+    labels_iou = labels_iou[:tf.shape(
+        tf.reshape(out_dict['pred_mask'], [-1]))[0]]
 
     # TODO: add metrics callback
     if cfg.compute_mean_iou:
         # TODO Compute it for training as well (requires a dict of cms per
         # subset + adding one_subset_per_batch to training as well)
         # Compute the (potentially masked) mean IoU
-        mask = tf.ones_like(labels)
+        mask = tf.ones_like(labels_iou)
         if len(cfg.void_labels):
-            mask = tf.cast(tf.less_equal(labels, nclasses), tf.int32)
+            mask = tf.cast(tf.less_equal(labels_iou, nclasses), tf.int32)
 
-        pred_flat = tf.reshape(out_dict['pred'], [-1])
+        pred_flat = tf.reshape(out_dict['pred_mask'], [-1])
         m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
-            labels, pred_flat, nclasses, mask)
+            labels_iou, pred_flat, nclasses, mask)
     else:
         cm_update_op = None
         reset_cm_op = None
@@ -739,14 +747,17 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
         outs = {'avg_tower_loss': avg_tower_loss, 'train_ops': train_ops}
     else:
-        metrics_out = []
-        if cfg.compute_mean_iou:
-            metrics_out.append(m_iou, per_class_iou)
-
         outs = {}
         outs.update(out_dict)
-        outs.update({'metrics_out': metrics_out,
-                     'avg_tower_loss': avg_tower_loss})
+        # metrics_out = []
+        if cfg.compute_mean_iou:
+            # metrics_out.append(m_iou, per_class_iou)
+            outs.update({'m_iou': m_iou,
+                         'per_class_iou': per_class_iou})
+
+        outs.update({  # 'metrics_out': metrics_out,
+                     'vg_tower_loss': avg_tower_loss})
+
         if cm_update_op is not None:
             outs.update({'cm_update_op': cm_update_op})
 

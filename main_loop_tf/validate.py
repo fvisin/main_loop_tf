@@ -107,8 +107,7 @@ def validate(placeholders,
         # TODO: check the confusion matrix!
         if cfg.compute_mean_iou:
             # Reset the confusion matrix when we switch video
-            if this_set.set_has_GT and (not prev_subset or
-                                        subset != prev_subset):
+            if not prev_subset or subset != prev_subset:
                 if cfg.summary_per_subset:
                     tf.logging.info('Reset confusion matrix! {} --> {}'.format(
                         prev_subset, subset))
@@ -124,9 +123,9 @@ def validate(placeholders,
         if cfg.seq_length and y_batch.shape[1] > 1:
             x_in = x_batch
             if cfg.target_frame == 'middle':
-                y_in = y_batch[:, cfg.seq_length // 2, ...]  # 4D: not one-hot
+                y_in = y_batch  # [:, cfg.seq_length // 2, ...]  # 4D: not one-hot
             if cfg.target_frame == 'last':
-                y_in = y_batch[:, cfg.seq_length - 1, ...]
+                y_in = y_batch  # [:, cfg.seq_length - 1, ...]
         else:
             x_in = x_batch
             y_in = y_batch
@@ -150,55 +149,29 @@ def validate(placeholders,
         in_vals.extend([(num_batches, this_len_batch)])
         feed_dict = {p: v for(p, v) in in_vals}
 
-        if this_set.set_has_GT and cfg.compute_mean_iou:
-            # Class balance
-            # class_balance_w = np.ones(np.prod(
-            #     mini_x.shape[:3])).astype(floatX)
-            # class_balance = loss_kwargs.get('class_balance', '')
-            # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
-            #     w_freq = loss_kwargs.get('w_freq')
-            #     class_balance_w = w_freq[y_true.flatten()].astype(floatX)
+        if cidx % cfg.val_summary_freq == 0:
+            fetch_dict = cfg.sess.run(outs_summary, feed_dict=feed_dict)
 
-            # Get the batch pred, the mIoU so far (computed incrementally
-            # over the sequences processed so far), the batch loss and
-            # potentially the summary
-            if cidx % cfg.val_summary_freq == 0:
-                    (of_pred_batch, y_pred_batch, y_prob_batch,
-                     metrics_out, loss, _, summary_str) = cfg.sess.run(
-                         outs + [summary_op], feed_dict=feed_dict)
-                    cfg.sv.summary_computed(cfg.sess, summary_str,
-                                            global_step=cidx)
-            else:
-                (of_pred_batch, y_pred_batch, y_prob_batch,
-                 metrics_out, loss, _) = cfg.sess.run(
-                     outs, feed_dict=feed_dict)
-
-            tot_loss += loss
-
-            if cfg.compute_mean_iou:
-                mIoU, per_class_IoU = metrics_out
-                # If fg/bg, just consider the foreground class
-                if len(per_class_IoU) == 2:
-                    per_class_IoU = per_class_IoU[1]
-
-                # Save the IoUs per subset (i.e., video) and their average
-                if cfg.summary_per_subset:
-                    per_subset_IoUs[subset] = per_class_IoU
-                    mIoU = np.mean(per_subset_IoUs.values())
-
-                pbar.set_postfix({
-                    'loss': '{:.3f}({:.3f})'.format(loss, tot_loss/(bidx+1)),
-                    'mIoU': '{:.3f}'.format(mIoU)})
+            cfg.sv.summary_computed(cfg.sess,
+                                    fetch_dict['summary_op'],
+                                    global_step=cidx)
         else:
-            if cidx % cfg.val_summary_freq == 0:
-                fetch_dict = cfg.sess.run(outs_summary, feed_dict=feed_dict)
+            fetch_dict = cfg.sess.run(outs, feed_dict=feed_dict)
+            mIoU = 0
 
-                cfg.sv.summary_computed(cfg.sess,
-                                        fetch_dict['summary_op'],
-                                        global_step=cidx)
-            else:
-                fetch_dict = cfg.sess.run(outs, feed_dict=feed_dict)
-                mIoU = 0
+        if cfg.compute_mean_iou:
+            mIoU = fetch_dict['m_iou']
+            per_class_IoU = fetch_dict['per_class_iou']
+            # If fg/bg, just consider the foreground class
+            if len(per_class_IoU) == 2:
+                per_class_IoU = per_class_IoU[1]
+
+            # Save the IoUs per subset (i.e., video) and their average
+            if cfg.summary_per_subset:
+                per_subset_IoUs[subset] = per_class_IoU
+                mIoU = np.mean(per_subset_IoUs.values())
+
+            pbar.set_postfix({'mIoU': '{:.3f}'.format(mIoU)})
 
         # TODO there is no guarantee that this will be processed
         # in order. We could use condition variables, e.g.,
@@ -207,15 +180,19 @@ def validate(placeholders,
 
         of_pred_fw_batch = fetch_dict.get('of_pred_fw', [None] * len(f_batch))
         of_pred_bw_batch = fetch_dict.get('of_pred_bw', [None] * len(f_batch))
+        of_pred_mask_batch = fetch_dict.get('of_pred_mask',
+                                            [None] * len(f_batch))
         y_pred_batch = fetch_dict['pred']
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
+        y_pred_mask_batch = fetch_dict['pred_mask']
         blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
         img_queue.put((frame_idx, this_set, x_batch, y_batch, f_batch, subset,
                        raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
-                       y_pred_batch, y_pred_fw_batch, y_pred_bw_batch,
-                       blend_batch, y_prob_batch))
+                       of_pred_mask_batch, y_pred_batch, y_pred_fw_batch,
+                       y_pred_bw_batch, y_pred_mask_batch, blend_batch,
+                       y_prob_batch))
         cidx += 1
         frame_idx += len(x_batch)
         pbar.update(1)
@@ -319,8 +296,10 @@ def save_images(img_queue, save_basedir, sentinel):
                 img_queue.task_done()
                 break
             (bidx, this_set, x_batch, y_batch, f_batch, subset,
-             raw_data_batch, of_pred_fw_batch, of_pred_bw_batch, y_pred_batch,
-             y_pred_fw_batch, y_pred_bw_batch, blend_batch, y_prob_batch) = img
+             raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
+             of_pred_mask_batch, y_pred_batch,
+             y_pred_fw_batch, y_pred_bw_batch, y_pred_mask_batch,
+             blend_batch, y_prob_batch) = img
 
             cfg = gflags.cfg
 
@@ -358,13 +337,15 @@ def save_images(img_queue, save_basedir, sentinel):
                     '\nraw_data_batch: {}'.format(*lengths))
 
             zip_list = (x_batch, y_batch, f_batch, of_pred_fw_batch,
-                        of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
-                        y_pred_bw_batch, blend_batch, y_prob_batch, raw_data_batch)
+                        of_pred_bw_batch, of_pred_mask_batch, y_pred_batch,
+                        y_pred_fw_batch, y_pred_bw_batch, y_pred_mask_batch,
+                        blend_batch, y_prob_batch, raw_data_batch)
 
             # Save samples, iterating over each element of the batch
             for el in zip(*zip_list):
-                (x, y, f, of_pred_fw, of_pred_bw, y_pred, y_pred_fw, y_pred_bw,
-                 blend, y_prob, raw_data) = el
+                (x, y, f, of_pred_fw, of_pred_bw, of_pred_mask, y_pred,
+                 y_pred_fw, y_pred_bw, y_pred_mask, blend,
+                 y_prob, raw_data) = el
 
                 # y = np.expand_dims(y, -1)
                 # y_pred = np.expand_dims(y_pred, -1)
@@ -419,6 +400,16 @@ def save_images(img_queue, save_basedir, sentinel):
                 else:
                     of_rgb_bw = None
 
+                # Predicted mask OF
+                if of_pred_mask is not None:
+                    of_rgb_mask = flowToColor(of_pred_mask,
+                                              raw_data[which_frame - 1],
+                                              cfg.show_flow_vector_field)
+                    of_rgb_mask = cv2.resize(of_rgb_mask, (y_pred.shape[1],
+                                                           y_pred.shape[0]))
+                else:
+                    of_rgb_mask = None
+
                 if raw_data.ndim == 4:
                     # Show only the middle frame
                     heat_map_in = raw_data[which_frame, ..., :3]
@@ -445,17 +436,21 @@ def save_images(img_queue, save_basedir, sentinel):
                         sample_in_bw = raw_data[which_frame + 1]
                         if y.shape[0] > 1:
                             y_in = y[which_frame]
+                            y_pre = y[which_frame - 1]
                         else:
                             y_in = y[0]
+                            y_pre = y_in
                     else:
                         sample_in = raw_data
                         y_in = y
                     save_samples_and_animations(sample_in, sample_in_fw,
                                                 sample_in_bw, of, of_rgb_fw,
-                                                of_rgb_bw, y_pred, y_pred_fw,
-                                                y_pred_bw, blend, y_in, cmap,
-                                                nclasses, labels, subset,
-                                                save_basedir, f, bidx)
+                                                of_rgb_bw, of_rgb_mask,
+                                                y_pred, y_pred_fw,
+                                                y_pred_bw, y_pred_mask, blend,
+                                                y_in, y_pre, cmap, nclasses,
+                                                labels, subset, save_basedir,
+                                                f, bidx)
                 bidx += 1  # Make sure every batch is in a separate frame
             img_queue.task_done()
         except Queue.Empty:
@@ -543,10 +538,10 @@ def save_heatmap_fn(x, of, y_prob, labels, nclasses, save_basedir, subset,
 
 
 def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
-                                of_pred_fw, of_pred_bw, y_pred,
-                                y_pred_fw, y_pred_bw, blend, y, cmap,
-                                nclasses, labels, subset, save_basedir,
-                                f, bidx):
+                                of_pred_fw, of_pred_bw, of_pred_mask, y_pred,
+                                y_pred_fw, y_pred_bw, y_pred_mask, blend, y,
+                                y_pre, cmap, nclasses, labels, subset,
+                                save_basedir, f, bidx):
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import AxesGrid
     from StringIO import StringIO
@@ -566,95 +561,113 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     #     n_rows = 2
     #     n_cols = 2
 
-    gs = gridspec.GridSpec(11, 12)
+    gs = gridspec.GridSpec(12, 12)
 
     if raw_data_gt.shape[-1] == 1:
         raw_data_cmap = 'gray'
     else:
         raw_data_cmap = None
-    # GT-Frame
+    # GT-Mask
+    # im = None
     ax = plt.subplot(gs[:3, :3])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(np.squeeze(raw_data_gt), cmap=raw_data_cmap)
-    ax.set_title('GT-Frame')
-    # GT
-    im = None
+    ax.imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('GT Mask')
+    # starting mask
     ax = plt.subplot(gs[:3, 3:6])
     ax.set_xticks([])
     ax.set_yticks([])
-    im = ax.imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
-    ax.set_title('Ground truth')
-    # blended prediction
+    ax.imshow(np.squeeze(y_pre), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('Mask t-1')
+    # mask prediction
+    ax = plt.subplot(gs[:3, 6:9])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(y_pred_mask), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('MaskPred')
+    # Mask OF
+    ax = plt.subplot(gs[0:3, 9:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(of_pred_mask)
+    ax.set_title('Mask Predicted OF')
+    # GT-Frame
     ax = plt.subplot(gs[3:6, :3])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(raw_data_gt), cmap=raw_data_cmap)
+    ax.set_title('GT Frame')
+    # blended prediction
+    ax = plt.subplot(gs[3:6, 3:6])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(np.squeeze(y_pred), cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('JointPred')
     # Difference between gt-frame and blended prediction
-    ax = plt.subplot(gs[3:6, 3:6])
+    ax = plt.subplot(gs[3:6, 6:9])
     ax.set_xticks([])
     ax.set_yticks([])
     abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred))
     ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
     ax.set_title('GT-JointPred')
+    # Blend heatmap
+    ax = plt.subplot(gs[3:6, 9:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(blend), cmap='hot', vmin=0, vmax=1,
+              interpolation='nearest')
+    ax.set_title('Blend Heatmap')
     # Frame t-1
-    ax = plt.subplot(gs[6:8, :2])
+    ax = plt.subplot(gs[6:9, :3])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(np.squeeze(raw_data_fw), cmap=raw_data_cmap)
-    ax.set_title('Starting Frame')
+    ax.set_title('Frame t-1')
     # forward prediction
-    ax = plt.subplot(gs[6:8, 2:4])
+    ax = plt.subplot(gs[6:9, 3:6])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(np.squeeze(y_pred_fw), cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('FWPred')
     # Difference between gt-frame and forward prediction
-    ax = plt.subplot(gs[6:8, 4:6])
+    ax = plt.subplot(gs[6:9, 6:9])
     ax.set_xticks([])
     ax.set_yticks([])
     abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_fw))
     ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
     ax.set_title('GT-FWPred')
+    # Forward OF
+    ax = plt.subplot(gs[6:9, 9:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(of_pred_fw)
+    ax.set_title('FW Predicted OF')
     # Frame t+1
-    ax = plt.subplot(gs[8:10, :2])
+    ax = plt.subplot(gs[9:12, :3])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(np.squeeze(raw_data_bw), cmap=raw_data_cmap)
-    ax.set_title('Starting Frame')
+    ax.set_title('Frame t+1')
     # backward prediction
-    ax = plt.subplot(gs[8:10, 2:4])
+    ax = plt.subplot(gs[9:12, 3:6])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(np.squeeze(y_pred_bw), cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('BWPred')
     # Difference between gt-frame and backward prediction
-    ax = plt.subplot(gs[8:10, 4:6])
+    ax = plt.subplot(gs[9:12, 6:9])
     ax.set_xticks([])
     ax.set_yticks([])
     abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_bw))
     ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
     ax.set_title('GT-BWPred')
-    # Forward OF
-    ax = plt.subplot(gs[0:4, 7:])
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.imshow(of_pred_fw)
-    ax.set_title('FW Predicted OF')
     # Backward OF
-    ax = plt.subplot(gs[4:8, 7:])
+    ax = plt.subplot(gs[9:12, 9:])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.imshow(of_pred_bw)
     ax.set_title('BW Predicted OF')
-    # Blend heatmap
-    ax = plt.subplot(gs[8:10, 7:])
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.imshow(np.squeeze(blend), cmap='hot', vmin=0, vmax=1,
-                    interpolation='nearest')
-    ax.set_title('Blend Heatmap')
     # grid = AxesGrid(fig, 111,
     #                 nrows_ncols=(n_rows, n_cols),
     #                 axes_pad=0.50,
