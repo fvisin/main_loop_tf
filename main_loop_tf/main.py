@@ -40,7 +40,7 @@ except:
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
-gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
+gflags.DEFINE_bool('return_extended_sequences', True, 'If True, repeats '
                    'the first and last frame of each video to allow for '
                    'middle frame prediction')
 gflags.DEFINE_bool('return_middle_frame_only', False, '')
@@ -174,10 +174,10 @@ def __parse_config(argv=None):
     cfg.valid_params.update({
         'batch_size': cfg.val_batch_size * cfg.num_splits,
         'seq_per_subset': 0,
-        'overlap': cfg.val_overlap,
+        'overlap': cfg.seq_length - 1,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
-        'return_middle_frame_only': False,
+        'return_middle_frame_only': True,
         'one_subset_per_batch': True,  # prevent multiple subsets in one batch
         'use_threads': False,  # prevent shuffling
         # prevent crop
@@ -543,6 +543,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             # TODO: create **loss_params to  be defined in model repo
             loss_dict = build_loss(dev_labels, model_out_dict, loss_fn_rec,
                                    loss_fn_segm,
+                                   is_training=is_training,
                                    l2_reg=weight_decay,
                                    inputs=dev_inputs)
 

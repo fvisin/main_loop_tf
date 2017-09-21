@@ -5,7 +5,7 @@ from main_loop_tf import gflags_ext
 # Summaries and samples
 gflags.DEFINE_bool('show_samples_summaries', True, 'Whether to save the '
                    'GT/Prediction image summaries')
-gflags.DEFINE_bool('show_flow_vector_field', True, 'If True the optical '
+gflags.DEFINE_bool('show_flow_vector_field', False, 'If True the optical '
                    'flow magnitude and direction are visualized as '
                    'oriented arrows on the frame to which the optical '
                    'flow is applied, otherwise they are both encoded as '

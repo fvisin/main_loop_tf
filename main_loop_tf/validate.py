@@ -107,6 +107,7 @@ def validate(placeholders,
         # TODO: check the confusion matrix!
         if cfg.compute_mean_iou:
             # Reset the confusion matrix when we switch video
+            # Reset the first mask to be warped
             if not prev_subset or subset != prev_subset:
                 if cfg.summary_per_subset:
                     tf.logging.info('Reset confusion matrix! {} --> {}'.format(
@@ -118,16 +119,27 @@ def validate(placeholders,
                             'For stateful validation, the validation '
                             'dataset should provide `subset`')
                     # reset_states(model, x_batch.shape)
+                # Get the first mask to be warped
+                if cfg.target_frame == 'middle':
+                    if cfg.valid_params['return_middle_frame_only']:
+                        prev_pred_mask = y_batch
+                    else:
+                        prev_pred_mask = y_batch[:,
+                                                 (cfg.seq_length // 2) - 1, ...]
                 prev_subset = subset
 
-        if cfg.seq_length and y_batch.shape[1] > 1:
-            x_in = x_batch
+        x_in = x_batch
+        if cfg.seq_length:
             if cfg.target_frame == 'middle':
-                y_in = y_batch  # [:, cfg.seq_length // 2, ...]  # 4D: not one-hot
-            if cfg.target_frame == 'last':
-                y_in = y_batch  # [:, cfg.seq_length - 1, ...]
+                if cfg.valid_params['return_middle_frame_only']:
+                    y_in = np.zeros(shape=x_in.shape[:-1], dtype='int32')
+                    y_in[:, cfg.seq_length // 2, ...] = y_batch
+                else:
+                    y_in = y_batch  # [:, cfg.seq_length // 2, ...]
+                y_in[:, (cfg.seq_length // 2) - 1, ...] = prev_pred_mask
+            # if cfg.target_frame == 'last':
+            #     y_in = y_batch  # [:, cfg.seq_length - 1, ...]
         else:
-            x_in = x_batch
             y_in = y_batch
 
         # if cfg.use_second_path:
@@ -180,19 +192,18 @@ def validate(placeholders,
 
         of_pred_fw_batch = fetch_dict.get('of_pred_fw', [None] * len(f_batch))
         of_pred_bw_batch = fetch_dict.get('of_pred_bw', [None] * len(f_batch))
-        of_pred_mask_batch = fetch_dict.get('of_pred_mask',
-                                            [None] * len(f_batch))
         y_pred_batch = fetch_dict['pred']
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
         y_pred_mask_batch = fetch_dict['pred_mask']
+        # Save the predicted mask to be warped in the next run
+        prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
         blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
-        img_queue.put((frame_idx, this_set, x_batch, y_batch, f_batch, subset,
+        img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
                        raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
-                       of_pred_mask_batch, y_pred_batch, y_pred_fw_batch,
-                       y_pred_bw_batch, y_pred_mask_batch, blend_batch,
-                       y_prob_batch))
+                       y_pred_batch, y_pred_fw_batch, y_pred_bw_batch,
+                       y_pred_mask_batch, blend_batch, y_prob_batch))
         cidx += 1
         frame_idx += len(x_batch)
         pbar.update(1)
@@ -297,8 +308,7 @@ def save_images(img_queue, save_basedir, sentinel):
                 break
             (bidx, this_set, x_batch, y_batch, f_batch, subset,
              raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
-             of_pred_mask_batch, y_pred_batch,
-             y_pred_fw_batch, y_pred_bw_batch, y_pred_mask_batch,
+             y_pred_batch, y_pred_fw_batch, y_pred_bw_batch, y_pred_mask_batch,
              blend_batch, y_prob_batch) = img
 
             cfg = gflags.cfg
@@ -337,13 +347,13 @@ def save_images(img_queue, save_basedir, sentinel):
                     '\nraw_data_batch: {}'.format(*lengths))
 
             zip_list = (x_batch, y_batch, f_batch, of_pred_fw_batch,
-                        of_pred_bw_batch, of_pred_mask_batch, y_pred_batch,
-                        y_pred_fw_batch, y_pred_bw_batch, y_pred_mask_batch,
+                        of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
+                        y_pred_bw_batch, y_pred_mask_batch,
                         blend_batch, y_prob_batch, raw_data_batch)
 
             # Save samples, iterating over each element of the batch
             for el in zip(*zip_list):
-                (x, y, f, of_pred_fw, of_pred_bw, of_pred_mask, y_pred,
+                (x, y, f, of_pred_fw, of_pred_bw, y_pred,
                  y_pred_fw, y_pred_bw, y_pred_mask, blend,
                  y_prob, raw_data) = el
 
@@ -400,15 +410,15 @@ def save_images(img_queue, save_basedir, sentinel):
                 else:
                     of_rgb_bw = None
 
-                # Predicted mask OF
-                if of_pred_mask is not None:
-                    of_rgb_mask = flowToColor(of_pred_mask,
-                                              raw_data[which_frame - 1],
-                                              cfg.show_flow_vector_field)
-                    of_rgb_mask = cv2.resize(of_rgb_mask, (y_pred.shape[1],
-                                                           y_pred.shape[0]))
+                # Predicted forward OF as vector field
+                if of_pred_fw is not None:
+                    of_vect_field_fw = flowToColor(of_pred_fw,
+                                                   raw_data[which_frame - 1],
+                                                   True)
+                    of_vect_field_fw = cv2.resize(of_vect_field_fw, (y_pred.shape[1],
+                                                  y_pred.shape[0]))
                 else:
-                    of_rgb_mask = None
+                    of_vect_field_fw = None
 
                 if raw_data.ndim == 4:
                     # Show only the middle frame
@@ -445,7 +455,7 @@ def save_images(img_queue, save_basedir, sentinel):
                         y_in = y
                     save_samples_and_animations(sample_in, sample_in_fw,
                                                 sample_in_bw, of, of_rgb_fw,
-                                                of_rgb_bw, of_rgb_mask,
+                                                of_rgb_bw, of_vect_field_fw,
                                                 y_pred, y_pred_fw,
                                                 y_pred_bw, y_pred_mask, blend,
                                                 y_in, y_pre, cmap, nclasses,
@@ -538,10 +548,10 @@ def save_heatmap_fn(x, of, y_prob, labels, nclasses, save_basedir, subset,
 
 
 def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
-                                of_pred_fw, of_pred_bw, of_pred_mask, y_pred,
-                                y_pred_fw, y_pred_bw, y_pred_mask, blend, y,
-                                y_pre, cmap, nclasses, labels, subset,
-                                save_basedir, f, bidx):
+                                of_pred_fw, of_pred_bw, of_vect_field_fw,
+                                y_pred, y_pred_fw, y_pred_bw, y_pred_mask,
+                                blend, y, y_pre, cmap, nclasses, labels,
+                                subset, save_basedir, f, bidx):
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import AxesGrid
     from StringIO import StringIO
@@ -590,8 +600,8 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     ax = plt.subplot(gs[0:3, 9:])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(of_pred_mask)
-    ax.set_title('Mask Predicted OF')
+    ax.imshow(of_vect_field_fw)
+    ax.set_title('FW OF Vector Field')
     # GT-Frame
     ax = plt.subplot(gs[3:6, :3])
     ax.set_xticks([])
