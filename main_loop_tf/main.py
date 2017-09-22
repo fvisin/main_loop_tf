@@ -43,7 +43,7 @@ gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
                    'the first and last frame of each video to allow for '
                    'middle frame prediction')
-gflags.DEFINE_bool('return_target_frame_only', True, '')
+gflags.DEFINE_bool('return_middle_frame_only', True, '')
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
 gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
@@ -85,7 +85,7 @@ def __parse_config(argv=None):
                     'debug', 'debug_of', 'devices', 'do_validation_only',
                     'group_summaries', 'help', 'hyperparams_summaries',
                     'max_epochs', 'min_epochs', 'model_name', 'nthreads',
-                    'patience', 'target_frame', 'restore_model',
+                    'patience', 'restore_model',
                     'save_gif_frames_on_disk', 'save_gif_on_disk',
                     'save_raw_predictions_on_disk', 'show_heatmaps_summaries',
                     'show_samples_summaries', 'supervisor_master',
@@ -159,10 +159,9 @@ def __parse_config(argv=None):
         dataset_params['seq_length'] = cfg.seq_length
 
         ret_ext_seq = cfg.return_extended_sequences
-        ret_target_only = cfg.return_target_frame_only
+        ret_middle_frame = cfg.return_middle_frame_only
         dataset_params['return_extended_sequences'] = ret_ext_seq
-        dataset_params['return_target_frame_only'] = ret_target_only
-        dataset_params['target_frame'] = cfg.target_frame
+        dataset_params['return_middle_frame_only'] = ret_middle_frame
 
     dataset_params['use_threads'] = cfg.use_threads
     dataset_params['nthreads'] = cfg.nthreads
@@ -178,7 +177,7 @@ def __parse_config(argv=None):
         'overlap': cfg.val_overlap,
         'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                   cfg.val_overlap != 0),
-        'return_target_frame_only': False,
+        'return_middle_frame_only': False,
         'one_subset_per_batch': True,  # prevent multiple subsets in one batch
         'use_threads': False,  # prevent shuffling
         # prevent crop
@@ -542,7 +541,8 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             # Loss
             # TODO: create **loss_params to  be defined in model repo
             loss_dict = build_loss(dev_labels, model_out_dict, loss_fn,
-                                   l2_reg=weight_decay)
+                                   l2_reg=weight_decay,
+                                   inputs=dev_inputs)
 
             assert loss_dict is not None and isinstance(loss_dict, dict), """
                 Your loss should return a dictionary"""

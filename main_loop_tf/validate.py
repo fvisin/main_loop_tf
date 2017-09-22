@@ -551,7 +551,7 @@ def save_samples_and_animations(raw_data, of, of_pred, y_pred, y, cmap,
     # This element is not used
     if cfg.model_returns_of:
         # grid[5].set_visible(False)
-        abs_diff = np.squeeze(np.abs(y-y_pred))
+        abs_diff = np.squeeze(np.abs(raw_data-y_pred))
         grid[5].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
     # image
     if raw_data.shape[-1] == 1:
