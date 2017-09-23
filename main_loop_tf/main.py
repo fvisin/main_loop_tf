@@ -1,4 +1,5 @@
 from copy import deepcopy
+import abc
 import hashlib
 try:
     from itertools import izip_longest as zip_longest
@@ -17,7 +18,6 @@ from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
-from loss import mean_iou as compute_mean_iou
 from utils import (apply_loss, split_in_chunks, save_repos_hash,
                    average_gradients, process_gradients, squash_maybe,
                    TqdmHandler)
@@ -43,29 +43,33 @@ gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
                    'the first and last frame of each video to allow for '
                    'middle frame prediction')
-gflags.DEFINE_bool('return_middle_frame_only', True, '')
+gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
+                   'the middle frame segmentation mask only for each sequence')
+
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
 gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
                      'Supervisor')
 
 
-def run(argv, build_model, build_loss):
-    curr_exp = Experiment(build_model=build_model, build_loss=build_loss)
-
-    curr_exp.__parse_config(argv)
-    curr_exp.__run()
-
-
 class Experiment(object):
 
-    def __init__(self, build_model, build_loss):
-        self.build_model = build_model
-        self.build_loss = build_loss
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractmethod
+    def buil_loss(self):
+        pass
+
+    @abc.abstractmethod
+    def build_model(self):
+        pass
+
+    def __init__(self):
         self.val_summary_ops = {}
         self.val_cm_update_ops = {}
         self.val_cm_reset_ops = {}
-        self.val_out_dict = {}
+        self.val_outs = {}
+        self.val_metrics = {}
 
     def __parse_config(self, argv=None):
         gflags.mark_flags_as_required(['dataset'])
@@ -250,27 +254,10 @@ class Experiment(object):
                          max(1, cfg.val_every_epochs) - 1)
         self.cfg = cfg
 
-    def __run(self, build_model, build_loss):
+    def __run(self, argv):
+
+        self.__parse_config(argv)
         cfg = self.cfg
-
-        # ============ Class balance
-        # assert class_balance in [None, 'median_freq_cost',
-        #                          'rare_freq_cost'], (
-        #     'The balance class method is not implemented')
-
-        # if class_balance in ['median_freq_cost', 'rare_freq_cost']:
-        #     if not hasattr(Dataset, 'class_freqs'):
-        #         raise RuntimeError('class_freqs is missing for dataset '
-        #                            '{}'.format(Dataset.name))
-        #     freqs = Dataset.class_freqs
-
-        #     if class_balance == 'median_freq_cost':
-        #         w_freq = np.median(freqs) / freqs
-        #     elif class_balance == 'rare_freq_cost':
-        #         w_freq = 1 / (cfg.nclasses * freqs)
-
-        #     tf.logging.info("Class balance weights", w_freq)
-        #     cfg.class_balance = w_freq
 
         # ============ Train/validation
         # Load data
@@ -449,15 +436,21 @@ class Experiment(object):
                     return self.main_loop()
                 else:
                     # Perform validation only
-                    mean_iou = {}
-                    for s in cfg.val_on_sets:
-                        from validate import validate
-                        mean_iou[s] = validate(
-                            self.val_placeholders,
-                            self.val_outs['eval_' + s],
-                            self.val_summary_ops['eval_' + s],
-                            self.val_cm_reset_ops['eval_' + s],
-                            which_set='eval_' + s)
+                    metric = {}
+                    validate = getattr(self, "validate", None)
+                    if callable(validate):
+                        for s in cfg.val_on_sets:
+                            metric[s] = validate(
+                                self.val_placeholders,
+                                self.val_outs['eval_' + s],
+                                self.val_metrics['eval_' + s],
+                                self.val_summary_ops['eval_' + s],
+                                self.val_cm_updatet_ops['eval_' + s],
+                                self.val_cm_reset_ops['eval_' + s],
+                                which_set='eval_' + s)
+                    else:
+                        raise NotImplementedError('Validation method not'
+                                                  'Implemented!')
 
     def build_graph(self, which_set):
         ''' Build the multiGPU graph of computation
@@ -492,8 +485,8 @@ class Experiment(object):
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
         # Init variables
-        tower_out_dict = {}
-        tower_loss_dict = {}
+        tower_out = {}
+        tower_loss = {}
         tower_grads = []
         summaries = []
 
@@ -511,28 +504,25 @@ class Experiment(object):
                 reuse_variables = True
 
                 # Model output, softmax and prediction
-                model_out_dict = self.build_model(dev_inputs, is_training)
+                model_out = self.build_model(dev_inputs, is_training)
 
-                assert isinstance(model_out_dict, dict), """
+                assert isinstance(model_out, dict), """
                     Your model should return a dictionary"""
-                assert 'out_preact' in model_out_dict, """Your model
+                assert 'out_preact' in model_out, """Your model
                     function should return a dictionary with attribute
                     'out_preact'!"""
-                assert 'out_act' in model_out_dict, """Your model function
+                assert 'out_act' in model_out, """Your model function
                     should return a dictionary with attribute 'out_act'!"""
-                assert 'pred' in model_out_dict, """Your model function should
+                assert 'pred' in model_out, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
                 # Group outputs from each model tower
-                for k, v in model_out_dict.iteritems():
-                    tower_out_dict.setdefault(k, []).append(v)
+                for k, v in model_out.iteritems():
+                    tower_out.setdefault(k, []).append(v)
 
                 # Loss
                 # TODO: create **loss_params to  be defined in model repo
-                loss_dict = self.build_loss(dev_labels,
-                                            model_out_dict,
-                                            cfg.loss_fn,
-                                            l2_reg=cfg.weight_decay,
+                loss_dict = self.build_loss(dev_labels, model_out,
                                             inputs=dev_inputs)
 
                 assert loss_dict is not None and isinstance(loss_dict, dict), (
@@ -546,7 +536,7 @@ class Experiment(object):
 
                 # Group outputs from each loss tower
                 for k, v in loss_dict.iteritems():
-                    tower_loss_dict.setdefault(k, []).append(v)
+                    tower_loss.setdefault(k, []).append(v)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
@@ -652,9 +642,9 @@ class Experiment(object):
         # Merge the towers on CPU
         # Towers contain dictionary
         out_dict = {}
-        for k, v in tower_out_dict.iteritems():
+        for k, v in tower_out.iteritems():
             # Convert from list of tensors to catenated tensor
-            out_dict[k] = tf.concat(tower_out_dict[k], axis=0,
+            out_dict[k] = tf.concat(tower_out[k], axis=0,
                                     name='concat_%s' % k)
             out_dict[k] = out_dict[k][:self.num_batches]
 
@@ -669,24 +659,8 @@ class Experiment(object):
         # (equivalent to labels[:np.prod(out_dict.shape)])
         labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
 
-        # TODO: add metrics callback
-        if cfg.compute_mean_iou:
-            # TODO Compute it for training as well (requires a dict of cms per
-            # subset + adding one_subset_per_batch to training as well)
-            # Compute the (potentially masked) mean IoU
-            mask = tf.ones_like(labels)
-            if len(cfg.void_labels):
-                mask = tf.cast(tf.less_equal(labels, cfg.nclasses), tf.int32)
-
-            pred_flat = tf.reshape(out_dict['pred'], [-1])
-            m_iou, per_class_iou, cm_update_op, cm_reset_op = compute_mean_iou(
-                labels, pred_flat, cfg.nclasses, mask)
-        else:
-            cm_update_op = None
-            cm_reset_op = None
-
         # Compute the average *per variable* over the towers
-        losses = tf.stack(tower_loss_dict['loss'], axis=0,
+        losses = tf.stack(tower_loss['loss'], axis=0,
                           name='concat_losses')
         losses = losses[:self.num_splits]
         self.avg_tower_loss = tf.reduce_mean(losses)
@@ -697,7 +671,7 @@ class Experiment(object):
         # Compute the average of the loss per each component
         # (Just for visualization purpose)
         tower_loss_comp_dict = {}
-        for el in tower_loss_dict['components']:
+        for el in tower_loss['components']:
             for k, v in el.iteritems():
                 tower_loss_comp_dict.setdefault(k, []).append(v)
 
@@ -736,10 +710,6 @@ class Experiment(object):
                         global_step=self.global_step))
 
             self.train_ops = train_ops
-        else:
-            self.metrics_out = []
-            if cfg.compute_mean_iou:
-                self.metrics_out.append(m_iou, per_class_iou)
 
         # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients
@@ -777,14 +747,15 @@ class Experiment(object):
 
         if is_training:
             self.train_summary_ops = summary_ops
-            self.train_cm_update_op = cm_update_op
-            self.train_cm_reset_op = cm_reset_op
             self.train_out_dict = out_dict
         else:
+            metrics_out, cm_update_ops, cm_reset_ops = self.metrics()
+
             self.val_summary_ops[which_set] = summary_ops
-            self.val_cm_update_ops[which_set] = cm_update_op
-            self.val_cm_reset_ops[which_set] = cm_reset_op
-            self.val_out_dict[which_set] = out_dict
+            self.val_cm_update_ops[which_set] = cm_update_ops
+            self.val_cm_reset_ops[which_set] = cm_reset_ops
+            self.val_out[which_set] = out_dict
+            self.val_metrics[which_set] = metrics_out
 
     def main_loop(self):
         cfg = gflags.cfg
@@ -936,29 +907,28 @@ class Experiment(object):
                 self.estop = True
 
             # Validate if last epoch, early stop or we reached valid_every
-            if self.last_epoch or self.estop or not self.val_skip:
-                mean_iou = {}
+            validate = getattr(self, "validate", None)
+            if callable(validate) and (
+                 self.last_epoch or self.estop or not self.val_skip):
 
-                # TODO: ok so far... but validate should be a wrapper too
-                # because it is task dependent and you can have different
-                # metrics or visualizations
-                from validate import validate
+                metric_val = {}
                 for s in cfg.val_on_sets:
-                    mean_iou[s] = validate(
+                    metric_val[s] = validate(
                         self.val_placeholders,
                         self.val_outs['eval_' + s],
+                        self.val_metrics['eval_' + s],
                         self.val_summary_ops['eval_' + s],
                         self.val_cm_reset_ops['eval_' + s],
-                        which_set='eval_' + s,
-                        epoch_id=self.epoch_id)
+                        self.val_cm_update_ops['eval_' + s],
+                        which_set='eval_' + s)
 
                 # TODO gsheet
-                self.history_acc.append([mean_iou.get('valid')])
+                self.history_acc.append([metric_val.get('valid')])
 
-                # Did we improve *validation* mean IOU accuracy?
+                # Did we improve *validation* metric?
                 best_hist = np.array(self.history_acc).max()
                 if (len(self.history_acc) == 0 or
-                        mean_iou.get('valid') >= best_hist):
+                        metric_val.get('valid') >= best_hist):
                     tf.logging.info('## Best model found! ##')
                     t_save = time()
                     checkpoint_path = os.path.join(cfg.checkpoints_dir,
