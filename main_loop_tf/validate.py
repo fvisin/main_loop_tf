@@ -67,6 +67,30 @@ def validate(placeholders,
                            '[{elapsed}<{remaining},'
                            '{rate_fmt} {postfix}]')
 
+    video_rec = []
+    video_segm = []
+    video_of = []
+    video_obj = []
+    video_rec_dir = os.path.join(cfg.checkpoints_dir, 'videos_rec',
+                                 str(epoch_id))
+    video_segm_dir = os.path.join(cfg.checkpoints_dir, 'videos_segm',
+                                  str(epoch_id))
+    of_dir = os.path.join(cfg.checkpoints_dir, 'videos_of', str(epoch_id))
+    video_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_obj',
+                                 str(epoch_id))
+    if cfg.save_rec_videos:
+        if not os.path.exists(video_rec_dir):
+            os.makedirs(video_rec_dir)
+    if cfg.save_segm_videos:
+        if not os.path.exists(video_segm_dir):
+            os.makedirs(video_segm_dir)
+    if cfg.save_of_videos:
+        if not os.path.exists(of_dir):
+            os.makedirs(of_dir)
+    if cfg.objectness_path and cfg.save_obj_videos:
+        if not os.path.exists(video_obj_dir):
+            os.makedirs(video_obj_dir)
+
     if cfg.compute_mean_iou:
         prev_subset = None
         per_subset_IoUs = {}
@@ -82,7 +106,7 @@ def validate(placeholders,
         ret = this_set.next()
         x_batch, y_batch = ret['data'], ret['labels']
         assert all(el == ret['subset'][0] for el in ret['subset'])
-        subset = ret['subset'][0]
+        subset = ret['subset']
         f_batch = ret['filenames']
         raw_data_batch = ret['raw_data']
 
@@ -108,13 +132,13 @@ def validate(placeholders,
         if cfg.compute_mean_iou:
             # Reset the confusion matrix when we switch video
             # Reset the first mask to be warped
-            if not prev_subset or subset != prev_subset:
+            if not prev_subset or subset[0] != prev_subset:
                 if cfg.summary_per_subset:
                     tf.logging.info('Reset confusion matrix! {} --> {}'.format(
-                        prev_subset, subset))
+                        prev_subset, subset[0]))
                     cfg.sess.run(reset_cm_op)
                 if cfg.stateful_validation:
-                    if subset == 'default':
+                    if subset[0] == 'default':
                         raise RuntimeError(
                             'For stateful validation, the validation '
                             'dataset should provide `subset`')
@@ -125,8 +149,52 @@ def validate(placeholders,
                         prev_pred_mask = y_batch
                     else:
                         prev_pred_mask = y_batch[:,
-                                                 (cfg.seq_length // 2) - 1, ...]
-                prev_subset = subset
+                                                 (cfg.seq_length // 2) - 1,
+                                                 ...]
+            if prev_subset is not None and subset[0] != prev_subset:
+                # Write videos for each subset
+                # ----------------------------
+                if cfg.save_rec_videos:
+                    # write reconstruction videos
+                    frames = np.array(video_rec)
+                    sdx = 2 if frames.ndim == 5 else 1
+                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+                    fname = os.path.join(video_rec_dir, prev_subset + '.mp4')
+                    write_video(frames, fname, 15, codec='X264')
+
+                if cfg.save_segm_videos:
+                    # write segmentation videos
+                    frames = np.array(video_segm)
+                    sdx = 2 if frames.ndim == 5 else 1
+                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+                    # frames = (frames * 255.0).astype('uint8')
+                    fname = os.path.join(video_segm_dir, prev_subset + '.mp4')
+                    write_video(frames, fname, 15, codec='X264', mask=True)
+
+                if cfg.objectness_path and cfg.save_obj_videos:
+                    # write segmentation videos
+                    frames = np.array(video_obj)
+                    sdx = 2 if frames.ndim == 5 else 1
+                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+                    # frames = (frames * 255.0).astype('uint8')
+                    fname = os.path.join(video_obj_dir, prev_subset + '.mp4')
+                    write_video(frames, fname, 15, codec='X264', mask=True)
+
+                if cfg.save_of_videos:
+                    # write OF videos
+                    of_frames = np.array(video_of)
+                    sdx = 2 if of_frames.ndim == 5 else 1
+                    of_frames = of_frames.reshape(
+                        [-1] + list(of_frames.shape[sdx:]))
+                    fname = os.path.join(of_dir, prev_subset + '.mp4')
+                    write_video(of_frames, fname, 15, codec='X264',
+                                flowRGB=True)
+
+                video_rec = []
+                video_segm = []
+                video_of = []
+                video_obj = []
+            prev_subset = subset[0]
 
         x_in = x_batch
         if cfg.seq_length:
@@ -180,7 +248,7 @@ def validate(placeholders,
 
             # Save the IoUs per subset (i.e., video) and their average
             if cfg.summary_per_subset:
-                per_subset_IoUs[subset] = per_class_IoU
+                per_subset_IoUs[subset[0]] = per_class_IoU
                 mIoU = np.mean(per_subset_IoUs.values())
 
             pbar.set_postfix({'mIoU': '{:.3f}'.format(mIoU)})
@@ -193,17 +261,30 @@ def validate(placeholders,
         of_pred_fw_batch = fetch_dict.get('of_pred_fw', [None] * len(f_batch))
         of_pred_bw_batch = fetch_dict.get('of_pred_bw', [None] * len(f_batch))
         y_pred_batch = fetch_dict['pred']
+        if cfg.objectness_path:
+            obj_pred_batch = fetch_dict['obj_pred']
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
         y_pred_mask_batch = fetch_dict['pred_mask']
+        y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
+        y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
         # Save the predicted mask to be warped in the next run
         prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
         blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
-        img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
-                       raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
-                       y_pred_batch, y_pred_fw_batch, y_pred_bw_batch,
-                       y_pred_mask_batch, blend_batch, y_prob_batch))
+        if cfg.save_rec_videos:
+            video_rec.append(y_pred_fw_batch)
+        if cfg.save_segm_videos:
+            video_segm.append(y_pred_mask_batch)
+        if cfg.save_of_videos:
+            video_of.append(of_pred_fw_batch)
+        if cfg.objectness_path and cfg.save_obj_videos:
+            video_obj.append(obj_pred_batch)
+        if cfg.show_image_summaries_validation:
+            img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
+                           raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
+                           y_pred_batch, y_pred_fw_batch, y_pred_bw_batch,
+                           y_pred_mask_batch, blend_batch, y_prob_batch))
         cidx += 1
         frame_idx += len(x_batch)
         pbar.update(1)
@@ -346,14 +427,14 @@ def save_images(img_queue, save_basedir, sentinel):
                     '\ny_prob_batch: {}\nof_pred_batch: {}'
                     '\nraw_data_batch: {}'.format(*lengths))
 
-            zip_list = (x_batch, y_batch, f_batch, of_pred_fw_batch,
+            zip_list = (x_batch, y_batch, f_batch, subset, of_pred_fw_batch,
                         of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
                         y_pred_bw_batch, y_pred_mask_batch,
                         blend_batch, y_prob_batch, raw_data_batch)
 
             # Save samples, iterating over each element of the batch
             for el in zip(*zip_list):
-                (x, y, f, of_pred_fw, of_pred_bw, y_pred,
+                (x, y, f, subset, of_pred_fw, of_pred_bw, y_pred,
                  y_pred_fw, y_pred_bw, y_pred_mask, blend,
                  y_prob, raw_data) = el
 
@@ -582,7 +663,7 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     ax = plt.subplot(gs[:3, :3])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.imshow(np.squeeze(y))  # , cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('GT Mask')
     # starting mask
     ax = plt.subplot(gs[:3, 3:6])
@@ -594,7 +675,7 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     ax = plt.subplot(gs[:3, 6:9])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(np.squeeze(y_pred_mask), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.imshow(np.squeeze(y_pred_mask))  # , cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('MaskPred')
     # Mask OF
     ax = plt.subplot(gs[0:3, 9:])
@@ -794,6 +875,38 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
             os.makedirs(os.path.dirname(fpath))
         img.save(fpath)
         del(img)
+
+
+def write_video(frames, fname, fps, codec='X264', mask=False, flowRGB=False):
+    """
+    Utility function to serialize a 4D numpy tensor to video.
+
+    Inputs:
+        frames: 4D numpy array
+        fname: output filename
+        fps: frame rate of the ouput video
+        codec: 4 digit string for the codec, default='H264'
+    Returns:
+        no return value
+    """
+    import cv2
+    from utils import flowToColor
+    # http://www.pyimagesearch.com/2016/02/22/writing-to-video-with-opencv/
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+
+    h, w = frames.shape[1:3]
+    writer = cv2.VideoWriter(fname, fourcc, fps, (w, h), True)
+    for f in frames:
+        if flowRGB:
+            f = flowToColor(f, None, show_flow_vector_field=False)
+        if mask:
+            f = cv2.cvtColor(np.float32(f), cv2.COLOR_GRAY2BGR)
+        else:
+            f = cv2.cvtColor(np.float32(f), cv2.COLOR_RGB2BGR)
+        f = (f * 255.0)
+        f = f.astype('uint8')
+        writer.write(f)
+    writer.release()
 
 
 def save_animation_frame(frame, video_name, save_basedir):

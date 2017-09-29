@@ -5,6 +5,12 @@ from main_loop_tf import gflags_ext
 # Summaries and samples
 gflags.DEFINE_bool('show_samples_summaries', True, 'Whether to save the '
                    'GT/Prediction image summaries')
+gflags.DEFINE_bool('show_image_summaries_training', False, 'Whether to '
+                   'save the GT/Prediction image summaries during'
+                   'training')
+gflags.DEFINE_bool('show_image_summaries_validation', False, 'Whether to '
+                   'save the GT/Prediction image summaries during '
+                   'validation')
 gflags.DEFINE_bool('show_flow_vector_field', False, 'If True the optical '
                    'flow magnitude and direction are visualized as '
                    'oriented arrows on the frame to which the optical '
@@ -13,6 +19,14 @@ gflags.DEFINE_bool('show_flow_vector_field', False, 'If True the optical '
 gflags.DEFINE_bool('show_heatmaps_summaries', False, 'Whether to save the '
                    'summaries of the heatmaps of the softmax distribution '
                    'per each class')
+gflags.DEFINE_bool('save_rec_videos', False, 'Whether to save '
+                   'reconstruction videos')
+gflags.DEFINE_bool('save_segm_videos', False, 'Whether to save '
+                   'segmentation videos')
+gflags.DEFINE_bool('save_of_videos', False, 'Whether to save '
+                   'optical flow videos')
+gflags.DEFINE_bool('save_obj_videos', False, 'Whether to save '
+                   'objectness predictions videos')
 gflags.DEFINE_bool('save_gif_on_disk', False, 'Whether to save a GIF '
                    'animation of the video frames, their GT and the '
                    'prediction of the model. Note that the GIF generation is '

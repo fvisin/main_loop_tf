@@ -16,6 +16,8 @@ gflags.DEFINE_string('loss_fn_rec', 'sparse_softmax_cross_entropy_with_logits',
 gflags.DEFINE_string('loss_fn_segm', 'cross_entropy_sigmoid', 'The loss '
                      'function for the foreground/background segmentation '
                      'problem')
+gflags.DEFINE_string('loss_fn_obj', 'cross_entropy_softmax', 'The loss '
+                     'function for the objctness problem')
 gflags.DEFINE_bool('stateful_validation', False, 'If True the state of '
                    'the RNNs will be kept to process the next batch (if '
                    'consecutive)')
@@ -55,6 +57,7 @@ gflags.DEFINE_float('weight_decay', 0, 'The weight decay')
 
 # Gradient processing
 gflags.DEFINE_float("max_grad_norm", None, "Clip gradients to this norm.")
+gflags.DEFINE_float("max_weights_norm", None, "Clip weights to this norm.")
 gflags.DEFINE_float("grad_noise_scale", None,
                     "Gradient noise scale {0.01, 0.3, 1.0} ")
 gflags.DEFINE_string("thresh_loss", 0.7,

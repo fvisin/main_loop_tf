@@ -6,6 +6,12 @@ except:
     from itertools import zip_longest
 import logging
 import os
+import shutil
+try:
+    import Queue
+except ImportError:
+    import queue as Queue
+import threading
 import sys
 from time import time
 
@@ -21,6 +27,7 @@ from loss import mean_iou as compute_mean_iou
 from utils import (apply_loss, split_in_chunks, save_repos_hash,
                    average_gradients, process_gradients, squash_maybe,
                    TqdmHandler)
+from validate import save_images
 
 # config module load all flags from source files
 import config  # noqa
@@ -50,10 +57,10 @@ gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
                      'Supervisor')
 
 
-def run(argv, build_model, build_loss):
+def run(argv, build_model, build_loss, model_file, run_file):
     __parse_config(argv)
     # Run main with the remaining arguments
-    __run(build_model, build_loss)
+    __run(build_model, build_loss, model_file, run_file)
 
 
 def __parse_config(argv=None):
@@ -236,8 +243,15 @@ def __parse_config(argv=None):
                     max(1, cfg.val_every_epochs) - 1)
 
 
-def __run(build_model, build_loss):
+def __run(build_model, build_loss, model_file, run_file):
     cfg = gflags.cfg
+
+    # Save model and run in checkpoint directort
+    model_run_dir = os.path.join(cfg.checkpoints_dir, 'model-run')
+    if not os.path.exists(model_run_dir):
+        os.makedirs(model_run_dir)
+    shutil.copy(model_file, model_run_dir)
+    shutil.copy(run_file, model_run_dir)
 
     # ============ Class balance
     # assert class_balance in [None, 'median_freq_cost', 'rare_freq_cost'], (
@@ -489,6 +503,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     weight_decay = cfg.weight_decay
     loss_fn_rec = cfg.loss_fn_rec
     loss_fn_segm = cfg.loss_fn_segm
+    loss_fn_obj = cfg.loss_fn_obj
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
@@ -535,17 +550,24 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             assert 'pred' in model_out_dict, """Your model function should
                 return a dictionary with at least attribute 'pred'!"""
 
+            # Loss
+            # TODO: create **loss_params to  be defined in model repo
+            loss_dict = build_loss(dev_labels, model_out_dict, loss_fn_rec,
+                                   loss_fn_segm, loss_fn_obj,
+                                   is_training=is_training,
+                                   l2_reg=weight_decay,
+                                   inputs=dev_inputs)
+
+            if cfg.objectness_path:
+                obj_pred = tf.argmax(tf.softmax(model_out_dict['obj_prob']))
+                model_out_dict['obj_pred'] = obj_pred
+
             # Group outputs from each model tower
             for k, v in model_out_dict.iteritems():
                 tower_out_dict.setdefault(k, []).append(v)
 
-            # Loss
-            # TODO: create **loss_params to  be defined in model repo
-            loss_dict = build_loss(dev_labels, model_out_dict, loss_fn_rec,
-                                   loss_fn_segm,
-                                   is_training=is_training,
-                                   l2_reg=weight_decay,
-                                   inputs=dev_inputs)
+            # model_out_dict["pred_mask"] = tf.nn.sigmoid(
+            #     model_out_dict["pred_mask"])
 
             assert loss_dict is not None and isinstance(loss_dict, dict), """
                 Your loss should return a dictionary"""
@@ -566,6 +588,22 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             with tf.name_scope(None):
                 with tf.name_scope(dev_set_str + '_stats') as dev_set_scope:
                     tf.summary.scalar('Loss', loss_dict['loss'], summaries)
+
+            # Statistics on optical flow: mean and variance
+            with tf.name_scope(dev_set_scope):
+                mean, variance = tf.nn.moments(
+                    model_out_dict['of_pred_fw'], [0, 1, 2])
+                mean = tf.reduce_mean(mean)
+                variance = tf.reduce_mean(variance)
+                tf.summary.scalar('of_fw_mean', mean, summaries)
+                tf.summary.scalar('of_fw_var', variance, summaries)
+
+                mean, variance = tf.nn.moments(
+                    model_out_dict['of_pred_bw'], [0, 1, 2])
+                mean = tf.reduce_mean(mean)
+                variance = tf.reduce_mean(variance)
+                tf.summary.scalar('of_bw_mean', mean, summaries)
+                tf.summary.scalar('of_bw_var', variance, summaries)
 
             # Gradients
             # TODO: Move inside Object Optimizer to be created
@@ -653,6 +691,28 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
+
+                for w in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES):
+                    if 'weights' in w.name:
+                        var_name = w.op.name.replace(
+                            cfg.model_name + '/', '')
+                        scope_str = dev_set_str + '_%s'  # metric
+                        scope_str, var_name = squash_maybe(scope_str, var_name)
+                        scope_str += '_%s'  # var name
+                        with tf.name_scope(None):
+                            tf.summary.scalar(
+                                scope_str % ('WeightNorm', var_name),
+                                tf.global_norm([w]), summaries)
+
+                with tf.name_scope(dev_set_scope):
+                    name = ('clipped_weights_norm' if cfg.max_weights_norm else
+                            'weights_norm')
+                    weights = [w for w in tf.get_collection(
+                        tf.GraphKeys.TRAINABLE_VARIABLES)
+                        if 'weights' in w.name]
+                    tf.summary.scalar('Global_norm/' + name,
+                                      tf.global_norm(weights),
+                                      summaries)
 
         # Print regularization
         for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -747,6 +807,8 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     global_step=global_step))
 
         outs = {'avg_tower_loss': avg_tower_loss, 'train_ops': train_ops}
+        if cfg.show_image_summaries_training:
+            outs.update(out_dict)
     else:
         outs = {}
         outs.update(out_dict)
@@ -835,6 +897,19 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
     if pygtk and cfg.debug_of:
         cv2.namedWindow("rgb-optflow")
 
+    if cfg.show_image_summaries_training:
+        nthreads = 2
+        save_basedir = os.path.join('samples', cfg.model_name, 'train')
+        img_queue = Queue.Queue(maxsize=10)
+        sentinel = object()  # Poison pill
+        for _ in range(nthreads):
+            t = threading.Thread(
+                target=save_images,
+                args=(img_queue, save_basedir, sentinel))
+            t.setDaemon(True)  # Die when main dies
+            t.start()
+            cfg.sv.coord.register_thread(t)
+
     while not sv.should_stop():
         epoch_id = (cum_iter+1) // train.nbatches
         summary = tf.Summary.Value(tag='control_flow/Epoch',
@@ -855,6 +930,9 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             minibatch = train.next()
             t_data_load = time() - iter_start
             x_batch, y_batch = minibatch['data'], minibatch['labels']
+            f_batch = minibatch['filenames']
+            subset = minibatch['subset']
+            # raw_data_batch = minibatch['raw_data']
             # sh = inputs.shape  # do NOT provide a list of shapes
 
             # Show optical flow for debug
@@ -890,9 +968,22 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             if this_len_batch % batch_size != 0:
                 this_num_splits += 1
 
-            train_dict = {
-                'avg_tower_loss': train_outs['avg_tower_loss'],
-                'train_op': train_outs['train_ops'][this_num_splits - 1]}
+            if cfg.show_image_summaries_training:
+                train_dict = {
+                    'of_pred_fw': train_outs['of_pred_fw'],
+                    'of_pred_bw': train_outs['of_pred_bw'],
+                    'pred': train_outs['pred'],
+                    'pred_fw': train_outs['pred_fw'],
+                    'pred_bw': train_outs['pred_bw'],
+                    'pred_mask': train_outs['pred_mask'],
+                    'blend': train_outs['blend'],
+                    'out_act': train_outs['out_act'],
+                    'avg_tower_loss': train_outs['avg_tower_loss'],
+                    'train_op': train_outs['train_ops'][this_num_splits - 1]}
+            else:
+                train_dict = {
+                    'avg_tower_loss': train_outs['avg_tower_loss'],
+                    'train_op': train_outs['train_ops'][this_num_splits - 1]}
             train_summary_dict = {
                 'avg_tower_loss': train_outs['avg_tower_loss'],
                 'train_op': train_outs['train_ops'][this_num_splits - 1],
@@ -926,6 +1017,25 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             else:
                 fetch_dict = cfg.sess.run(train_dict,
                                           feed_dict=feed_dict)
+
+                if cfg.show_image_summaries_training:
+                    of_pred_fw_batch = fetch_dict.get('of_pred_fw',
+                                                      [None] * len(f_batch))
+                    of_pred_bw_batch = fetch_dict.get('of_pred_bw',
+                                                      [None] * len(f_batch))
+                    y_pred_batch = fetch_dict['pred']
+                    y_pred_fw_batch = fetch_dict['pred_fw']
+                    y_pred_bw_batch = fetch_dict['pred_bw']
+                    y_pred_mask_batch = fetch_dict['pred_mask']
+                    y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
+                    y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
+                    blend_batch = fetch_dict['blend']
+                    y_prob_batch = fetch_dict['out_act']
+                    img_queue.put((cum_iter, train, x_batch, y_batch, f_batch,
+                                   subset, x_batch, of_pred_fw_batch,
+                                   of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
+                                   y_pred_bw_batch, y_pred_mask_batch, blend_batch,
+                                   y_prob_batch))
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id+1))
@@ -999,6 +1109,13 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             tf.logging.info('Last epoch!')
             sv.request_stop()
             break
+
+    if cfg.show_image_summaries_training:
+        # Kill the threads
+        for _ in range(nthreads):
+            img_queue.put(sentinel)
+
+        img_queue.join()
 
     max_valid_idx = np.argmax(np.array(history_acc))
     best = history_acc[max_valid_idx]
