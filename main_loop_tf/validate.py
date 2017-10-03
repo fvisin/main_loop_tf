@@ -279,7 +279,8 @@ def validate(placeholders,
         if cfg.save_of_videos:
             video_of.append(of_pred_fw_batch)
         if cfg.objectness_path and cfg.save_obj_videos:
-            video_obj.append(obj_pred_batch)
+            video_obj.append(np.expand_dims(
+                np.squeeze(obj_pred_batch, axis=0), axis=-1))
         if cfg.show_image_summaries_validation:
             img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
                            raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,

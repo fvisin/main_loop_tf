@@ -559,7 +559,9 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                                    inputs=dev_inputs)
 
             if cfg.objectness_path:
-                obj_pred = tf.argmax(tf.softmax(model_out_dict['obj_prob']))
+                obj_pred = tf.argmax(tf.nn.softmax(model_out_dict['obj_prob']),
+                                     axis=-1)
+
                 model_out_dict['obj_pred'] = obj_pred
 
             # Group outputs from each model tower
@@ -1046,6 +1048,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
 
         # It's the end of the epoch
         pbar.close()
+
         # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
