@@ -556,6 +556,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                                    loss_fn_segm, loss_fn_obj,
                                    is_training=is_training,
                                    l2_reg=weight_decay,
+                                   gdl=cfg.gdl,
                                    inputs=dev_inputs)
 
             if cfg.objectness_path:
@@ -563,6 +564,12 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                                      axis=-1)
 
                 model_out_dict['obj_pred'] = obj_pred
+
+            if cfg.warp_prev_objectness:
+                prev_obj_pred = tf.argmax(
+                    tf.nn.softmax(model_out_dict['prev_obj_prob']), axis=-1)
+
+                model_out_dict['prev_obj_pred'] = prev_obj_pred
 
             # Group outputs from each model tower
             for k, v in model_out_dict.iteritems():
@@ -755,7 +762,11 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
         if len(cfg.void_labels):
             mask = tf.cast(tf.less_equal(labels_iou, nclasses), tf.int32)
 
-        pred_flat = tf.reshape(out_dict['pred_mask'], [-1])
+        if not is_training:
+            pred_flat = tf.reshape(
+                tf.cast(out_dict['pred_mask'] + 0.5, tf.int32), [-1])
+        else:
+            pred_flat = tf.reshape(out_dict['pred_mask'], [-1])
         m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
             labels_iou, pred_flat, nclasses, mask)
     else:

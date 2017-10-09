@@ -5,6 +5,7 @@ except:
 import math
 import numpy as np
 import os
+import shutil
 try:
     import Queue
 except ImportError:
@@ -67,16 +68,48 @@ def validate(placeholders,
                            '[{elapsed}<{remaining},'
                            '{rate_fmt} {postfix}]')
 
+    if (epoch_id + 1) % 10 == 0 and epoch_id > 10:
+        print('\nMemory limit reached. Deleting previous videos..')
+        for i in range(epoch_id - 19, epoch_id - 10):
+            if cfg.save_rec_videos:
+                video_rec_dir = os.path.join(cfg.checkpoints_dir,
+                                             'videos_rec',
+                                             str(i))
+                shutil.rmtree(video_rec_dir)
+            if cfg.save_segm_videos:
+                video_segm_dir = os.path.join(cfg.checkpoints_dir,
+                                              'videos_segm',
+                                              str(i))
+                shutil.rmtree(video_segm_dir)
+            if cfg.save_of_videos:
+                of_dir = os.path.join(cfg.checkpoints_dir,
+                                      'videos_of',
+                                      str(i))
+                shutil.rmtree(of_dir)
+            if cfg.objectness_path and cfg.save_obj_videos:
+                video_obj_dir = os.path.join(cfg.checkpoints_dir,
+                                             'videos_obj',
+                                             str(i))
+                shutil.rmtree(video_obj_dir)
+            if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
+                video_prev_obj_dir = os.path.join(cfg.checkpoints_dir,
+                                                  'videos_prev_obj',
+                                                  str(i))
+                shutil.rmtree(video_prev_obj_dir)
+
     video_rec = []
     video_segm = []
     video_of = []
     video_obj = []
+    video_prev_obj = []
     video_rec_dir = os.path.join(cfg.checkpoints_dir, 'videos_rec',
                                  str(epoch_id))
     video_segm_dir = os.path.join(cfg.checkpoints_dir, 'videos_segm',
                                   str(epoch_id))
     of_dir = os.path.join(cfg.checkpoints_dir, 'videos_of', str(epoch_id))
     video_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_obj',
+                                 str(epoch_id))
+    video_prev_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_prev_obj',
                                  str(epoch_id))
     if cfg.save_rec_videos:
         if not os.path.exists(video_rec_dir):
@@ -90,6 +123,9 @@ def validate(placeholders,
     if cfg.objectness_path and cfg.save_obj_videos:
         if not os.path.exists(video_obj_dir):
             os.makedirs(video_obj_dir)
+    if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
+        if not os.path.exists(video_prev_obj_dir):
+            os.makedirs(video_prev_obj_dir)
 
     if cfg.compute_mean_iou:
         prev_subset = None
@@ -180,6 +216,16 @@ def validate(placeholders,
                     fname = os.path.join(video_obj_dir, prev_subset + '.mp4')
                     write_video(frames, fname, 15, codec='X264', mask=True)
 
+                if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
+                    # write segmentation videos
+                    frames = np.array(video_prev_obj)
+                    sdx = 2 if frames.ndim == 5 else 1
+                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+                    # frames = (frames * 255.0).astype('uint8')
+                    fname = os.path.join(video_prev_obj_dir,
+                                         prev_subset + '.mp4')
+                    write_video(frames, fname, 15, codec='X264', mask=True)
+
                 if cfg.save_of_videos:
                     # write OF videos
                     of_frames = np.array(video_of)
@@ -194,6 +240,7 @@ def validate(placeholders,
                 video_segm = []
                 video_of = []
                 video_obj = []
+                video_prev_obj = []
             prev_subset = subset[0]
 
         x_in = x_batch
@@ -263,6 +310,8 @@ def validate(placeholders,
         y_pred_batch = fetch_dict['pred']
         if cfg.objectness_path:
             obj_pred_batch = fetch_dict['obj_pred']
+        if cfg.warp_prev_objectness:
+            prev_obj_pred_batch = fetch_dict['prev_obj_pred']
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
         y_pred_mask_batch = fetch_dict['pred_mask']
@@ -281,6 +330,9 @@ def validate(placeholders,
         if cfg.objectness_path and cfg.save_obj_videos:
             video_obj.append(np.expand_dims(
                 np.squeeze(obj_pred_batch, axis=0), axis=-1))
+        if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
+            video_prev_obj.append(np.expand_dims(
+                np.squeeze(prev_obj_pred_batch, axis=0), axis=-1))
         if cfg.show_image_summaries_validation:
             img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
                            raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,

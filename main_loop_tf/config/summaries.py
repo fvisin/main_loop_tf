@@ -27,6 +27,8 @@ gflags.DEFINE_bool('save_of_videos', False, 'Whether to save '
                    'optical flow videos')
 gflags.DEFINE_bool('save_obj_videos', False, 'Whether to save '
                    'objectness predictions videos')
+gflags.DEFINE_bool('save_prev_obj_videos', False, 'Whether to save '
+                   'objectness predictions videos')
 gflags.DEFINE_bool('save_gif_on_disk', False, 'Whether to save a GIF '
                    'animation of the video frames, their GT and the '
                    'prediction of the model. Note that the GIF generation is '
