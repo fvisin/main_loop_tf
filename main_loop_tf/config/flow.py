@@ -2,7 +2,7 @@ import gflags
 
 
 # ============ Flow control
-gflags.DEFINE_integer('val_every_epochs', 1, 'Validation frequency, in epochs',
+gflags.DEFINE_integer('val_every_epochs', 10, 'Validation frequency, in epochs',
                       lower_bound=1)
 gflags.DEFINE_spaceseplist('val_on_sets', 'valid', 'On which sets to '
                            'perform validation')

@@ -81,10 +81,12 @@ def __parse_config(argv=None):
 
     # Convert FLAGS to namespace, so we can modify it
     from argparse import Namespace
+    import json
     cfg = Namespace()
     fl = FLAGS.FlagDict()
     cfg.__dict__ = {k: el.value for (k, el) in fl.iteritems()}
     gflags.cfg = cfg
+
 
     # ============ gsheet
     # Save params for log, excluding non JSONable and not interesting objects
@@ -92,7 +94,10 @@ def __parse_config(argv=None):
                     'debug', 'debug_of', 'devices', 'do_validation_only',
                     'group_summaries', 'help', 'hyperparams_summaries',
                     'max_epochs', 'min_epochs', 'model_name', 'nthreads',
-                    'patience', 'restore_model',
+                    'patience', 'restore_model', 'save_rec_videos',
+                    'save_segm_videos', 'save_obj_videos',
+                    'generate_images', 'eval_metrics', 'measures',
+                    'statistics', 'metrics_freq', 'eval_n_jobs'
                     'save_gif_frames_on_disk', 'save_gif_on_disk',
                     'save_raw_predictions_on_disk', 'show_heatmaps_summaries',
                     'show_samples_summaries', 'supervisor_master',
@@ -136,6 +141,14 @@ def __parse_config(argv=None):
     cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
     cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
 
+    # Save Flags in json file
+    data_flags = cfg.__dict__
+    if not os.path.exists(cfg.checkpoints_dir):
+        os.makedirs(cfg.checkpoints_dir)
+    flags_file = os.path.join(cfg.checkpoints_dir, 'flags.json')
+    with open(flags_file, 'w') as f:
+        json.dump(data_flags, f)
+
     # ============ A bunch of derived params
     cfg._FLOATX = 'float32'
     cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
@@ -154,6 +167,10 @@ def __parse_config(argv=None):
     dataset_params = cfg.train_extra_params
     dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
     dataset_params['data_augm_kwargs'] = {}
+    if cfg.crop_mode == 'smart':
+        dataset_params['data_augm_kwargs']['crop_mode'] = cfg.crop_mode
+        dataset_params['data_augm_kwargs']['smart_crop_threshold'] = cfg.smart_crop_threshold
+        dataset_params['data_augm_kwargs']['smart_crop_search_step'] = cfg.smart_crop_search_step
     dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
     dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
     dataset_params['return_one_hot'] = False
@@ -246,12 +263,15 @@ def __parse_config(argv=None):
 def __run(build_model, build_loss, model_file, run_file):
     cfg = gflags.cfg
 
+    import json
+
     # Save model and run in checkpoint directort
     model_run_dir = os.path.join(cfg.checkpoints_dir, 'model-run')
     if not os.path.exists(model_run_dir):
         os.makedirs(model_run_dir)
     shutil.copy(model_file, model_run_dir)
     shutil.copy(run_file, model_run_dir)
+
 
     # ============ Class balance
     # assert class_balance in [None, 'median_freq_cost', 'rare_freq_cost'], (
@@ -557,19 +577,18 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                                    is_training=is_training,
                                    l2_reg=weight_decay,
                                    gdl=cfg.gdl,
+                                   tv=cfg.tv,
                                    inputs=dev_inputs)
 
-            if cfg.objectness_path:
-                obj_pred = tf.argmax(tf.nn.softmax(model_out_dict['obj_prob']),
-                                     axis=-1)
+            if cfg.objectness_path or cfg.warp_prev_objectness:
+                if cfg.loss_fn_obj == 'rmse':
+                    obj_pred = tf.cast(model_out_dict['obj_prob'] + 0.5,
+                                       tf.int32)
+                elif cfg.loss_fn_obj == 'cross_entropy_softmax':
+                    obj_pred = tf.argmax(tf.nn.softmax(model_out_dict['obj_prob']),
+                                         axis=-1)
 
                 model_out_dict['obj_pred'] = obj_pred
-
-            if cfg.warp_prev_objectness:
-                prev_obj_pred = tf.argmax(
-                    tf.nn.softmax(model_out_dict['prev_obj_prob']), axis=-1)
-
-                model_out_dict['prev_obj_pred'] = prev_obj_pred
 
             # Group outputs from each model tower
             for k, v in model_out_dict.iteritems():

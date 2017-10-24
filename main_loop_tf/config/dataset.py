@@ -36,6 +36,9 @@ gflags.DEFINE_integer('val_overlap', None, 'The overlap (in number of frames) '
                       'of consecutive sequences of the same video for '
                       'validation. If negative not all the frames will be '
                       'returned')
+gflags.DEFINE_string('crop_mode', 'random', '')
+gflags.DEFINE_float('smart_crop_threshold', 0.5, '')
+gflags.DEFINE_integer('smart_crop_search_step', 10, '')
 gflags_ext.DEFINE_multidict('train_extra_params', {},
                             'Dataset train extra params')
 gflags_ext.DEFINE_multidict('val_extra_params', {},

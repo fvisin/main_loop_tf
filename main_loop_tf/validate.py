@@ -16,8 +16,10 @@ from warnings import warn
 import gflags
 from tqdm import tqdm
 import tensorflow as tf
+import json
 
 from utils import split_in_chunks, fig2array
+from evaluation import db_eval
 
 
 def validate(placeholders,
@@ -70,46 +72,43 @@ def validate(placeholders,
 
     if (epoch_id + 1) % 10 == 0 and epoch_id > 10:
         print('\nMemory limit reached. Deleting previous videos..')
-        for i in range(epoch_id - 19, epoch_id - 10):
+        for i in range(epoch_id - 19, epoch_id - 9):
             if cfg.save_rec_videos:
                 video_rec_dir = os.path.join(cfg.checkpoints_dir,
                                              'videos_rec',
                                              str(i))
-                shutil.rmtree(video_rec_dir)
+                if os.path.exists(video_rec_dir):
+                    shutil.rmtree(video_rec_dir)
             if cfg.save_segm_videos:
                 video_segm_dir = os.path.join(cfg.checkpoints_dir,
                                               'videos_segm',
                                               str(i))
-                shutil.rmtree(video_segm_dir)
+                if os.path.exists(video_segm_dir):
+                    shutil.rmtree(video_segm_dir)
             if cfg.save_of_videos:
                 of_dir = os.path.join(cfg.checkpoints_dir,
                                       'videos_of',
                                       str(i))
-                shutil.rmtree(of_dir)
-            if cfg.objectness_path and cfg.save_obj_videos:
+                if os.path.exists(of_dir):
+                    shutil.rmtree(of_dir)
+            if (cfg.objectness_path or
+                    cfg.warp_prev_objectness) and cfg.save_obj_videos:
                 video_obj_dir = os.path.join(cfg.checkpoints_dir,
                                              'videos_obj',
                                              str(i))
-                shutil.rmtree(video_obj_dir)
-            if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
-                video_prev_obj_dir = os.path.join(cfg.checkpoints_dir,
-                                                  'videos_prev_obj',
-                                                  str(i))
-                shutil.rmtree(video_prev_obj_dir)
+                if os.path.exists(video_obj_dir):
+                    shutil.rmtree(video_obj_dir)
 
     video_rec = []
     video_segm = []
     video_of = []
     video_obj = []
-    video_prev_obj = []
     video_rec_dir = os.path.join(cfg.checkpoints_dir, 'videos_rec',
                                  str(epoch_id))
     video_segm_dir = os.path.join(cfg.checkpoints_dir, 'videos_segm',
                                   str(epoch_id))
     of_dir = os.path.join(cfg.checkpoints_dir, 'videos_of', str(epoch_id))
     video_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_obj',
-                                 str(epoch_id))
-    video_prev_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_prev_obj',
                                  str(epoch_id))
     if cfg.save_rec_videos:
         if not os.path.exists(video_rec_dir):
@@ -120,12 +119,15 @@ def validate(placeholders,
     if cfg.save_of_videos:
         if not os.path.exists(of_dir):
             os.makedirs(of_dir)
-    if cfg.objectness_path and cfg.save_obj_videos:
+    if (cfg.objectness_path or
+            cfg.warp_prev_objectness) and cfg.save_obj_videos:
         if not os.path.exists(video_obj_dir):
             os.makedirs(video_obj_dir)
-    if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
-        if not os.path.exists(video_prev_obj_dir):
-            os.makedirs(video_prev_obj_dir)
+
+    if cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0:
+        subsets_list = []
+        per_subset_segmentations = {}
+        per_subset_annotations = {}
 
     if cfg.compute_mean_iou:
         prev_subset = None
@@ -135,6 +137,45 @@ def validate(placeholders,
 
     cidx = (epoch_id*this_set.nbatches)
     frame_idx = cidx
+
+    def save_videos(video_rec, video_segm, video_obj, video_of, prev_subset):
+        if cfg.save_rec_videos:
+            # write reconstruction videos
+            frames = np.array(video_rec)
+            sdx = 2 if frames.ndim == 5 else 1
+            frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+            fname = os.path.join(video_rec_dir, prev_subset + '.mp4')
+            write_video(frames, fname, 15, codec='X264')
+
+        if cfg.save_segm_videos:
+            # write segmentation videos
+            frames = np.array(video_segm)
+            sdx = 2 if frames.ndim == 5 else 1
+            frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+            # frames = (frames * 255.0).astype('uint8')
+            fname = os.path.join(video_segm_dir, prev_subset + '.mp4')
+            write_video(frames, fname, 15, codec='X264', mask=True)
+
+        if (cfg.objectness_path or
+                cfg.warp_prev_objectness) and cfg.save_obj_videos:
+            # write segmentation videos
+            frames = np.array(video_obj)
+            sdx = 2 if frames.ndim == 5 else 1
+            frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+            # frames = (frames * 255.0).astype('uint8')
+            fname = os.path.join(video_obj_dir, prev_subset + '.mp4')
+            write_video(frames, fname, 15, codec='X264', mask=True)
+
+        if cfg.save_of_videos:
+            # write OF videos
+            of_frames = np.array(video_of)
+            sdx = 2 if of_frames.ndim == 5 else 1
+            of_frames = of_frames.reshape(
+                [-1] + list(of_frames.shape[sdx:]))
+            fname = os.path.join(of_dir, prev_subset + '.mp4')
+            write_video(of_frames, fname, 15, codec='X264',
+                        flowRGB=True)
+
     for bidx in range(this_set.nbatches):
         if cfg.sv.should_stop():  # Stop requested
             break
@@ -169,6 +210,9 @@ def validate(placeholders,
             # Reset the confusion matrix when we switch video
             # Reset the first mask to be warped
             if not prev_subset or subset[0] != prev_subset:
+                # Initialize annotations dictionary
+                if cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0:
+                    per_subset_annotations[subset[0]] = []
                 if cfg.summary_per_subset:
                     tf.logging.info('Reset confusion matrix! {} --> {}'.format(
                         prev_subset, subset[0]))
@@ -190,57 +234,17 @@ def validate(placeholders,
             if prev_subset is not None and subset[0] != prev_subset:
                 # Write videos for each subset
                 # ----------------------------
-                if cfg.save_rec_videos:
-                    # write reconstruction videos
-                    frames = np.array(video_rec)
-                    sdx = 2 if frames.ndim == 5 else 1
-                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
-                    fname = os.path.join(video_rec_dir, prev_subset + '.mp4')
-                    write_video(frames, fname, 15, codec='X264')
-
-                if cfg.save_segm_videos:
-                    # write segmentation videos
-                    frames = np.array(video_segm)
-                    sdx = 2 if frames.ndim == 5 else 1
-                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
-                    # frames = (frames * 255.0).astype('uint8')
-                    fname = os.path.join(video_segm_dir, prev_subset + '.mp4')
-                    write_video(frames, fname, 15, codec='X264', mask=True)
-
-                if cfg.objectness_path and cfg.save_obj_videos:
-                    # write segmentation videos
-                    frames = np.array(video_obj)
-                    sdx = 2 if frames.ndim == 5 else 1
-                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
-                    # frames = (frames * 255.0).astype('uint8')
-                    fname = os.path.join(video_obj_dir, prev_subset + '.mp4')
-                    write_video(frames, fname, 15, codec='X264', mask=True)
-
-                if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
-                    # write segmentation videos
-                    frames = np.array(video_prev_obj)
-                    sdx = 2 if frames.ndim == 5 else 1
-                    frames = frames.reshape([-1] + list(frames.shape[sdx:]))
-                    # frames = (frames * 255.0).astype('uint8')
-                    fname = os.path.join(video_prev_obj_dir,
-                                         prev_subset + '.mp4')
-                    write_video(frames, fname, 15, codec='X264', mask=True)
-
-                if cfg.save_of_videos:
-                    # write OF videos
-                    of_frames = np.array(video_of)
-                    sdx = 2 if of_frames.ndim == 5 else 1
-                    of_frames = of_frames.reshape(
-                        [-1] + list(of_frames.shape[sdx:]))
-                    fname = os.path.join(of_dir, prev_subset + '.mp4')
-                    write_video(of_frames, fname, 15, codec='X264',
-                                flowRGB=True)
+                save_videos(video_rec, video_segm, video_obj, video_of,
+                            prev_subset)
+                # Save per-subset segmentations for evaluation
+                if (cfg.eval_metrics or
+                        (epoch_id + 1) % cfg.metrics_freq == 0):
+                    per_subset_segmentations[prev_subset] = video_segm
 
                 video_rec = []
                 video_segm = []
                 video_of = []
                 video_obj = []
-                video_prev_obj = []
             prev_subset = subset[0]
 
         x_in = x_batch
@@ -249,19 +253,25 @@ def validate(placeholders,
                 if cfg.valid_params['return_middle_frame_only']:
                     y_in = np.zeros(shape=x_in.shape[:-1], dtype='int32')
                     y_in[:, cfg.seq_length // 2, ...] = y_batch
+
+                    # Save per-subset annotations for evaluation
+                    if (cfg.eval_metrics or
+                            (epoch_id + 1) % cfg.metrics_freq == 0):
+                        per_subset_annotations[subset[0]].append(
+                            np.expand_dims(y_batch, axis=-1))
                 else:
-                    y_in = y_batch  # [:, cfg.seq_length // 2, ...]
+                    y_in = y_batch
                 y_in[:, (cfg.seq_length // 2) - 1, ...] = prev_pred_mask
-            # if cfg.target_frame == 'last':
-            #     y_in = y_batch  # [:, cfg.seq_length - 1, ...]
         else:
             y_in = y_batch
 
-        # if cfg.use_second_path:
-        #     x_in = [x_in[..., :3], x_in[..., 3:]]
-
         x_batch_chunks, y_batch_chunks = split_in_chunks(x_in, y_in,
                                                          this_num_splits)
+
+        # Save subsets name for the evalutation
+        if cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0:
+            if not subset[0] in subsets_list:
+                subsets_list.append(subset[0])
 
         # Fill the placeholders with data up to this_num_splits, and
         # then repeat one of the chunks. Note that this will be
@@ -308,31 +318,39 @@ def validate(placeholders,
         of_pred_fw_batch = fetch_dict.get('of_pred_fw', [None] * len(f_batch))
         of_pred_bw_batch = fetch_dict.get('of_pred_bw', [None] * len(f_batch))
         y_pred_batch = fetch_dict['pred']
-        if cfg.objectness_path:
+        if cfg.objectness_path or cfg.warp_prev_objectness:
             obj_pred_batch = fetch_dict['obj_pred']
-        if cfg.warp_prev_objectness:
-            prev_obj_pred_batch = fetch_dict['prev_obj_pred']
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
         y_pred_mask_batch = fetch_dict['pred_mask']
         y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
         y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
-        # Save the predicted mask to be warped in the next run
-        prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
+        if cfg.masks_linear_interpolation or cfg.masks_interp_conv_layer:
+            y_pred_mask_fw_batch = fetch_dict['pred_mask_fw']
+            y_pred_mask_fw_batch[np.where(y_pred_mask_fw_batch > 0.5)] = 1
+            y_pred_mask_fw_batch[np.where(y_pred_mask_fw_batch < 1)] = 0
+
+            # Save the predicted mask to be warped in the next run
+            if cfg.prev_segm_in_input == 'warped':
+                prev_pred_mask = np.squeeze(y_pred_mask_fw_batch, axis=-1)
+            elif cfg.prev_segm_in_input == 'interpolated':
+                prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
+            else:
+                raise NotImplementedError()
+        else:
+            prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
         blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
         if cfg.save_rec_videos:
-            video_rec.append(y_pred_fw_batch)
-        if cfg.save_segm_videos:
+            video_rec.append(y_pred_batch)
+        if (cfg.save_segm_videos or
+                cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0):
             video_segm.append(y_pred_mask_batch)
         if cfg.save_of_videos:
             video_of.append(of_pred_fw_batch)
-        if cfg.objectness_path and cfg.save_obj_videos:
-            video_obj.append(np.expand_dims(
-                np.squeeze(obj_pred_batch, axis=0), axis=-1))
-        if cfg.warp_prev_objectness and cfg.save_prev_obj_videos:
-            video_prev_obj.append(np.expand_dims(
-                np.squeeze(prev_obj_pred_batch, axis=0), axis=-1))
+        if (cfg.objectness_path or
+                cfg.warp_prev_objectness) and cfg.save_obj_videos:
+            video_obj.append(obj_pred_batch)
         if cfg.show_image_summaries_validation:
             img_queue.put((frame_idx, this_set, x_batch, y_in, f_batch, subset,
                            raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
@@ -350,6 +368,35 @@ def validate(placeholders,
     # Write the summaries
     class_labels = this_set.mask_labels[:this_set.non_void_nclasses]
     if cfg.compute_mean_iou:
+        # Save the metrics for the last subset
+        save_videos(video_rec, video_segm, video_obj, video_of, prev_subset)
+
+        # Save per-subset segmentation for evaluation
+        if cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0:
+            per_subset_segmentations[prev_subset] = video_segm
+            # START EVALUATION #
+            evaluation = db_eval(subsets_list,
+                                 per_subset_segmentations,
+                                 per_subset_annotations,
+                                 measures=cfg.measures,
+                                 statistics=cfg.statistics,
+                                 n_jobs=cfg.eval_n_jobs,
+                                 verbose=True)
+            results_dir = os.path.join(cfg.checkpoints_dir,
+                                       'results', which_set)
+            if not os.path.exists(results_dir):
+                os.makedirs(results_dir)
+            results_file = os.path.join(results_dir, 'results.json')
+            with open(results_file, 'w') as f:
+                # exp_hash = cfg.checkpoints_dir.split('/')[-1]
+                json.dump(evaluation, f)
+            # Get mean IoU for early stopping
+            mIoU = evaluation['dataset']['J']['mean']
+
+        video_rec = []
+        video_segm = []
+        video_obj = []
+        video_of = []
         if cfg.summary_per_subset:
             # Write the IoUs per subset (i.e., video) and (potentially) class
             # and their average
@@ -942,13 +989,18 @@ def write_video(frames, fname, fps, codec='X264', mask=False, flowRGB=False):
     Returns:
         no return value
     """
+    cfg = gflags.cfg
+
     import cv2
     from utils import flowToColor
     # http://www.pyimagesearch.com/2016/02/22/writing-to-video-with-opencv/
     fourcc = cv2.VideoWriter_fourcc(*codec)
 
     h, w = frames.shape[1:3]
-    writer = cv2.VideoWriter(fname, fourcc, fps, (w, h), True)
+    if not cfg.generate_images:
+        writer = cv2.VideoWriter(fname, fourcc, fps, (w, h), True)
+    else:
+        image_frames = []
     for f in frames:
         if flowRGB:
             f = flowToColor(f, None, show_flow_vector_field=False)
@@ -958,9 +1010,17 @@ def write_video(frames, fname, fps, codec='X264', mask=False, flowRGB=False):
             f = cv2.cvtColor(np.float32(f), cv2.COLOR_RGB2BGR)
         f = (f * 255.0)
         f = f.astype('uint8')
-        writer.write(f)
-    writer.release()
-
+        if not cfg.generate_images:
+            writer.write(f)
+        else:
+            f = cv2.copyMakeBorder(f, 2, 2, 2, 2, cv2.BORDER_CONSTANT,
+                                   value=[255, 255, 255])
+            image_frames.append(f)
+    if not cfg.generate_images:
+        writer.release()
+    else:
+        cv2.imwrite(fname[:-4] + '.png',
+                    np.concatenate(image_frames[20:40], axis=0))
 
 def save_animation_frame(frame, video_name, save_basedir):
     import imageio

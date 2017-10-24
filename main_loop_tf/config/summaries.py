@@ -29,6 +29,15 @@ gflags.DEFINE_bool('save_obj_videos', False, 'Whether to save '
                    'objectness predictions videos')
 gflags.DEFINE_bool('save_prev_obj_videos', False, 'Whether to save '
                    'objectness predictions videos')
+gflags.DEFINE_bool('generate_images', False, '')
+gflags.DEFINE_bool('eval_metrics', False, 'If True evaluate the metrics '
+                   'each validation')
+gflags.DEFINE_list('measures', ['J', 'F', 'T'], '')
+gflags.DEFINE_list('statistics', ['mean', 'recall', 'decay'], '')
+gflags.DEFINE_integer('metrics_freq', 1000, 'How often to evaluate the '
+                      'metrics in epochs')
+gflags.DEFINE_integer('eval_n_jobs', 32, 'CPU cores for metrics '
+                      'computation')
 gflags.DEFINE_bool('save_gif_on_disk', False, 'Whether to save a GIF '
                    'animation of the video frames, their GT and the '
                    'prediction of the model. Note that the GIF generation is '
@@ -44,9 +53,9 @@ gflags.DEFINE_bool('save_raw_predictions_on_disk', False, 'Whether to save '
 gflags.DEFINE_bool('group_summaries', True, 'If True, groups the scalar '
                    'summaries by `layer_sublayer` rather than just by '
                    '`layer`. The total number of summaries remains unchanged')
-gflags.DEFINE_integer('train_summary_freq', 10,
+gflags.DEFINE_integer('train_summary_freq', 100,
                       'How frequent save train summaries (in steps)')
-gflags.DEFINE_integer('val_summary_freq', 10,
+gflags.DEFINE_integer('val_summary_freq', 100,
                       'How frequent save validation summaries (in steps)')
 gflags.DEFINE_bool('summary_per_subset', False,
                    'If True mIoUs are saved per subset/video')
