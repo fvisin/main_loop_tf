@@ -205,12 +205,17 @@ def validate(placeholders,
         # http://python.active-venture.com/lib/condition-objects.html
         # Save image summary for learning visualization
 
-        of_pred_batch = fetch_dict.get('of_pred', [None] * len(f_batch))
+        of_pred_fw_batch = fetch_dict.get('of_pred_fw', [None] * len(f_batch))
+        of_pred_bw_batch = fetch_dict.get('of_pred_bw', [None] * len(f_batch))
         y_pred_batch = fetch_dict['pred']
+        y_pred_fw_batch = fetch_dict['pred_fw']
+        y_pred_bw_batch = fetch_dict['pred_bw']
+        blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
         img_queue.put((frame_idx, this_set, x_batch, y_batch, f_batch, subset,
-                       raw_data_batch, of_pred_batch, y_pred_batch,
-                       y_prob_batch))
+                       raw_data_batch, of_pred_fw_batch, of_pred_bw_batch,
+                       y_pred_batch, y_pred_fw_batch, y_pred_bw_batch,
+                       blend_batch, y_prob_batch))
         cidx += 1
         frame_idx += len(x_batch)
         pbar.update(1)
@@ -314,7 +319,8 @@ def save_images(img_queue, save_basedir, sentinel):
                 img_queue.task_done()
                 break
             (bidx, this_set, x_batch, y_batch, f_batch, subset,
-             raw_data_batch, of_pred_batch, y_pred_batch, y_prob_batch) = img
+             raw_data_batch, of_pred_fw_batch, of_pred_bw_batch, y_pred_batch,
+             y_pred_fw_batch, y_pred_bw_batch, blend_batch, y_prob_batch) = img
 
             cfg = gflags.cfg
 
@@ -334,7 +340,7 @@ def save_images(img_queue, save_basedir, sentinel):
                     cmap = None
             labels = this_set.mask_labels
 
-            if not np.all(of_pred_batch):
+            if not np.all(of_pred_fw_batch):
                 lengths = (len(x_batch), len(y_batch), len(f_batch),
                            len(y_pred_batch), len(y_prob_batch),
                            len(raw_data_batch))
@@ -345,18 +351,20 @@ def save_images(img_queue, save_basedir, sentinel):
             else:
                 lengths = (len(x_batch), len(y_batch), len(f_batch),
                            len(y_pred_batch), len(y_prob_batch),
-                           len(of_pred_batch), len(raw_data_batch))
+                           len(of_pred_fw_batch), len(raw_data_batch))
                 assert all(el == lengths[0] for el in lengths), (
                     'x_batch: {}\ny_batch: {}\nf_batch: {}\ny_pred_batch: {}'
                     '\ny_prob_batch: {}\nof_pred_batch: {}'
                     '\nraw_data_batch: {}'.format(*lengths))
 
-            zip_list = (x_batch, y_batch, f_batch, of_pred_batch,
-                        y_pred_batch, y_prob_batch, raw_data_batch)
+            zip_list = (x_batch, y_batch, f_batch, of_pred_fw_batch,
+                        of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
+                        y_pred_bw_batch, blend_batch, y_prob_batch, raw_data_batch)
 
             # Save samples, iterating over each element of the batch
             for el in zip(*zip_list):
-                (x, y, f, of_pred, y_pred, y_prob, raw_data) = el
+                (x, y, f, of_pred_fw, of_pred_bw, y_pred, y_pred_fw, y_pred_bw,
+                 blend, y_prob, raw_data) = el
 
                 # y = np.expand_dims(y, -1)
                 # y_pred = np.expand_dims(y_pred, -1)
@@ -390,12 +398,26 @@ def save_images(img_queue, save_basedir, sentinel):
                 else:
                     of = None
 
-                if of_pred is not None:
-                    of_rgb = flowToColor(of_pred)
-                    of_rgb = cv2.resize(of_rgb, (y_pred.shape[1],
-                                                 y_pred.shape[0]))
+                # TODO Process OF to create vector field representation
+                # Predicted forward OF
+                if of_pred_fw is not None:
+                    of_rgb_fw = flowToColor(of_pred_fw,
+                                            raw_data[which_frame - 1],
+                                            cfg.show_flow_vector_field)
+                    of_rgb_fw = cv2.resize(of_rgb_fw, (y_pred.shape[1],
+                                                       y_pred.shape[0]))
                 else:
-                    of_rgb = None
+                    of_rgb_fw = None
+
+                # Predicted backward OF
+                if of_pred_bw is not None:
+                    of_rgb_bw = flowToColor(of_pred_bw,
+                                            raw_data[which_frame + 1],
+                                            cfg.show_flow_vector_field)
+                    of_rgb_bw = cv2.resize(of_rgb_bw, (y_pred.shape[1],
+                                                       y_pred.shape[0]))
+                else:
+                    of_rgb_bw = None
 
                 if raw_data.ndim == 4:
                     # Show only the middle frame
@@ -419,6 +441,8 @@ def save_images(img_queue, save_basedir, sentinel):
                         cfg.show_samples_summaries or cfg.save_gif_on_disk):
                     if raw_data.ndim == 4:
                         sample_in = raw_data[which_frame]
+                        sample_in_fw = raw_data[which_frame - 1]
+                        sample_in_bw = raw_data[which_frame + 1]
                         if y.shape[0] > 1:
                             y_in = y[which_frame]
                         else:
@@ -426,9 +450,12 @@ def save_images(img_queue, save_basedir, sentinel):
                     else:
                         sample_in = raw_data
                         y_in = y
-                    save_samples_and_animations(sample_in, of, of_rgb, y_pred,
-                                                y_in, cmap, nclasses, labels,
-                                                subset, save_basedir, f, bidx)
+                    save_samples_and_animations(sample_in, sample_in_fw,
+                                                sample_in_bw, of, of_rgb_fw,
+                                                of_rgb_bw, y_pred, y_pred_fw,
+                                                y_pred_bw, blend, y_in, cmap,
+                                                nclasses, labels, subset,
+                                                save_basedir, f, bidx)
                 bidx += 1  # Make sure every batch is in a separate frame
             img_queue.task_done()
         except Queue.Empty:
@@ -515,76 +542,196 @@ def save_heatmap_fn(x, of, y_prob, labels, nclasses, save_basedir, subset,
     plt.close('all')
 
 
-def save_samples_and_animations(raw_data, of, of_pred, y_pred, y, cmap,
+def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
+                                of_pred_fw, of_pred_bw, y_pred,
+                                y_pred_fw, y_pred_bw, blend, y, cmap,
                                 nclasses, labels, subset, save_basedir,
                                 f, bidx):
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import AxesGrid
     from StringIO import StringIO
+    import matplotlib.gridspec as gridspec
 
     cfg = gflags.cfg
 
-    fig = plt.figure(dpi=300)
+    fig = plt.figure(dpi=600)
     # Remove whitespace from around the image
     fig.subplots_adjust(left=0.1, right=0.9, bottom=0, top=1)
 
     # Set number of rows
-    if cfg.model_returns_of:
-        n_rows = 2
-        n_cols = 3
-    else:
-        n_rows = 2
-        n_cols = 2
+    # if cfg.model_returns_of:
+    #     n_rows = 5
+    #     n_cols = 3
+    # else:
+    #     n_rows = 2
+    #     n_cols = 2
 
-    grid = AxesGrid(fig, 111,
-                    nrows_ncols=(n_rows, n_cols),
-                    axes_pad=0.50,
-                    share_all=True,
-                    label_mode="L",
-                    cbar_location="right",
-                    cbar_mode="single")
-    sh = raw_data.shape
-    for ax in grid:
-        ax.set_xticks([sh[1]])
-        ax.set_yticks([sh[0]])
+    gs = gridspec.GridSpec(11, 12)
 
-    # This element is not used
-    if cfg.model_returns_of:
-        # grid[5].set_visible(False)
-        abs_diff = np.squeeze(np.abs(raw_data-y_pred))
-        grid[5].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
-    # image
-    if raw_data.shape[-1] == 1:
+    if raw_data_gt.shape[-1] == 1:
         raw_data_cmap = 'gray'
     else:
         raw_data_cmap = None
-    grid[0].imshow(np.squeeze(raw_data), cmap=raw_data_cmap)
-    grid[0].set_title('Image')
-    # prediction
-    grid[2].imshow(np.squeeze(y_pred), cmap=cmap, vmin=0, vmax=nclasses)
-    grid[2].set_title('Prediction')
-    im = None
-    # OF
-    if of is not None:
-        grid[3].imshow(of, vmin=0, vmax=1, interpolation='nearest')
-        grid[3].set_title('Optical flow')
-    else:
-        grid[3].set_visible(False)
-    if of_pred is not None:
-        grid[4].imshow(of_pred)
-        grid[4].set_title('Predicted OF')
+    # GT-Frame
+    ax = plt.subplot(gs[:3, :3])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(raw_data_gt), cmap=raw_data_cmap)
+    ax.set_title('GT-Frame')
     # GT
-    if y is not None:
-        im = grid[1].imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
-        grid[1].set_title('Ground truth')
-    else:
-        grid[1].set_visible(False)
-    # set the colorbar to match GT or prediction
-    grid.cbar_axes[0].colorbar(im)
-    for cax in grid.cbar_axes:
-        cax.toggle_label(True)  # show labels
-        cax.set_yticks(np.arange(len(labels)) + 0.5)
-        cax.set_yticklabels(labels)
+    im = None
+    ax = plt.subplot(gs[:3, 3:6])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    im = ax.imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('Ground truth')
+    # blended prediction
+    ax = plt.subplot(gs[3:6, :3])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(y_pred), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('JointPred')
+    # Difference between gt-frame and blended prediction
+    ax = plt.subplot(gs[3:6, 3:6])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred))
+    ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    ax.set_title('GT-JointPred')
+    # Frame t-1
+    ax = plt.subplot(gs[6:8, :2])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(raw_data_fw), cmap=raw_data_cmap)
+    ax.set_title('Starting Frame')
+    # forward prediction
+    ax = plt.subplot(gs[6:8, 2:4])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(y_pred_fw), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('FWPred')
+    # Difference between gt-frame and forward prediction
+    ax = plt.subplot(gs[6:8, 4:6])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_fw))
+    ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    ax.set_title('GT-FWPred')
+    # Frame t+1
+    ax = plt.subplot(gs[8:10, :2])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(raw_data_bw), cmap=raw_data_cmap)
+    ax.set_title('Starting Frame')
+    # backward prediction
+    ax = plt.subplot(gs[8:10, 2:4])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(y_pred_bw), cmap=cmap, vmin=0, vmax=nclasses)
+    ax.set_title('BWPred')
+    # Difference between gt-frame and backward prediction
+    ax = plt.subplot(gs[8:10, 4:6])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_bw))
+    ax.imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    ax.set_title('GT-BWPred')
+    # Forward OF
+    ax = plt.subplot(gs[0:4, 7:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(of_pred_fw)
+    ax.set_title('FW Predicted OF')
+    # Backward OF
+    ax = plt.subplot(gs[4:8, 7:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(of_pred_bw)
+    ax.set_title('BW Predicted OF')
+    # Blend heatmap
+    ax = plt.subplot(gs[8:10, 7:])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(np.squeeze(blend), cmap='hot', vmin=0, vmax=1,
+                    interpolation='nearest')
+    ax.set_title('Blend Heatmap')
+    # grid = AxesGrid(fig, 111,
+    #                 nrows_ncols=(n_rows, n_cols),
+    #                 axes_pad=0.50,
+    #                 share_all=True,
+    #                 label_mode="L",
+    #                 cbar_location="right",
+    #                 cbar_mode="single")
+    # sh = raw_data_gt.shape
+    # for ax in grid:
+    #     ax.set_xticks([sh[1]])
+    #     ax.set_yticks([sh[0]])
+
+    # # This element is not used
+    # # if cfg.model_returns_of:
+    # # grid[5].set_visible(False)
+    # # image
+    # if raw_data_gt.shape[-1] == 1:
+    #     raw_data_cmap = 'gray'
+    # else:
+    #     raw_data_cmap = None
+    # # GT-Frame
+    # grid[0].axhspan(0, 1, 0, 2)
+    # grid[0].imshow(np.squeeze(raw_data_gt), cmap=raw_data_cmap)
+    # grid[0].set_title('GT-Frame')
+    # # GT
+    # im = None
+    # if y is not None:
+    #     im = grid[1].imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
+    #     grid[1].set_title('Ground truth')
+    # else:
+    #     grid[1].set_visible(False)
+
+    # grid[3].set_visible(False)
+    # # blended prediction
+    # grid[4].imshow(np.squeeze(y_pred), cmap=cmap, vmin=0, vmax=nclasses)
+    # grid[4].set_title('JointPred')
+    # # Difference between gt-frame and blended prediction
+    # abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred))
+    # grid[5].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    # grid[5].set_title('GT-JointPred')
+    # # Frame t-1
+    # grid[6].imshow(np.squeeze(raw_data_fw), cmap=raw_data_cmap)
+    # grid[6].set_title('Starting Frame')
+    # # forward prediction
+    # grid[7].imshow(np.squeeze(y_pred_fw), cmap=cmap, vmin=0, vmax=nclasses)
+    # grid[7].set_title('FWPred')
+    # # Difference between gt-frame and forward prediction
+    # abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_fw))
+    # grid[8].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    # grid[8].set_title('GT-FWPred')
+    # # Frame t+1
+    # grid[9].imshow(np.squeeze(raw_data_bw), cmap=raw_data_cmap)
+    # grid[9].set_title('Starting Frame')
+    # # backward prediction
+    # grid[10].imshow(np.squeeze(y_pred_bw), cmap=cmap, vmin=0, vmax=nclasses)
+    # grid[10].set_title('BWPred')
+    # # Difference between gt-frame and backward prediction
+    # abs_diff = np.squeeze(np.abs(raw_data_gt - y_pred_bw))
+    # grid[11].imshow(abs_diff, vmin=0, vmax=1, interpolation='nearest')
+    # grid[11].set_title('GT-BWPred')
+    # # Forward OF
+    # grid[12].imshow(of_pred_fw)
+    # grid[12].set_title('FW Predicted OF')
+    # # Backward OF
+    # grid[13].imshow(of_pred_bw)
+    # grid[13].set_title('BW Predicted OF')
+    # # Blend heatmap
+    # grid[14].imshow(np.squeeze(blend), cmap='hot', vmin=0, vmax=1,
+    #                 interpolation='nearest')
+    # grid[14].set_title('Blend Heatmap')
+    # # set the colorbar to match GT or prediction
+    # grid.cbar_axes[0].colorbar(im)
+    # # grid[11].set_visible(False)
+    # for cax in grid.cbar_axes:
+    #     cax.toggle_label(True)  # show labels
+    #     cax.set_yticks(np.arange(len(labels)) + 0.5)
+    #     cax.set_yticklabels(labels)
 
     # TODO: Labels 45 gradi
 

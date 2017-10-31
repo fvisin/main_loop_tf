@@ -5,6 +5,11 @@ from main_loop_tf import gflags_ext
 # Summaries and samples
 gflags.DEFINE_bool('show_samples_summaries', True, 'Whether to save the '
                    'GT/Prediction image summaries')
+gflags.DEFINE_bool('show_flow_vector_field', True, 'If True the optical '
+                   'flow magnitude and direction are visualized as '
+                   'oriented arrows on the frame to which the optical '
+                   'flow is applied, otherwise they are both encoded as '
+                   'RGB values and visualized as a color map')
 gflags.DEFINE_bool('show_heatmaps_summaries', False, 'Whether to save the '
                    'summaries of the heatmaps of the softmax distribution '
                    'per each class')

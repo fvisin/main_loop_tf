@@ -2,6 +2,7 @@ import logging
 from subprocess import check_output
 import sys
 import tqdm
+import cv2
 
 import gflags
 import matplotlib
@@ -233,7 +234,7 @@ class TqdmHandler(logging.StreamHandler):
         tqdm.tqdm.write(msg)
 
 
-def flowToColor(flow, varargin=None):
+def flowToColor(flow, frame, show_flow_vector_field=True, varargin=None):
     '''
     Convert optical flow to RGB image
     From:
@@ -271,12 +272,56 @@ def flowToColor(flow, varargin=None):
     #        maxrad = maxFlow
     u = u / (maxrad + 1e-5)
     v = v / (maxrad + 1e-5)
-    # % compute color
-    img = computeColor(u, v)
+    if show_flow_vector_field:
+        mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        img = drawVectorField(frame, mag, rad)
+    else:
+        img = computeColor(u, v)
+        img = img / 255.
     # % unknown flow
     # IDX = np.repmat(idxUnknown, np.array(np.hstack((1., 1., 3.))))
     # img[int(IDX)-1] = 0.
-    return img/255.
+    # return img/255.
+    return img
+
+
+def drawVectorField(frame, mag, rad):
+    magnitude_hsv = np.zeros(shape=rad.shape + tuple([3]))
+    magnitude_hsv[..., 2] = np.clip(mag, 0, 10) / 10.
+    # magnitude_rgb[..., indice / numero di righe
+    # for i in range(480):
+    #     magnitude_hsv[i, :, 2] = i / 480.
+    # magnitude_rgb[..., 1] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+    # magnitude_rgb[..., 2] = np.expand_dims(mag, axis=-1)[..., 0]
+    magnitude_rgb = cv2.cvtColor(np.uint8(magnitude_hsv * 255),
+                                 cv2.COLOR_HSV2RGB)
+    magnitude_rgb[..., 1] = 255
+
+    white_background = np.ones_like(frame) * 255
+    cv2.addWeighted(frame, 0.4, white_background, 0.6, 0, white_background)
+
+    height = rad.shape[0]
+    width = rad.shape[1]
+
+    divisor = 12
+    vector_length = 10
+
+    for i in range(height / divisor):
+        for j in range(width / divisor):
+            y1 = i * divisor
+            x1 = j * divisor
+            vector_length = magnitude_hsv[y1, x1, 2] * 10
+            dy = vector_length * np.sin(rad[y1, x1])
+            dx = vector_length * np.cos(rad[y1, x1])
+            x2 = int(x1 + dx)
+            y2 = int(y1 + dy)
+            x2 = np.clip(x2, 0, width)
+            y2 = np.clip(y2, 0, height)
+            arrow_color = magnitude_rgb[y1, x1].tolist()
+            white_background = cv2.arrowedLine(
+                white_background, (x1, y1), (x2, y2),
+                arrow_color, 1, tipLength=0.4)
+    return white_background
 
 
 def computeColor(u, v):
