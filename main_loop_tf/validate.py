@@ -763,7 +763,7 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     ax = plt.subplot(gs[:3, :3])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(np.squeeze(y))  # , cmap=cmap, vmin=0, vmax=nclasses)
+    ax.imshow(np.squeeze(y), cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('GT Mask')
     # starting mask
     ax = plt.subplot(gs[:3, 3:6])
@@ -775,7 +775,7 @@ def save_samples_and_animations(raw_data_gt, raw_data_fw, raw_data_bw, of,
     ax = plt.subplot(gs[:3, 6:9])
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(np.squeeze(y_pred_mask))  # , cmap=cmap, vmin=0, vmax=nclasses)
+    ax.imshow(np.squeeze(y_pred_mask), cmap=cmap, vmin=0, vmax=nclasses)
     ax.set_title('MaskPred')
     # Mask OF
     ax = plt.subplot(gs[0:3, 9:])
