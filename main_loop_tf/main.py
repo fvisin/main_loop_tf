@@ -87,7 +87,6 @@ def __parse_config(argv=None):
     cfg.__dict__ = {k: el.value for (k, el) in fl.iteritems()}
     gflags.cfg = cfg
 
-
     # ============ gsheet
     # Save params for log, excluding non JSONable and not interesting objects
     exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
@@ -166,13 +165,13 @@ def __parse_config(argv=None):
     # Add dataset extra parameters specific for the dataset
     dataset_params = cfg.train_extra_params
     dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
-    dataset_params['data_augm_kwargs'] = {}
+    data_augm_kwargs = dataset_params['data_augm_kwargs'] = {}
     if cfg.crop_mode == 'smart':
-        dataset_params['data_augm_kwargs']['crop_mode'] = cfg.crop_mode
-        dataset_params['data_augm_kwargs']['smart_crop_threshold'] = cfg.smart_crop_threshold
-        dataset_params['data_augm_kwargs']['smart_crop_search_step'] = cfg.smart_crop_search_step
-    dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
-    dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
+        data_augm_kwargs['crop_mode'] = cfg.crop_mode
+        data_augm_kwargs['smart_crop_threshold'] = cfg.smart_crop_threshold
+        data_augm_kwargs['smart_crop_search_step'] = cfg.smart_crop_search_step
+    data_augm_kwargs['crop_size'] = cfg.crop_size
+    data_augm_kwargs['return_optical_flow'] = cfg.of
     dataset_params['return_one_hot'] = False
     dataset_params['return_01c'] = True
     if cfg.seq_per_subset:
@@ -263,15 +262,12 @@ def __parse_config(argv=None):
 def __run(build_model, build_loss, model_file, run_file):
     cfg = gflags.cfg
 
-    import json
-
-    # Save model and run in checkpoint directort
+    # Save model and run files in the checkpoint dir
     model_run_dir = os.path.join(cfg.checkpoints_dir, 'model-run')
     if not os.path.exists(model_run_dir):
         os.makedirs(model_run_dir)
     shutil.copy(model_file, model_run_dir)
     shutil.copy(run_file, model_run_dir)
-
 
     # ============ Class balance
     # assert class_balance in [None, 'median_freq_cost', 'rare_freq_cost'], (
@@ -585,8 +581,9 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     obj_pred = tf.cast(model_out_dict['obj_prob'] + 0.5,
                                        tf.int32)
                 elif cfg.loss_fn_obj == 'cross_entropy_softmax':
-                    obj_pred = tf.argmax(tf.nn.softmax(model_out_dict['obj_prob']),
-                                         axis=-1)
+                    obj_pred = tf.argmax(tf.nn.softmax(
+                        model_out_dict['obj_prob']),
+                        axis=-1)
 
                 model_out_dict['obj_pred'] = obj_pred
 
@@ -659,7 +656,6 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     for very deep networks",
                     http://arxiv.org/pdf/1511.06807v1.pdf
                     """
-
                     eta = cfg.grad_noise_scale ** 0.5
                     gamma = 0.55 / 2
                     grad_noise_scale = eta * tf.pow(tf.cast(
@@ -1031,6 +1027,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             # ignored later on (see comment where placeholders are created)
             [inputs_per_gpu, labels_per_gpu, num_splits, num_batches,
              prev_err] = placeholders
+
             in_vals = list(zip_longest(inputs_per_gpu, x_batch_chunks,
                                        fillvalue=x_batch_chunks[0]))
             in_vals.extend(list(zip_longest(labels_per_gpu, y_batch_chunks,
