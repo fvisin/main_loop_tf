@@ -506,13 +506,14 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     and of the *Variables* (respectively), but rather only adds the Ops that
     change from one call to the other and reuses the same Variables.
 
-    Furthermore, to accommodate for the case where the last minibatch of a set
-    is smaller than batch_size, we create two versions of each operation
-    (e.g., those that compute the summaries), the first that uses all the GPUs
-    (default) and the second that only uses the subset that is possible to use
-    in the reduced batch case. Each returned value is then a list of two ops.
-    This allows to choose at runtime which operations of the graph to call,
-    depending on the batch size.
+    Furthermore, we accommodate for the case where some minibatches are smaller
+    than the usual size and are not enough to feed all the devices. Since we
+    cannot change the graph at runtime, we accomplish this by feeding the
+    unused devices and discarding their output. To prevent the statistics of
+    these unnecessary computation to be retrieved and visualized, we create
+    several summary ops, to collect the summaries of the first device, of the
+    first two devices, of the first three, .., and so on. This allows to choose
+    at runtime which summary operations to call, depending on the batch size.
     '''
     cfg = gflags.cfg
     optimizer = cfg.Optimizer
@@ -540,15 +541,17 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     tower_loss_dict = {}
     tower_grads = []
     summaries = []
-
-    # Process backwards, so that the i-th summary includes all the summaries
-    # of the devices up to the i-th
-    for device, dev_inputs, dev_labels in zip(devices[::-1],
-                                              inputs_per_gpu,
-                                              labels_per_gpu):
+    for device in devices:
         device_str = device.replace('/', '').replace(':', '').lower()
         dev_set_str = '{}_{}'.format(device_str, which_set)
-        summaries.append(summaries_str % device_str)  # will be reversed
+        summaries.append(summaries_str % device_str)
+    these_s = summaries
+
+    # Build a graph for each device, each with its input and output
+    # placeholders
+    for device, dev_inputs, dev_labels in zip(devices,
+                                              inputs_per_gpu,
+                                              labels_per_gpu):
         with tf.name_scope('{}_{}'.format(device_str, which_set)), \
                 tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
                 tf.device(device):
@@ -612,7 +615,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             # This is the loss per each gpu tower (Maybe useless)
             with tf.name_scope(None):
                 with tf.name_scope(dev_set_str + '_stats') as dev_set_scope:
-                    tf.summary.scalar('Loss', loss_dict['loss'], summaries)
+                    tf.summary.scalar('Loss', loss_dict['loss'], these_s)
 
             # Statistics on optical flow: mean and variance
             with tf.name_scope(dev_set_scope):
@@ -620,15 +623,15 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     model_out_dict['of_pred_fw'], [0, 1, 2])
                 mean = tf.reduce_mean(mean)
                 variance = tf.reduce_mean(variance)
-                tf.summary.scalar('of_fw_mean', mean, summaries)
-                tf.summary.scalar('of_fw_var', variance, summaries)
+                tf.summary.scalar('of_fw_mean', mean, these_s)
+                tf.summary.scalar('of_fw_var', variance, these_s)
 
                 mean, variance = tf.nn.moments(
                     model_out_dict['of_pred_bw'], [0, 1, 2])
                 mean = tf.reduce_mean(mean)
                 variance = tf.reduce_mean(variance)
-                tf.summary.scalar('of_bw_mean', mean, summaries)
-                tf.summary.scalar('of_bw_var', variance, summaries)
+                tf.summary.scalar('of_bw_mean', mean, these_s)
+                tf.summary.scalar('of_bw_var', variance, these_s)
 
             # Gradients
             # TODO: Move inside Object Optimizer to be created
@@ -663,7 +666,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
                     with tf.name_scope(dev_set_scope):
                         tf.summary.scalar("NoiseGrad", grad_noise_scale,
-                                          [summaries])
+                                          [these_s])
                 elif cfg.grad_noise_decay == 'neural_gpu':
                     eta = cfg.grad_noise_scale
                     gamma = 0.55
@@ -673,7 +676,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
 
                     with tf.name_scope(dev_set_scope):
                         tf.summary.scalar("NoiseGrad", grad_noise_scale,
-                                          [summaries])
+                                          [these_s])
                 else:
                     raise NotImplementedError()
                 grads = process_gradients(grads,
@@ -699,10 +702,10 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                         with tf.name_scope(None):
                             tf.summary.scalar(
                                 scope_str % ('GradientNorm', var_name),
-                                tf.global_norm([grad_vals]), summaries)
+                                tf.global_norm([grad_vals]), these_s)
                             tf.summary.histogram(
                                 scope_str % ('GradientHist', var_name),
-                                grad_vals, summaries)
+                                grad_vals, these_s)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope)
@@ -711,7 +714,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                             'grad_norm')
                     tf.summary.scalar('Global_norm/' + name,
                                       tf.global_norm(list(zip(*grads))[0]),
-                                      summaries)
+                                      these_s)
 
                 # Save gradients for each gpu to be averaged out
                 tower_grads.append(grads)
@@ -726,7 +729,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                         with tf.name_scope(None):
                             tf.summary.scalar(
                                 scope_str % ('WeightNorm', var_name),
-                                tf.global_norm([w]), summaries)
+                                tf.global_norm([w]), these_s)
 
                 with tf.name_scope(dev_set_scope):
                     name = ('clipped_weights_norm' if cfg.max_weights_norm else
@@ -736,7 +739,21 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                         if 'weights' in w.name]
                     tf.summary.scalar('Global_norm/' + name,
                                       tf.global_norm(weights),
-                                      summaries)
+                                      these_s)
+
+        # Update the summaries that will be affected by the next graph.
+        # We want summaries[0] to contain summaries relative to the
+        # first device only, summaries[1] to the first and
+        # second device and so on. This will be used in the main
+        # loop to suppress some of the summaries when some of the
+        # devices are not being used.
+        #
+        # Summary device0 device1 device2 ...
+        #   0        X
+        #   1        X       X
+        #   1        X       X       X
+        #  ...
+        these_s = these_s[1:]
 
         # Print regularization
         for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -878,12 +895,10 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                                               var_name),
                                  var, summaries)
 
-    # Merge only the summaries of the gpus used.
-    # Create a list of summary ops, that update the summaries *UP TO*
-    # the device with the same index. E.g., summary_ops[2] will update
-    # the summaries for devices[:2]
+    # Create the summary ops out of the summary collections that we used
+    # at graph creation time
     summary_ops = []
-    for _, s in enumerate(summaries[::-1]):
+    for s in summaries:
         summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
     return outs, summary_ops, reset_cm_op
 
