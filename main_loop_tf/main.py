@@ -1011,6 +1011,7 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
             if this_len_batch % batch_size != 0:
                 this_num_splits += 1
 
+            # Train only dict
             if cfg.show_image_summaries_training:
                 train_dict = {
                     'of_pred_fw': train_outs['of_pred_fw'],
@@ -1027,10 +1028,12 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
                 train_dict = {
                     'avg_tower_loss': train_outs['avg_tower_loss'],
                     'train_op': train_outs['train_ops'][this_num_splits - 1]}
+            # Train and summary dict
             train_summary_dict = {
                 'avg_tower_loss': train_outs['avg_tower_loss'],
                 'train_op': train_outs['train_ops'][this_num_splits - 1],
                 'summary_op': train_summary_ops[this_num_splits - 1]}
+            train_summary_dict.update(train_dict)
 
             # Get the per-device inputs
             x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
@@ -1058,9 +1061,6 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
                     train_summary_dict,
                     feed_dict=feed_dict)
                 sv.summary_computed(cfg.sess, fetch_dict['summary_op'])
-            else:
-                fetch_dict = cfg.sess.run(train_dict,
-                                          feed_dict=feed_dict)
 
                 if cfg.show_image_summaries_training:
                     of_pred_fw_batch = fetch_dict.get('of_pred_fw',
@@ -1077,9 +1077,14 @@ def main_loop(placeholders, val_placeholders, train_outs, train_summary_ops,
                     y_prob_batch = fetch_dict['out_act']
                     img_queue.put((cum_iter, train, x_batch, y_batch, f_batch,
                                    subset, x_batch, of_pred_fw_batch,
-                                   of_pred_bw_batch, y_pred_batch, y_pred_fw_batch,
-                                   y_pred_bw_batch, y_pred_mask_batch, blend_batch,
+                                   of_pred_bw_batch, y_pred_batch,
+                                   y_pred_fw_batch, y_pred_bw_batch,
+                                   y_pred_mask_batch, blend_batch,
                                    y_prob_batch))
+
+            else:
+                fetch_dict = cfg.sess.run(train_dict,
+                                          feed_dict=feed_dict)
 
             pbar.set_description('({:3d}) Ep {:d}'.format(cum_iter+1,
                                                           epoch_id+1))
