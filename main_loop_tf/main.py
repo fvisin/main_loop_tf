@@ -57,29 +57,22 @@ class Experiment(object):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def buil_loss(self):
+    def build_loss(self):
         pass
 
     @abc.abstractmethod
     def build_model(self):
         pass
 
-    def __init__(self):
-        self.val_summary_ops = {}
-        self.val_cm_update_ops = {}
-        self.val_cm_reset_ops = {}
-        self.val_outs = {}
-        self.val_metrics = {}
-
-    def __parse_config(self, argv=None):
+    def __init__(self, flags_argv):
         gflags.mark_flags_as_required(['dataset'])
 
-        # ============ Manage gflags
-        # Parse FLAGS
+        # ============ Parse gflags
         try:
-            FLAGS(argv)  # parse flags
+            FLAGS(flags_argv)  # parse flags
         except gflags.FlagsError as e:
-            print('Usage: %s ARGS\n%s\n\nError: %s' % (argv[0], FLAGS, e))
+            print('Usage: %s ARGS\n%s\n\nError: %s' % (flags_argv[0], FLAGS,
+                                                       e))
             sys.exit(0)
 
         # Show help message
@@ -94,7 +87,7 @@ class Experiment(object):
         cfg.__dict__ = {k: el.value for (k, el) in fl.iteritems()}
         gflags.cfg = cfg
 
-        # ============ gsheet
+        # ============ Hash, (gsheet) and checkpoints
         # Exclude non JSONable and not interesting objects
         exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
                         'debug', 'debug_of', 'devices', 'do_validation_only',
@@ -116,13 +109,13 @@ class Experiment(object):
         save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
                                                      'dataset_loaders',
                                                      'main_loop_tf'])
+
         if cfg.restore_model is None or cfg.restore_model == 'False':
-            # If you don't want to reload any model
-            # Change the checkpoints directory if the model does not have to be
-            # restored
+            # If the model should not be restored from a checkpoint,
+            # change the checkpoints directory by adding an incremental
+            # suffix
             cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir,
-                                               cfg.model_name,
-                                               cfg.hash)
+                                               cfg.model_name, cfg.hash)
             incr_num = 0
             logdir = cfg.checkpoints_dir
             while(os.path.exists(logdir)):
@@ -130,8 +123,9 @@ class Experiment(object):
                 if incr_num == 1:
                     logdir += '_' + str(incr_num)
                 else:
-                    logdir = logdir[:-2] + '_' + str(incr_num)
+                    logdir = cfg.checkpoints_dir + '_' + str(incr_num)
             cfg.checkpoints_dir = logdir
+            del(logdir)
         else:
             restore_checkpoints_dir = os.path.join(cfg.checkpoints_dir,
                                                    cfg.model_name,
@@ -152,7 +146,7 @@ class Experiment(object):
         cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
         cfg.num_splits = cfg.num_gpus + cfg.num_cpus
 
-        # Dataset
+        # ============ Dataset init
         try:
             Dataset = getattr(dataset_loaders, cfg.dataset + 'Dataset')
         except AttributeError:
@@ -252,11 +246,17 @@ class Experiment(object):
 
         self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                          max(1, cfg.val_every_epochs) - 1)
+
+        # Init variables
+        self.val_summary_ops = {}
+        self.val_cm_update_ops = {}
+        self.val_cm_reset_ops = {}
+        self.val_outs = {}
+        self.val_metrics = {}
+
         self.cfg = cfg
 
-    def __run(self, argv):
-
-        self.__parse_config(argv)
+    def __run(self):
         cfg = self.cfg
 
         # ============ Train/validation
@@ -275,7 +275,6 @@ class Experiment(object):
         tf_config = tf.ConfigProto(allow_soft_placement=True)
 
         tf.logging.info("Building the model ...")
-        # with graph:
         with tf.Graph().as_default() as graph:
             self.global_step = tf.Variable(0,
                                            trainable=False,
@@ -478,6 +477,7 @@ class Experiment(object):
         is_training = which_set == 'train'
         reuse_variables = not is_training
 
+        labels_per_gpu = self.labels_per_gpu
         if is_training:
             inputs_per_gpu = self.train_inputs_per_gpu
             summaries_str = 'train_summaries_%s'
@@ -485,7 +485,6 @@ class Experiment(object):
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
-        # Init variables
         tower_out = {}
         tower_loss = {}
         tower_grads = []
@@ -500,7 +499,7 @@ class Experiment(object):
         # placeholders
         for device, dev_inputs, dev_labels in zip(cfg.devices,
                                                   inputs_per_gpu,
-                                                  self.labels_per_gpu):
+                                                  labels_per_gpu):
             with tf.name_scope('{}_{}'.format(device_str, which_set)), \
                     tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
                     tf.device(device):
@@ -524,7 +523,8 @@ class Experiment(object):
                     tower_out.setdefault(k, []).append(v)
 
                 # Loss
-                # TODO: create **loss_params to  be defined in model repo
+                # TODO: create **loss_params to be specified externally
+                # when specializing Experiment
                 loss_dict = self.build_loss(dev_labels, model_out,
                                             inputs=dev_inputs)
 
@@ -660,7 +660,7 @@ class Experiment(object):
         # Towers contain dictionary
         out_dict = {}
         for k, v in tower_out.iteritems():
-            # Convert from list of tensors to catenated tensor
+            # Convert from list of tensors to concatenated tensor
             out_dict[k] = tf.concat(tower_out[k], axis=0,
                                     name='concat_%s' % k)
             out_dict[k] = out_dict[k][:self.num_batches]
@@ -760,6 +760,7 @@ class Experiment(object):
         for s in summaries:
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
+        # Save in the Experiment object whatever is useful elsewhere
         if is_training:
             self.train_summary_ops = summary_ops
             self.train_out_dict = out_dict
@@ -786,6 +787,9 @@ class Experiment(object):
             cfg.dataset_params))
         tf.logging.info('Validation dataset params:\n{}\n\n'.format(
             cfg.valid_params))
+        if pygtk and cfg.debug_of:
+            cv2.namedWindow("rgb-optflow")
+
         self.train = self.Dataset(
             which_set='train',
             return_list=False,
@@ -798,13 +802,10 @@ class Experiment(object):
         self.last_epoch = False
         self.history_acc = np.array([]).tolist()
 
-        # Start the training loop.
+        # Start the training loop
         start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
-
-        if pygtk and cfg.debug_of:
-            cv2.namedWindow("rgb-optflow")
 
         while not self.sv.should_stop():
             self.epoch_id = (self.cum_iter+1) // self.train.nbatches
