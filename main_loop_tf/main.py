@@ -237,6 +237,9 @@ class Experiment(object):
         train_temp.finish()
         valid_temp.finish()
 
+        # Build the graph
+        self.__build_graph__()
+
         # Optimization
         try:
             self.Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
@@ -256,7 +259,7 @@ class Experiment(object):
 
         self.cfg = cfg
 
-    def __run(self):
+    def __build_graph__(self):
         cfg = self.cfg
 
         # ============ Train/validation
@@ -272,10 +275,8 @@ class Experiment(object):
         #     pass
 
         # BUILD GRAPH
-        tf_config = tf.ConfigProto(allow_soft_placement=True)
-
         tf.logging.info("Building the model ...")
-        with tf.Graph().as_default() as graph:
+        with tf.Graph().as_default():
             self.global_step = tf.Variable(0,
                                            trainable=False,
                                            name='global_step',
@@ -368,15 +369,15 @@ class Experiment(object):
             # Gradient Average and the rest of the operations are on CPU
             with tf.device('/cpu:0'):
                 # Build the training graph
-                self.build_graph(training=False, which_set='train')
+                self.__build_device_graph__(training=False, which_set='train')
 
                 # Build the validation graphs (reusing variables)
                 for s in ['eval_' + v for v in cfg.val_on_sets]:
-                    self.build_graph(training=True, which_set=s)
+                    self.__build_device_graph__(training=True, which_set=s)
 
-                # Add the hyperparameters summaries
+                # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
-                    sum_text = []
+                    summary_text = []
                     for (key_header,
                          list_value) in cfg.hyperparams_summaries.iteritems():
 
@@ -388,18 +389,23 @@ class Experiment(object):
                         header_tensor = tf.constant(header_list)
                         text_tensor = tf.constant(text_list)
 
-                        sum_text.append(tf.summary.text(
+                        summary_text.append(tf.summary.text(
                             key_header,
                             tf.reshape(tf.concat([header_tensor, text_tensor],
                                                  axis=0), [2, -1])))
-                    sum_text_op = tf.summary.merge(sum_text)
+                    self.summary_text_op = tf.summary.merge(summary_text)
 
-                # Group global and local init into one op. Could be split into
-                # two different ops and passed to `init_op` and `local_init_op`
-                init_op = tf.group(tf.global_variables_initializer(),
-                                   tf.local_variables_initializer())
-                self.saver = tf.train.Saver(
-                    max_to_keep=cfg.checkpoints_to_keep)
+    def run(self):
+        cfg = self.cfg
+        with tf.Graph().as_default() as graph:
+            # Group global and local init into one op. Could be split into
+            # two different ops and passed to `init_op` and `local_init_op`
+            init_op = tf.group(tf.global_variables_initializer(),
+                               tf.local_variables_initializer())
+
+            # Initialize the save object
+            self.saver = tf.train.Saver(
+                max_to_keep=cfg.checkpoints_to_keep)
 
             # Start the session
             # ------------------
@@ -417,6 +423,7 @@ class Experiment(object):
                 save_model_secs=300)
             self.sv = sv
 
+            tf_config = tf.ConfigProto(allow_soft_placement=True)
             with sv.managed_session(cfg.supervisor_master, tf_config) as sess:
                 if cfg.debug:
                     from tensorflow.python import debug as tf_debug
@@ -427,7 +434,7 @@ class Experiment(object):
 
                 if cfg.hyperparams_summaries is not None:
                     # write Hyper parameters text summaries
-                    summary_str = self.sess.run(sum_text_op)
+                    summary_str = self.sess.run(self.summary_text_op)
                     sv.summary_computed(self.sess, summary_str)
 
                 if not cfg.do_validation_only:
@@ -451,7 +458,7 @@ class Experiment(object):
                         raise NotImplementedError('Validation method not'
                                                   'Implemented!')
 
-    def build_graph(self, which_set):
+    def __build_device_graph__(self, which_set):
         ''' Build the multiGPU graph of computation
 
         This function creates a copy of the computation graph on each GPU. The
