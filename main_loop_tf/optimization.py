@@ -6,7 +6,68 @@ from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.training import training
+from tensorflow.python.training.learning_rate_decay import (exponential_decay,
+                                                            piecewise_constant,
+                                                            polynomial_decay,
+                                                            natural_exp_decay,
+                                                            inverse_time_decay)
+from tensorflow.python.training.training import Optimizer
 smooth = 1.
+
+
+def get_optimizer(cfg, global_step):
+    try:
+        base = getattr(training, cfg.optimizer + 'Optimizer')
+    except AttributeError:
+        base = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
+    return Optimizer(base, cfg, global_step)
+
+
+class Optimizer(Optimizer):
+    def __init__(self, cfg, global_step):
+        self.cfg = cfg
+        self.initial_lr = cfg.lr
+        self.lr_decay = cfg.lr_decay
+
+        # Learning rate schedule
+        if cfg.lr_decay == 'exp':
+            self.lr = exponential_decay(cfg.lr,
+                                        self.global_step,
+                                        cfg.decay_steps,
+                                        cfg.decay_rate,
+                                        staircase=cfg.staircase)
+        elif cfg.lr_decay == 'piecewise':
+            lr = piecewise_constant(self.global_step,
+                                    cfg.lr_boundaries,
+                                    cfg.lr_values)
+        elif cfg.lr_decay == 'polynomial':
+            lr = polynomial_decay(cfg.lr,
+                                  self.global_step,
+                                  cfg.decay_steps,
+                                  end_learning_rate=cfg.end_lr,
+                                  power=cfg.power,
+                                  cycle=cfg.staircase)
+
+        elif cfg.lr_decay == 'natural_exp':
+            lr = natural_exp_decay(cfg.lr,
+                                   self.global_step,
+                                   cfg.decay_steps,
+                                   cfg.decay_rate,
+                                   staircase=cfg.staircase)
+        elif cfg.lr_decay == 'inverse_time':
+            lr = inverse_time_decay(cfg.lr,
+                                    self.global_step,
+                                    cfg.decay_steps,
+                                    cfg.decay_rate,
+                                    staircase=cfg.staircase)
+
+        elif cfg.lr_decay == 'STN':
+            epoch = tf.cast(self.global_step / cfg.decay_steps, tf.int32)
+            lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
+        else:
+            raise NotImplementedError()
+        self.super(Optimizer).__init__(lr=lr, **cfg.optimizer_params)
 
 
 def dice_coef(labels, logits, class_dice=1):

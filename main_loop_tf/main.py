@@ -13,11 +13,11 @@ from time import time
 import dataset_loaders
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.training import training
 from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
+from optimization import get_optimizer
 from utils import (apply_loss, split_in_chunks, save_repos_hash,
                    average_gradients, process_gradients, squash_maybe,
                    TqdmHandler)
@@ -64,7 +64,17 @@ class Experiment(object):
     def build_model(self):
         pass
 
-    def __init__(self, flags_argv):
+    def __init__(self, flags_argv, Optimizer=None):
+        """Create an Experiment object
+
+        Parameters
+        ----------
+        flags_argv: list
+            A list of flags argument for gflags
+        Optimizer: :class:`DistributedOptimizer`
+            Optional. An optimizer object to be used in the optimization
+            phase.
+        """
         gflags.mark_flags_as_required(['dataset'])
 
         # ============ Parse gflags
@@ -237,15 +247,16 @@ class Experiment(object):
         train_temp.finish()
         valid_temp.finish()
 
+        self.cfg = cfg
+
         # Build the graph
         self.__build_graph__()
 
-        # Optimization
-        try:
-            self.Optimizer = getattr(training, cfg.optimizer + 'Optimizer')
-        except AttributeError:
-            self.Optimizer = getattr(training, cfg.optimizer.capitalize() +
-                                     'Optimizer')
+        # Set Optimizer
+        if Optimizer is None:
+            self.Optimizer = get_optimizer(cfg, self.global_step)
+        else:
+            self.Optimizer = Optimizer(cfg, self.global_step)
 
         self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                          max(1, cfg.val_every_epochs) - 1)
@@ -256,8 +267,6 @@ class Experiment(object):
         self.val_cm_reset_ops = {}
         self.val_outs = {}
         self.val_metrics = {}
-
-        self.cfg = cfg
 
     def __build_graph__(self):
         cfg = self.cfg
@@ -319,49 +328,6 @@ class Experiment(object):
             self.train_inputs_per_gpu = train_inputs_per_gpu
             self.val_inputs_per_gpu = val_inputs_per_gpu
             self.labels_per_gpu = labels_per_gpu
-
-            # TODO: move LR schedule inside Object Optimizer, to be created
-            # Learning rate schedule
-            if cfg.lr_decay is None:
-                lr = cfg.lr
-            elif cfg.lr_decay == 'exp':
-                lr = tf.train.exponential_decay(cfg.lr,
-                                                self.global_step,
-                                                cfg.decay_steps,
-                                                cfg.decay_rate,
-                                                staircase=cfg.staircase)
-            elif cfg.lr_decay == 'piecewise':
-                lr = tf.train.piecewise_constant(self.global_step,
-                                                 cfg.lr_boundaries,
-                                                 cfg.lr_values)
-            elif cfg.lr_decay == 'polynomial':
-                lr = tf.train.polynomial_decay(cfg.lr,
-                                               self.global_step,
-                                               cfg.decay_steps,
-                                               end_learning_rate=cfg.end_lr,
-                                               power=cfg.power,
-                                               cycle=cfg.staircase)
-
-            elif cfg.lr_decay == 'natural_exp':
-                lr = tf.train.natural_exp_decay(cfg.lr,
-                                                self.global_step,
-                                                cfg.decay_steps,
-                                                cfg.decay_rate,
-                                                staircase=cfg.staircase)
-            elif cfg.lr_decay == 'inverse_time':
-                lr = tf.train.inverse_time_decay(cfg.lr,
-                                                 self.global_step,
-                                                 cfg.decay_steps,
-                                                 cfg.decay_rate,
-                                                 staircase=cfg.staircase)
-
-            elif cfg.lr_decay == 'STN':
-                epoch = tf.cast(self.global_step / cfg.decay_steps, tf.int32)
-                lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
-            else:
-                raise NotImplementedError()
-            self.Optimizer = self.Optimizer(learning_rate=lr,
-                                            **cfg.optimizer_params)
 
             # Model compilation
             # -----------------
