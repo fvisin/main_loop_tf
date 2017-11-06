@@ -361,69 +361,6 @@ class Experiment(object):
                                                  axis=0), [2, -1])))
                     self.summary_text_op = tf.summary.merge(summary_text)
 
-    def run(self):
-        cfg = self.cfg
-        with tf.Graph().as_default() as graph:
-            # Group global and local init into one op. Could be split into
-            # two different ops and passed to `init_op` and `local_init_op`
-            init_op = tf.group(tf.global_variables_initializer(),
-                               tf.local_variables_initializer())
-
-            # Initialize the save object
-            self.saver = tf.train.Saver(
-                max_to_keep=cfg.checkpoints_to_keep)
-
-            # Start the session
-            # ------------------
-            sv = Supervisor(
-                graph=graph,
-                init_op=init_op,
-                summary_op=None,
-                global_step=self.global_step,
-                # TODO add option to restore best rather than last?
-                logdir=cfg.checkpoints_dir,
-                checkpoint_basename=cfg.model_name,
-                saver=self.saver,
-                # session_manager
-                # summary_writer
-                save_model_secs=300)
-            self.sv = sv
-
-            tf_config = tf.ConfigProto(allow_soft_placement=True)
-            with sv.managed_session(cfg.supervisor_master, tf_config) as sess:
-                if cfg.debug:
-                    from tensorflow.python import debug as tf_debug
-                    sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-                    sess.add_tensor_filter("has_inf_or_nan",
-                                           tf_debug.has_inf_or_nan)
-                self.sess = sess
-
-                if cfg.hyperparams_summaries is not None:
-                    # write Hyper parameters text summaries
-                    summary_str = self.sess.run(self.summary_text_op)
-                    sv.summary_computed(self.sess, summary_str)
-
-                if not cfg.do_validation_only:
-                    # Start training loop
-                    return self.main_loop()
-                else:
-                    # Perform validation only
-                    metric = {}
-                    validate = getattr(self, "validate", None)
-                    if callable(validate):
-                        for s in cfg.val_on_sets:
-                            metric[s] = validate(
-                                self.val_placeholders,
-                                self.val_outs['eval_' + s],
-                                self.val_metrics['eval_' + s],
-                                self.val_summary_ops['eval_' + s],
-                                self.val_cm_updatet_ops['eval_' + s],
-                                self.val_cm_reset_ops['eval_' + s],
-                                which_set='eval_' + s)
-                    else:
-                        raise NotImplementedError('Validation method not'
-                                                  'Implemented!')
-
     def __build_device_graph__(self, which_set):
         ''' Build the multiGPU graph of computation
 
@@ -745,6 +682,71 @@ class Experiment(object):
             self.val_cm_reset_ops[which_set] = cm_reset_ops
             self.val_out[which_set] = out_dict
             self.val_metrics[which_set] = metrics_out
+
+    def run(self):
+        self.__init_sess__()
+        with self.sess:
+            if self.cfg.hyperparams_summaries is not None:
+                # write Hyper parameters text summaries
+                summary_str = self.sess.run(self.summary_text_op)
+                self.sv.summary_computed(self.sess, summary_str)
+
+            # Start training loop
+            return self.main_loop()
+
+    def validate(self):
+        self.__init_sess__()
+        with self.sess:
+            # Perform validation only
+            metrics = {}
+            validate = getattr(self, "validate", None)
+            if callable(validate):
+                for s in self.cfg.val_on_sets:
+                    metrics[s] = validate(
+                        self.val_placeholders,
+                        self.val_outs['eval_' + s],
+                        self.val_metrics['eval_' + s],
+                        self.val_summary_ops['eval_' + s],
+                        self.val_cm_updatet_ops['eval_' + s],
+                        self.val_cm_reset_ops['eval_' + s],
+                        which_set='eval_' + s)
+                return metrics
+            else:
+                raise NotImplementedError('Validation method not implemented!')
+
+    def __init_sess__(self):
+        cfg = self.cfg
+        with tf.Graph().as_default() as graph:
+            # Group global and local init into one op. Could be split into
+            # two different ops and passed to `init_op` and `local_init_op`
+            init_op = tf.group(tf.global_variables_initializer(),
+                               tf.local_variables_initializer())
+
+            self.saver = tf.train.Saver(
+                max_to_keep=cfg.checkpoints_to_keep)
+
+            sv = Supervisor(
+                graph=graph,
+                init_op=init_op,
+                summary_op=None,
+                global_step=self.global_step,
+                # TODO add option to restore best rather than last?
+                logdir=cfg.checkpoints_dir,
+                checkpoint_basename=cfg.model_name,
+                saver=self.saver,
+                # session_manager
+                # summary_writer
+                save_model_secs=300)
+            self.sv = sv
+
+            tf_config = tf.ConfigProto(allow_soft_placement=True)
+            sess = sv.managed_session(cfg.supervisor_master, tf_config)
+            if self.cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+                sess.add_tensor_filter("has_inf_or_nan",
+                                       tf_debug.has_inf_or_nan)
+            self.sess = sess
 
     def main_loop(self):
         cfg = gflags.cfg
