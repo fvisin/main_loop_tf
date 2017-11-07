@@ -76,7 +76,11 @@ class DistributedOptimizer(Optimizer):
             raise NotImplementedError()
 
         # Per-device gradients
-        self.tower_grads = []
+        self._tower_grads = []
+        self._tower_loss = []
+        self._tower_comp = []
+        self.mean_losses = []
+        self.mean_losses_comp = {}
         self.super(Optimizer).__init__(lr=lr, **cfg.optimizer_params)
 
     def __process_gradients(self, gradients):
@@ -120,6 +124,32 @@ class DistributedOptimizer(Optimizer):
 
         return gradients, grad_noise_scale
 
+    def __compute_mean_gradients(self, loss_out):
+        # Extend the per-device lists of losses and component-losses
+        self._tower_loss.append(loss_out['loss'])
+        for el in loss_out['components']:
+            # Create a dictionary of components with a list of their
+            # values per each device
+            for k, v in el.iteritems():
+                self._tower_comp.setdefault(k, []).append(v)
+
+        # Compute the mean losses for the devices we processed so far.
+        # One of these will be dynamically selected at run-time (depending on
+        # the number of devices in use, i.e., the numerical value of
+        # num_splits_tensor) and used to update the loss summaries
+        # Overall loss
+        # -------------------------------------------------------------------
+        dev_losses_stack = tf.stack(self._tower_loss, axis=0,
+                                    name='concat_losses')
+        self.mean_losses.append(tf.reduce_mean(dev_losses_stack))
+
+        # Loss per component
+        for (comp_k, comp_loss) in self._tower_comp.iteritems():
+            loss_comp_stack = tf.stack(comp_loss, axis=0,
+                                       name='concat_losses_comp_%s' % comp_k)
+            self.mean_losses_comp.setdefault(comp_k, []).append(
+                tf.reduce_mean(loss_comp_stack))
+
     def __get_grad_noise_scale(self, gradients):
         if self.cfg.grad_noise_decay is None:
             grad_noise_scale = self.cfg.grad_noise_scale
@@ -153,17 +183,19 @@ class DistributedOptimizer(Optimizer):
 
         return grad_noise_scale
 
-    def __add_gradient_summaries(self, gradients, grad_noise_scale,
-                                 dev_set_scope, summaries=[]):
+    def __add_summaries(self, gradients, grad_noise_scale,
+                        dev_set_scope, summaries=[]):
         if summaries == []:
             return
 
         # Add summary for the noise on the gradient
+        # -----------------------------------------
         with tf.name_scope(dev_set_scope):
             tf.summary.scalar("NoiseGrad", grad_noise_scale,
                               summaries)
 
-        # Add histograms for variables, grads and grad norms.
+        # Add histograms for variables, grads and grad norms
+        # --------------------------------------------------
         for gradient, variable in gradients:
             if isinstance(gradient, tf.IndexedSlices):
                 grad_vals = gradient.values
@@ -196,11 +228,11 @@ class DistributedOptimizer(Optimizer):
                               tf.global_norm(list(zip(*gradients))[0]),
                               summaries)
 
-    def distributed_minimize(self, loss, global_step=None, var_list=None,
+    def distributed_minimize(self, loss_out, global_step=None, var_list=None,
                              gate_gradients=None, aggregation_method=None,
                              colocate_gradients_with_ops=False, name=None,
                              grad_loss=None, device=None, dev_set_scope='',
-                             summaries=None):
+                             summaries=None, loss=None):
         """Distributed minimize with grad noise
 
         Extend minimize() in several ways:
@@ -212,11 +244,14 @@ class DistributedOptimizer(Optimizer):
               the gradient
             * Average gradient over the devices processed so far.
         """
+        if loss is not None:
+            raise ValueError('This Optimizer expects a dictionary of '
+                             'losses rather than a single loss')
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
         grads_and_vars = self.compute_gradients(
-            loss, var_list=var_list, gate_gradients=gate_gradients,
+            loss_out['loss'], var_list=var_list, gate_gradients=gate_gradients,
             aggregation_method=aggregation_method,
             colocate_gradients_with_ops=colocate_gradients_with_ops,
             grad_loss=grad_loss)
@@ -225,11 +260,15 @@ class DistributedOptimizer(Optimizer):
         grads_and_vars, grad_noise_scale = self.__process_gradients(
             grads_and_vars)
 
-        self.__add_gradient_summaries(grads_and_vars, grad_noise_scale,
-                                      dev_set_scope, summaries)
+        # Compute the average gradients over the devices seen so far
+        self.__compute_mean_gradients(loss_out)
+
+        # Create some summaries
+        self.__add_summaries(grads_and_vars, grad_noise_scale, dev_set_scope,
+                             summaries)
 
         # Save gradients for each gpu to be averaged out
-        self.tower_grads.append(grads_and_vars)
+        self._tower_grads.append(grads_and_vars)
 
         # Gradient descent
         # ----------------
@@ -250,7 +289,7 @@ class DistributedOptimizer(Optimizer):
                     ([str(v) for _, v in grads_and_vars], loss))
 
             # Average the gradients over the devices processed so far
-            grads_and_vars = average_gradients(self.tower_grads)
+            grads_and_vars = average_gradients(self._tower_grads)
 
             grad_op = self.apply_gradients(grads_and_vars,
                                            global_step=global_step,

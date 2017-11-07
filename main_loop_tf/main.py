@@ -394,7 +394,6 @@ class Experiment(object):
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
         tower_out = {}
-        tower_loss = {}
         summaries = []
         for device in self.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
@@ -447,10 +446,6 @@ class Experiment(object):
                     containing the list of terms that composes the total
                     loss!"""
 
-                # Store this device's loss in the tower
-                for k, v in loss_dict.iteritems():
-                    tower_loss.setdefault(k, []).append(v)
-
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
                 # TODO:
@@ -471,7 +466,8 @@ class Experiment(object):
                         loss_dict['loss'],
                         device=device,
                         colocate_gradients_with_ops=True,
-                        dev_set_scope=dev_set_scope, summaries=these_s)
+                        dev_set_scope=dev_set_scope,
+                        summaries=these_s)
                     self.train_ops.append(dev_train_op)
 
             # Print regularization
@@ -511,35 +507,19 @@ class Experiment(object):
         # (equivalent to labels[:np.prod(out_dict.shape)])
         labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
 
-        # Compute the average loss over the towers (devices) that are in use at
-        # runtime (i.e., num_splits)
-        losses = tf.stack(tower_loss['loss'], axis=0, name='concat_losses')
-        losses = losses[:self.num_splits]
-        self.avg_tower_loss = tf.reduce_mean(losses)
-        tf.summary.scalar(dev_set_str + '_Mean_tower_loss/Total_Loss',
-                          self.avg_tower_loss, summaries)
-
-        # Compute the average loss per component (for visualization purposes)
-        tower_loss_comp_dict = {}
-        for el in tower_loss['components']:
-            for k, v in el.iteritems():
-                tower_loss_comp_dict.setdefault(k, []).append(v)
-
-        for (comp_name, tower_loss_comp) in tower_loss_comp_dict.iteritems():
-            # Compute the average component loss *per variable* over the towers
-            loss_comp = tf.stack(tower_loss_comp, axis=0,
-                                 name='concat_losses_comp_%s' % comp_name)
-            loss_comp = loss_comp[:self.num_splits]
-            avg_tower_loss_comp = tf.reduce_mean(loss_comp)
-            scope_str = dev_set_str + '_%s/%s'
-            tf.summary.scalar(scope_str % ('Mean_tower_loss', comp_name),
-                              avg_tower_loss_comp, summaries)
-
         #############
         # SUMMARIES #
         #############
-        # Variables Histograms
+        # Add the mean loss summary
+        self.avg_tower_loss = self.Optimizer.mean_losses[:self.num_splits]
+        tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
+                          self.avg_tower_loss, summaries)
         if is_training:
+            # Add the per-component loss summaries
+            for k, v in self.Optimizer.mean_losses_comp:
+                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % k,
+                                  v[:self.num_splits], summaries)
+
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
                 var_name = var.op.name
