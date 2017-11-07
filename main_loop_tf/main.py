@@ -89,7 +89,8 @@ def __parse_config(argv=None):
 
     # ============ gsheet
     # Save params for log, excluding non JSONable and not interesting objects
-    exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
+    exclude_list = ['checkpoints_dir', 'checkpoints_to_keep',
+                    'results_path', 'dataset',
                     'debug', 'debug_of', 'devices', 'do_validation_only',
                     'group_summaries', 'help', 'hyperparams_summaries',
                     'max_epochs', 'min_epochs', 'model_name', 'nthreads',
@@ -142,9 +143,13 @@ def __parse_config(argv=None):
 
     # Save Flags in json file
     data_flags = cfg.__dict__
+    exp_hash = cfg.checkpoints_dir.split('/')[-1]
     if not os.path.exists(cfg.checkpoints_dir):
         os.makedirs(cfg.checkpoints_dir)
-    flags_file = os.path.join(cfg.checkpoints_dir, 'flags.json')
+    results_dir = os.path.join(cfg.results_path, 'model_params', exp_hash)
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+    flags_file = os.path.join(results_dir, 'flags.json')
     with open(flags_file, 'w') as f:
         json.dump(data_flags, f)
 

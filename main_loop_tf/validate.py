@@ -382,13 +382,14 @@ def validate(placeholders,
                                  statistics=cfg.statistics,
                                  n_jobs=cfg.eval_n_jobs,
                                  verbose=True)
-            results_dir = os.path.join(cfg.checkpoints_dir,
-                                       'results', which_set)
+
+            exp_hash = cfg.checkpoints_dir.split('/')[-1]
+            results_dir = os.path.join(cfg.results_path,
+                                       'results', which_set, exp_hash)
             if not os.path.exists(results_dir):
                 os.makedirs(results_dir)
             results_file = os.path.join(results_dir, 'results.json')
             with open(results_file, 'w') as f:
-                # exp_hash = cfg.checkpoints_dir.split('/')[-1]
                 json.dump(evaluation, f)
             # Get mean IoU for early stopping
             mIoU = evaluation['dataset']['J']['mean']

@@ -16,6 +16,8 @@ gflags.DEFINE_string('restore_model', 'True', 'It can be the hash of the '
                      'or False/None if you dont want to restore the model')
 gflags.DEFINE_bool('save_model_and_run', False, 'Whether to save the '
                    'model and the run in the checkpoint folder')
+gflags.DEFINE_string('results_path', './checkpoints', 'The path where '
+                     'the evaluation and model data is stored')
 
 # Other flags we might want to define (see also config/flow.py):
 # See https://www.tensorflow.org/versions/r0.10/tutorials/monitors/
