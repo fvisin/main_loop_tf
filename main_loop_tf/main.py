@@ -55,11 +55,11 @@ class Experiment(object):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_loss(self):
+    def build_loss(self, dev_labels, model_out, inputs):
         pass
 
     @abc.abstractmethod
-    def build_model(self):
+    def build_model(self, dev_inputs, is_training):
         pass
 
     def __init__(self, flags_argv, Optimizer=None):
