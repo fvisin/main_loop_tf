@@ -1,6 +1,10 @@
 import tensorflow as tf
 import gflags
 
+from tensorflow.contrib.layers.python.layers.optimizers import (
+    _clip_gradients_by_norm,
+    _add_scaled_noise_to_gradients,
+    _multiply_gradients)
 from tensorflow.python.ops.metrics_impl import _streaming_confusion_matrix
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -13,6 +17,9 @@ from tensorflow.python.training.learning_rate_decay import (exponential_decay,
                                                             natural_exp_decay,
                                                             inverse_time_decay)
 from tensorflow.python.training.training import Optimizer
+
+from utils import squash_maybe
+
 smooth = 1.
 
 
@@ -68,6 +75,173 @@ class Optimizer(Optimizer):
         else:
             raise NotImplementedError()
         self.super(Optimizer).__init__(lr=lr, **cfg.optimizer_params)
+
+    def process_gradients(self, gradients, dev_set_scope, summaries=[]):
+        """Add noise and multipliers to gradient
+
+        Parameters
+        ----------
+        gradients: list
+            The list of gradients to be modified.
+        """
+        grad_noise_scale = self.__get_grad_noise_scale(gradients,
+                                                       dev_set_scope)
+
+        if grad_noise_scale is None:
+            raise NotImplementedError('Unknown value of '
+                                      'cfg.grad_noise_decay: %s' %
+                                      self.cfg.grad_noise_decay)
+        if grad_noise_scale is not None:
+            gradients = _add_scaled_noise_to_gradients(
+                gradients, grad_noise_scale)
+
+        # Optionally multiply some gradients
+        if self.cfg.grad_multiplier is not None:
+            gradients = _multiply_gradients(
+                gradients, self.cfg.gradient_multiplier)
+            if not gradients:
+                raise ValueError(
+                    'Empty list of (gradient,var) pairs encountered. '
+                    'This is most likely caused by an improper value '
+                    'of cfg.gradient_multipliers.')
+
+        # Optionally clip gradients by global norm
+        if isinstance(self.cfg.max_grad_norm, float):
+            gradients = _clip_gradients_by_norm(
+                gradients, self.cfg.max_grad_norm)
+        elif callable(self.cfg.max_grad_norm):
+            gradients = self.cfg.max_grad_norm(gradients)
+        elif self.cfg.max_grad_norm is not None:
+            raise ValueError(
+                "Unknown type %s for cfg.max_grad_norm" %
+                type(self.cfg.max_grad_norm))
+
+        self.__add_gradient_summaries(gradients, grad_noise_scale,
+                                      dev_set_scope, summaries)
+
+        return gradients
+
+    def __get_grad_noise_scale(self, gradients, dev_set_scope=None):
+        if self.cfg.grad_noise_decay is None:
+            grad_noise_scale = self.cfg.grad_noise_scale
+        elif self.cfg.grad_noise_decay == 'annealing':
+            """
+            Adds annealed gaussian noise to the gradients at
+            every time step, by decaying the variance at each
+            time step
+            g_t <- g_t + N(0, sigma_t^2)
+            sigma_t^2 = eta / (1 + t)^gamma
+
+            with eta selected from {0.01, 0.3, 1.0) and
+            gamma = 0.55
+            See: "Adding gradient noise improves learning
+            for very deep networks",
+            http://arxiv.org/pdf/1511.06807v1.pdf
+            """
+            eta = self.cfg.grad_noise_scale ** 0.5
+            gamma = 0.55 / 2
+            grad_noise_scale = eta * tf.pow(tf.cast(
+                self.global_step + 1, self.cfg._FLOATX), -gamma)
+        elif self.cfg.grad_noise_decay == 'neural_gpu':
+            eta = self.cfg.grad_noise_scale
+            gamma = 0.55
+            grad_noise_scale = eta * tf.sqrt(
+                self.prev_err * tf.pow(tf.cast(
+                    self.global_step + 1, self.cfg._FLOATX), -gamma))
+        else:
+            # Raise ValueError
+            return None
+
+        return grad_noise_scale
+
+    def __add_gradient_summaries(self, gradients, grad_noise_scale,
+                                 dev_set_scope, summaries=[]):
+        if summaries == []:
+            return
+
+        # Add summary for the noise on the gradient
+        with tf.name_scope(dev_set_scope):
+            tf.summary.scalar("NoiseGrad", grad_noise_scale,
+                              summaries)
+
+        # Add histograms for variables, grads and grad norms.
+        for gradient, variable in gradients:
+            if isinstance(gradient, tf.IndexedSlices):
+                grad_vals = gradient.values
+            else:
+                grad_vals = gradient
+
+            if grad_vals is not None:
+                # Remove model_name/
+                var_name = variable.op.name.replace(
+                    self.cfg.model_name + '/', '')
+                scope_str = dev_set_scope + '_%s'  # metric
+                scope_str, var_name = squash_maybe(scope_str,
+                                                   var_name)
+                scope_str += '_%s'  # var name
+                # Write the summary
+                with tf.name_scope(None):
+                    tf.summary.scalar(
+                        scope_str % ('GradientNorm', var_name),
+                        tf.global_norm([grad_vals]), summaries)
+                    tf.summary.histogram(
+                        scope_str % ('GradientHist', var_name),
+                        grad_vals, summaries)
+
+        # Remove the name_scopes (the one from the variable_scope
+        # and the one from the name_scope)
+        with tf.name_scope(dev_set_scope):
+            name = ('clipped_grad_norm' if self.cfg.max_grad_norm else
+                    'grad_norm')
+            tf.summary.scalar('Global_norm/' + name,
+                              tf.global_norm(list(zip(*gradients))[0]),
+                              summaries)
+
+
+def average_gradients(tower_grads):
+    """Calculate the mean gradient for each shared variable across all towers.
+
+    Note
+    ----
+    This function provides a synchronization point across all towers.
+
+    Parameters
+    ----------
+    tower_grads: List of lists of (gradient, variable) tuples.
+        The outer list is over individual gradients. The inner list is
+        over the gradient calculation for each tower.
+
+    Return
+    ------
+    List of pairs of (gradient, variable) where the gradient has been
+    averaged across all towers.
+    """
+    average_grads = []
+    for grad_and_vars in zip(*tower_grads):
+        # Note that each grad_and_vars looks like the following:
+        #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
+        # TODO no need for the loop here
+        # grad.append(mean(grad_gpu[0..N]), var_gpu0)
+        grads = []
+        for g, _ in grad_and_vars:
+            # Add 0 dimension to the gradients to represent the tower.
+            expanded_g = tf.expand_dims(g, 0)
+
+            # Append on a 'tower' dimension which we will average over below.
+            grads.append(expanded_g)
+
+        # Average over the 'tower' dimension.
+        grad = tf.concat(axis=0, values=grads)
+        grad = tf.reduce_mean(grad, 0)
+
+        # Keep in mind that the Variables are redundant because they are shared
+        # across towers. So .. we will just return the first tower's pointer to
+        # the Variable.
+        v = grad_and_vars[0][1]
+        grad_and_var = (grad, v)
+        average_grads.append(grad_and_var)
+
+    return average_grads
 
 
 def dice_coef(labels, logits, class_dice=1):

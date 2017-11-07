@@ -7,10 +7,6 @@ import gflags
 import matplotlib
 import numpy as np
 import tensorflow as tf
-from tensorflow.contrib.layers.python.layers.optimizers import (
-    _clip_gradients_by_norm,
-    _add_scaled_noise_to_gradients,
-    _multiply_gradients)
 
 # Initialize numpy's random seed
 # import settings  # noqa
@@ -85,93 +81,6 @@ def apply_l2_penalty(loss, weight_decay):
         loss += l2_penalty * weight_decay
 
     return loss
-
-
-def process_gradients(gradients,
-                      gradient_noise_scale=None,
-                      gradient_multipliers=None,
-                      clip_gradients=None):
-
-    """
-    gradient_noise_scale: float or None, adds 0-mean normal noise scaled
-        by this value.
-    gradient_multipliers: dict of variables or variable names to floats.
-        If present, gradients for specified variables will be multiplied
-        by given constant.
-    clip_gradients: float, callable or `None`. If float, is provided, a global
-      clipping is applied to prevent the norm of the gradient to exceed this
-      value. Alternatively, a callable can be provided e.g.: adaptive_clipping.
-      This callable takes a `list` of `(gradients, variables)` `tuple`s and
-      returns the same thing with the gradients modified.
-    """
-
-    if gradient_noise_scale is not None:
-        gradients = _add_scaled_noise_to_gradients(
-            gradients, gradient_noise_scale)
-
-    # Multiply some gradients.
-    if gradient_multipliers is not None:
-        gradients = _multiply_gradients(
-            gradients, gradient_multipliers)
-        if not gradients:
-            raise ValueError(
-                "Empty list of (gradient,var) pairs"
-                "encountered. This is most likely "
-                "to be caused by an improper value "
-                "of gradient_multipliers.")
-
-    # Optionally clip gradients by global norm.
-    if isinstance(clip_gradients, float):
-        gradients = _clip_gradients_by_norm(
-            gradients, clip_gradients)
-    elif callable(clip_gradients):
-        gradients = clip_gradients(gradients)
-    elif clip_gradients is not None:
-        raise ValueError(
-            "Unknown type %s for clip_gradients" % type(clip_gradients))
-
-    return gradients
-
-
-def average_gradients(tower_grads):
-    """Calculate the average gradient for each shared variable across all towers.
-
-    Note that this function provides a synchronization point across all towers.
-
-    Args:
-    tower_grads: List of lists of (gradient, variable) tuples. The outer list
-      is over individual gradients. The inner list is over the gradient
-      calculation for each tower.
-    Returns:
-     List of pairs of (gradient, variable) where the gradient has been averaged
-     across all towers.
-    """
-    average_grads = []
-    for grad_and_vars in zip(*tower_grads):
-        # Note that each grad_and_vars looks like the following:
-        #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
-        # TODO no need for the loop here
-        # grad.append(mean(grad_gpu[0..N]), var_gpu0)
-        grads = []
-        for g, _ in grad_and_vars:
-            # Add 0 dimension to the gradients to represent the tower.
-            expanded_g = tf.expand_dims(g, 0)
-
-            # Append on a 'tower' dimension which we will average over below.
-            grads.append(expanded_g)
-
-        # Average over the 'tower' dimension.
-        grad = tf.concat(axis=0, values=grads)
-        grad = tf.reduce_mean(grad, 0)
-
-        # Keep in mind that the Variables are redundant because they are shared
-        # across towers. So .. we will just return the first tower's pointer to
-        # the Variable.
-        v = grad_and_vars[0][1]
-        grad_and_var = (grad, v)
-        average_grads.append(grad_and_var)
-
-    return average_grads
 
 
 def save_repos_hash(params_dict, this_repo_name, packages=['theano']):

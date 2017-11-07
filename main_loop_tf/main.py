@@ -463,88 +463,14 @@ class Experiment(object):
                         tf.summary.scalar('Loss', loss_dict['loss'], these_s)
 
                 # Gradients
-                # TODO: Move inside Object Optimizer to be created
                 if is_training:
                     # Compute gradients and add noise
                     grads = self.Optimizer.compute_gradients(
                          loss_dict['loss'], colocate_gradients_with_ops=True)
 
-                    # 2) Process gradients, average them later
-                    if cfg.grad_noise_decay is None:
-                        grad_noise_scale = cfg.grad_noise_scale
-                    elif cfg.grad_noise_decay == 'annealing':
-
-                        """
-                        Adds annealed gaussian noise to the gradients at
-                        every time step, by decaying the variance at each
-                        time step
-                        g_t <- g_t + N(0, sigma_t^2)
-                        sigma_t^2 = eta / (1 + t)^gamma
-
-                        with eta selected from {0.01, 0.3, 1.0) and
-                        gamma = 0.55
-                        See: "Adding gradient noise improves learning
-                        for very deep networks",
-                        http://arxiv.org/pdf/1511.06807v1.pdf
-                        """
-
-                        eta = cfg.grad_noise_scale ** 0.5
-                        gamma = 0.55 / 2
-                        grad_noise_scale = eta * tf.pow(tf.cast(
-                            self.global_step + 1, cfg._FLOATX), -gamma)
-
-                        with tf.name_scope(dev_set_scope):
-                            tf.summary.scalar("NoiseGrad", grad_noise_scale,
-                                              [these_s])
-                    elif cfg.grad_noise_decay == 'neural_gpu':
-                        eta = cfg.grad_noise_scale
-                        gamma = 0.55
-                        grad_noise_scale = eta * tf.sqrt(
-                            self.prev_err * tf.pow(tf.cast(
-                                self.global_step + 1, cfg._FLOATX), -gamma))
-
-                        with tf.name_scope(dev_set_scope):
-                            tf.summary.scalar("NoiseGrad", grad_noise_scale,
-                                              [these_s])
-                    else:
-                        raise NotImplementedError()
-                    grads = process_gradients(grads,
-                                              grad_noise_scale,
-                                              cfg.grad_multiplier,
-                                              cfg.max_grad_norm)
-
-                    # Add histograms for variables, grads and grad norms.
-                    for gradient, variable in grads:
-                        if isinstance(gradient, tf.IndexedSlices):
-                            grad_vals = gradient.values
-                        else:
-                            grad_vals = gradient
-
-                        if grad_vals is not None:
-                            # Remove model_name/
-                            var_name = variable.op.name.replace(
-                                cfg.model_name + '/', '')
-                            scope_str = dev_set_str + '_%s'  # metric
-                            scope_str, var_name = squash_maybe(scope_str,
-                                                               var_name)
-                            scope_str += '_%s'  # var name
-                            # Write the summary
-                            with tf.name_scope(None):
-                                tf.summary.scalar(
-                                    scope_str % ('GradientNorm', var_name),
-                                    tf.global_norm([grad_vals]), these_s)
-                                tf.summary.histogram(
-                                    scope_str % ('GradientHist', var_name),
-                                    grad_vals, these_s)
-
-                    # Remove the name_scopes (the one from the variable_scope
-                    # and the one from the name_scope)
-                    with tf.name_scope(dev_set_scope):
-                        name = ('clipped_grad_norm' if cfg.max_grad_norm else
-                                'grad_norm')
-                        tf.summary.scalar('Global_norm/' + name,
-                                          tf.global_norm(list(zip(*grads))[0]),
-                                          these_s)
+                    grads = self.Optimizer.process_gradients(grads,
+                                                             dev_set_scope,
+                                                             these_s)
 
                     # Save gradients for each gpu to be averaged out
                     tower_grads.append(grads)
