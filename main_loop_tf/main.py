@@ -333,11 +333,11 @@ class Experiment(object):
             # Gradient Average and the rest of the operations are on CPU
             with tf.device('/cpu:0'):
                 # Build the training graph
-                self.__build_device_graph__(training=False, which_set='train')
+                self.__build_device_graph__(which_set='train')
 
                 # Build the validation graphs (reusing variables)
                 for s in ['eval_' + v for v in cfg.val_on_sets]:
-                    self.__build_device_graph__(training=True, which_set=s)
+                    self.__build_device_graph__(which_set=s)
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
@@ -395,7 +395,7 @@ class Experiment(object):
 
         tower_out = {}
         summaries = []
-        for device in self.devices:
+        for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
             dev_set_str = '{}_{}'.format(device_str, which_set)
             summaries.append(summaries_str % device_str)
