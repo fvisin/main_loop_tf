@@ -28,10 +28,10 @@ def get_optimizer(cfg, global_step):
         base = getattr(training, cfg.optimizer + 'Optimizer')
     except AttributeError:
         base = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
-    return Optimizer(base, cfg, global_step)
+    return DistributedOptimizer(base, cfg, global_step)
 
 
-class Optimizer(Optimizer):
+class DistributedOptimizer(Optimizer):
     def __init__(self, cfg, global_step):
         self.cfg = cfg
         self.initial_lr = cfg.lr
@@ -74,9 +74,12 @@ class Optimizer(Optimizer):
             lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
         else:
             raise NotImplementedError()
+
+        # Per-device gradients
+        self.tower_grads = []
         self.super(Optimizer).__init__(lr=lr, **cfg.optimizer_params)
 
-    def process_gradients(self, gradients, dev_set_scope, summaries=[]):
+    def __process_gradients(self, gradients):
         """Add noise and multipliers to gradient
 
         Parameters
@@ -84,8 +87,7 @@ class Optimizer(Optimizer):
         gradients: list
             The list of gradients to be modified.
         """
-        grad_noise_scale = self.__get_grad_noise_scale(gradients,
-                                                       dev_set_scope)
+        grad_noise_scale = self.__get_grad_noise_scale(gradients)
 
         if grad_noise_scale is None:
             raise NotImplementedError('Unknown value of '
@@ -116,12 +118,9 @@ class Optimizer(Optimizer):
                 "Unknown type %s for cfg.max_grad_norm" %
                 type(self.cfg.max_grad_norm))
 
-        self.__add_gradient_summaries(gradients, grad_noise_scale,
-                                      dev_set_scope, summaries)
+        return gradients, grad_noise_scale
 
-        return gradients
-
-    def __get_grad_noise_scale(self, gradients, dev_set_scope=None):
+    def __get_grad_noise_scale(self, gradients):
         if self.cfg.grad_noise_decay is None:
             grad_noise_scale = self.cfg.grad_noise_scale
         elif self.cfg.grad_noise_decay == 'annealing':
@@ -196,6 +195,76 @@ class Optimizer(Optimizer):
             tf.summary.scalar('Global_norm/' + name,
                               tf.global_norm(list(zip(*gradients))[0]),
                               summaries)
+
+    def distributed_minimize(self, loss, global_step=None, var_list=None,
+                             gate_gradients=None, aggregation_method=None,
+                             colocate_gradients_with_ops=False, name=None,
+                             grad_loss=None, device=None, dev_set_scope='',
+                             summaries=None):
+        """Distributed minimize with grad noise
+
+        Extend minimize() in several ways:
+            * Add noise and multipliers
+            * Add various gradient summaries
+            * Be stateful and keep trace of previously computed
+            gradients
+            * Add a control dependency on update ops before computing
+              the gradient
+            * Average gradient over the devices processed so far.
+        """
+        if gate_gradients is None:
+            gate_gradients = self.GATE_OP  # access parent class attrib
+
+        grads_and_vars = self.compute_gradients(
+            loss, var_list=var_list, gate_gradients=gate_gradients,
+            aggregation_method=aggregation_method,
+            colocate_gradients_with_ops=colocate_gradients_with_ops,
+            grad_loss=grad_loss)
+
+        # Add noise and multipliers to gradient
+        grads_and_vars, grad_noise_scale = self.__process_gradients(
+            grads_and_vars)
+
+        self.__add_gradient_summaries(grads_and_vars, grad_noise_scale,
+                                      dev_set_scope, summaries)
+
+        # Save gradients for each gpu to be averaged out
+        self.tower_grads.append(grads_and_vars)
+
+        # Gradient descent
+        # ----------------
+        # Note the collection contains the ops for the devices processed
+        # so far
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        # TODO Do we still need this?
+        # Impose graph dependency so that update operations are computed
+        # even if they're are not explicit in the outputs of session.run
+        with tf.control_dependencies(update_ops):
+            vars_with_grad = [v for g, v in grads_and_vars
+                              if g is not None]
+            if not vars_with_grad:
+                raise ValueError(
+                    "No gradients provided for any variable, check "
+                    "your graph for ops that do not support gradients, "
+                    "between variables %s and loss %s." %
+                    ([str(v) for _, v in grads_and_vars], loss))
+
+            # Average the gradients over the devices processed so far
+            grads_and_vars = average_gradients(self.tower_grads)
+
+            grad_op = self.apply_gradients(grads_and_vars,
+                                           global_step=global_step,
+                                           name=name)
+        # TODO: Averaged gradients visualisation
+        # Add the histograms of the gradients
+        # with tf.name_scope('grad_summaries'):
+        #     for grad, var in grads_and_vars:
+        #         if grad is not None:
+        #             summaries['training'].append(
+        #                 tf.summary.histogram(
+        #                   var.op.name + '/gradients', grad))
+
+        return grad_op
 
 
 def average_gradients(tower_grads):

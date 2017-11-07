@@ -18,9 +18,7 @@ from tqdm import tqdm
 
 import gflags
 from optimization import get_optimizer
-from utils import (apply_loss, split_in_chunks, save_repos_hash,
-                   average_gradients, process_gradients, squash_maybe,
-                   TqdmHandler)
+from utils import save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler
 
 # config module load all flags from source files
 import config  # noqa
@@ -397,13 +395,13 @@ class Experiment(object):
 
         tower_out = {}
         tower_loss = {}
-        tower_grads = []
         summaries = []
         for device in self.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
             dev_set_str = '{}_{}'.format(device_str, which_set)
             summaries.append(summaries_str % device_str)
         these_s = summaries
+        self.train_ops = []
 
         # Build a graph for each device, each with its input and output
         # placeholders. Collect the outputs in "towers"
@@ -465,15 +463,16 @@ class Experiment(object):
                 # Gradients
                 if is_training:
                     # Compute gradients and add noise
-                    grads = self.Optimizer.compute_gradients(
-                         loss_dict['loss'], colocate_gradients_with_ops=True)
-
-                    grads = self.Optimizer.process_gradients(grads,
-                                                             dev_set_scope,
-                                                             these_s)
-
-                    # Save gradients for each gpu to be averaged out
-                    tower_grads.append(grads)
+                    # Gradient descent operation
+                    # Create a *list* of gradient update ops. The t-th element
+                    # of the list updates the gradients of the devices *up to*
+                    # the t-th device
+                    dev_train_op = self.Optimizer.distributed_minimize(
+                        loss_dict['loss'],
+                        device=device,
+                        colocate_gradients_with_ops=True,
+                        dev_set_scope=dev_set_scope, summaries=these_s)
+                    self.train_ops.append(dev_train_op)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -535,41 +534,6 @@ class Experiment(object):
             scope_str = dev_set_str + '_%s/%s'
             tf.summary.scalar(scope_str % ('Mean_tower_loss', comp_name),
                               avg_tower_loss_comp, summaries)
-
-        # Gradient descent
-        if is_training:
-            update_ops = []
-            train_ops = []
-            # Return a *list* of gradient update ops. Each t-th element of the
-            # list updates the gradients of the devices *up to the t-th device*
-            for t, d in enumerate(cfg.devices):
-                # Recover device name_space
-                d = d.replace('/', '').replace(':', '').lower()
-                update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
-                                                scope=d)
-
-                if t == 0:
-                    grads_and_vars = average_gradients([tower_grads[0]])
-                else:
-                    grads_and_vars = average_gradients(tower_grads[:t])
-                # Impose graph dependency so that update operations are
-                # computed even if they're are not explicit in the outputs of
-                # session.run
-                with tf.control_dependencies(update_ops):
-                    train_ops.append(self.Optimizer.apply_gradients(
-                        grads_and_vars=grads_and_vars,
-                        global_step=self.global_step))
-
-            self.train_ops = train_ops
-
-        # TODO: Averaged gradients visualisation
-        # Add the histograms of the gradients
-        # with tf.name_scope('grad_summaries'):
-        #     for grad, var in grads_and_vars:
-        #         if grad is not None:
-        #             summaries['training'].append(
-        #                 tf.summary.histogram(
-        #                   var.op.name + '/gradients', grad))
 
         #############
         # SUMMARIES #
