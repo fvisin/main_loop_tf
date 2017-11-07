@@ -406,7 +406,8 @@ class Experiment(object):
         these_s = summaries
 
         # Build a graph for each device, each with its input and output
-        # placeholders
+        # placeholders. Collect the outputs in "towers"
+        # -------------------------------------------------------------
         for device, dev_inputs, dev_labels in zip(cfg.devices,
                                                   inputs_per_gpu,
                                                   labels_per_gpu):
@@ -415,7 +416,7 @@ class Experiment(object):
                     tf.device(device):
                 reuse_variables = True
 
-                # Model output, softmax and prediction
+                # Model preactivation, activation (softmax) and prediction
                 model_out = self.build_model(dev_inputs, is_training)
 
                 assert isinstance(model_out, dict), """
@@ -428,7 +429,7 @@ class Experiment(object):
                 assert 'pred' in model_out, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
-                # Group outputs from each model tower
+                # Store this device's model outputs in the tower
                 for k, v in model_out.iteritems():
                     tower_out.setdefault(k, []).append(v)
 
@@ -438,6 +439,7 @@ class Experiment(object):
                 loss_dict = self.build_loss(dev_labels, model_out,
                                             inputs=dev_inputs)
 
+                # Validate loss_dict
                 assert loss_dict is not None and isinstance(loss_dict, dict), (
                     """Your loss should return a dictionary""")
                 assert 'loss' in loss_dict, """Your loss function should
@@ -447,14 +449,14 @@ class Experiment(object):
                     containing the list of terms that composes the total
                     loss!"""
 
-                # Group outputs from each loss tower
+                # Store this device's loss in the tower
                 for k, v in loss_dict.iteritems():
                     tower_loss.setdefault(k, []).append(v)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
                 # TODO:
-                # This is the loss per each gpu tower (Maybe useless)
+                # Save a summary with the loss per device
                 scope_str = dev_set_str + '_stats'
                 with tf.name_scope(None):
                     with tf.name_scope(scope_str) as dev_set_scope:
@@ -463,8 +465,7 @@ class Experiment(object):
                 # Gradients
                 # TODO: Move inside Object Optimizer to be created
                 if is_training:
-
-                    # 1) Compute gradients
+                    # Compute gradients and add noise
                     grads = self.Optimizer.compute_gradients(
                          loss_dict['loss'], colocate_gradients_with_ops=True)
 
@@ -567,12 +568,11 @@ class Experiment(object):
             these_s = these_s[1:]
 
         # Merge the towers on CPU
-        # Towers contain dictionary
+        # -----------------------
         out_dict = {}
         for k, v in tower_out.iteritems():
             # Convert from list of tensors to concatenated tensor
-            out_dict[k] = tf.concat(tower_out[k], axis=0,
-                                    name='concat_%s' % k)
+            out_dict[k] = tf.concat(tower_out[k], axis=0, name='concat_%s' % k)
             out_dict[k] = out_dict[k][:self.num_batches]
 
         tf.summary.scalar('control_flow/batch_size_' + which_set,
@@ -586,24 +586,22 @@ class Experiment(object):
         # (equivalent to labels[:np.prod(out_dict.shape)])
         labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
 
-        # Compute the average *per variable* over the towers
-        losses = tf.stack(tower_loss['loss'], axis=0,
-                          name='concat_losses')
+        # Compute the average loss over the towers (devices) that are in use at
+        # runtime (i.e., num_splits)
+        losses = tf.stack(tower_loss['loss'], axis=0, name='concat_losses')
         losses = losses[:self.num_splits]
         self.avg_tower_loss = tf.reduce_mean(losses)
-        scope_str = dev_set_str + '_%s/Total_Loss'
-        tf.summary.scalar(scope_str % 'Mean_tower_loss', self.avg_tower_loss,
-                          summaries)
+        tf.summary.scalar(dev_set_str + '_Mean_tower_loss/Total_Loss',
+                          self.avg_tower_loss, summaries)
 
-        # Compute the average of the loss per each component
-        # (Just for visualization purpose)
+        # Compute the average loss per component (for visualization purposes)
         tower_loss_comp_dict = {}
         for el in tower_loss['components']:
             for k, v in el.iteritems():
                 tower_loss_comp_dict.setdefault(k, []).append(v)
 
         for (comp_name, tower_loss_comp) in tower_loss_comp_dict.iteritems():
-            # Compute the average *per variable* over the towers
+            # Compute the average component loss *per variable* over the towers
             loss_comp = tf.stack(tower_loss_comp, axis=0,
                                  name='concat_losses_comp_%s' % comp_name)
             loss_comp = loss_comp[:self.num_splits]
