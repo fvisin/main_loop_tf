@@ -74,6 +74,7 @@ class Experiment(object):
             phase.
         """
         gflags.mark_flags_as_required(['dataset'])
+        self.UserOptimizer = Optimizer
 
         # ============ Parse gflags
         try:
@@ -247,19 +248,6 @@ class Experiment(object):
 
         self.cfg = cfg
 
-        with tf.Graph().as_default():
-            self.global_step = tf.Variable(0,
-                                           trainable=False,
-                                           name='global_step',
-                                           dtype='int32')
-            # Set Optimizer
-            if Optimizer is None:
-                self.Optimizer = get_optimizer(cfg.optimizer)(
-                    cfg=cfg, global_step=self.global_step)
-            else:
-                self.Optimizer = Optimizer(cfg=cfg,
-                                           global_step=self.global_step)
-
         self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                          max(1, cfg.val_every_epochs) - 1)
 
@@ -394,6 +382,16 @@ class Experiment(object):
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
+        self.global_step = tf.Variable(0, trainable=False, name='global_step',
+                                       dtype='int32')
+        # Set Optimizer
+        if self.UserOptimizer is None:
+            optimizer = get_optimizer(cfg.optimizer)(
+                cfg=cfg, global_step=self.global_step)
+        else:
+            optimizer = self.UserOptimizer(
+                cfg=cfg, global_step=self.global_step)
+
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
         self.dev_model_outs = {}
@@ -468,7 +466,7 @@ class Experiment(object):
                 # Create a *list* of gradient update ops. The t-th element
                 # of the list updates the gradients of the devices *up to*
                 # the t-th device
-                dev_train_op = self.Optimizer.distributed_minimize(
+                dev_train_op = optimizer.distributed_minimize(
                     loss_outs=loss_outs,
                     is_training=is_training,
                     device=device,
@@ -521,12 +519,12 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_splits at run-time) and used
         # to update the loss summaries correctly
-        self.avg_loss = self.Optimizer.get_avg_loss(self.num_splits)
+        self.avg_loss = optimizer.get_avg_loss(self.num_splits)
         tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
                           self.avg_loss, summaries)
         if is_training:
             # Add the per-component loss summaries
-            avg_comp_loss = self.Optimizer.get_avg_comp_loss(self.num_splits)
+            avg_comp_loss = optimizer.get_avg_comp_loss(self.num_splits)
             for k, v in avg_comp_loss.iteritems():
                 tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % k, v,
                                   summaries)
