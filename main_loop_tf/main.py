@@ -288,10 +288,9 @@ class Experiment(object):
         #     # Reload weights
         #     pass
 
-        # BUILD GRAPH
         tf.logging.info("Building the model ...")
         with tf.Graph().as_default():
-            # Create a list of input placeholders for each GPU.
+            # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
             # would want to use a subset of the placeholders, but TF raises
             # a 'negative shape error' if a placeholder is not fed. Instead,
@@ -395,14 +394,16 @@ class Experiment(object):
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
-        tower_out = {}
+        # Create "towers" with the model outputs/loss keys and a value
+        # for each device
+        self.dev_model_outs = {}
+        self.train_ops = []
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
             dev_set_str = '{}_{}'.format(device_str, which_set)
             summaries.append(summaries_str % device_str)
         these_s = summaries
-        self.train_ops = []
 
         # Build a graph for each device, each with its input and output
         # placeholders. Collect the outputs in "towers"
@@ -416,7 +417,8 @@ class Experiment(object):
                 reuse_variables = True
 
                 # Model preactivation, activation (softmax) and prediction
-                model_outs = self.build_model(dev_inputs, is_training)
+                model_outs = self.build_model(dev_inputs, dev_labels,
+                                              is_training)
 
                 assert isinstance(model_outs, dict), """
                     Your model should return a dictionary"""
@@ -428,9 +430,11 @@ class Experiment(object):
                 assert 'pred' in model_outs, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
-                # Store this device's model outputs in the tower
-                for k, v in model_out.iteritems():
-                    tower_out.setdefault(k, []).append(v)
+                # Accumulate the loss outputs from each device into a
+                # dictionary with the same keys and a list of values,
+                # one for each device
+                for k, v in model_outs.iteritems():
+                    self.dev_model_outs.setdefault(k, []).append(v)
 
                 # Loss
                 # TODO: create **loss_params to be specified externally
@@ -457,20 +461,21 @@ class Experiment(object):
                     with tf.name_scope(scope_str) as dev_set_scope:
                         tf.summary.scalar('Loss', loss_outs['loss'], these_s)
 
-                # Gradients
-                if is_training:
-                    # Compute gradients and add noise
-                    # Gradient descent operation
-                    # Create a *list* of gradient update ops. The t-th element
-                    # of the list updates the gradients of the devices *up to*
-                    # the t-th device
-                    dev_train_op = self.Optimizer.distributed_minimize(
-                        loss_outs=loss_outs['loss'],
-                        device=device,
-                        colocate_gradients_with_ops=True,
-                        dev_set_scope=dev_set_scope,
-                        summaries=these_s)
-                    self.train_ops.append(dev_train_op)
+                # Compute loss, gradients, add noise to the gradient and
+                # create the op to apply it if needed.
+                # Note that has to be called in validation as well to
+                # compute the loss.
+                # Create a *list* of gradient update ops. The t-th element
+                # of the list updates the gradients of the devices *up to*
+                # the t-th device
+                dev_train_op = self.Optimizer.distributed_minimize(
+                    loss_outs=loss_outs,
+                    is_training=is_training,
+                    device=device,
+                    dev_set_scope=dev_set_scope,
+                    summaries=these_s,
+                    colocate_gradients_with_ops=True)
+                self.train_ops.append(dev_train_op)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -493,9 +498,9 @@ class Experiment(object):
         # Merge the towers on CPU
         # -----------------------
         out_dict = {}
-        for k, v in tower_out.iteritems():
+        for k, v in self.dev_model_outs.iteritems():
             # Convert from list of tensors to concatenated tensor
-            out_dict[k] = tf.concat(tower_out[k], axis=0, name='concat_%s' % k)
+            out_dict[k] = tf.concat(v, axis=0, name='concat_%s' % k)
             out_dict[k] = out_dict[k][:self.num_batches]
 
         tf.summary.scalar('control_flow/batch_size_' + which_set,
@@ -512,15 +517,19 @@ class Experiment(object):
         #############
         # SUMMARIES #
         #############
-        # Add the mean loss summary
-        self.avg_tower_loss = self.Optimizer.mean_losses[:self.num_splits]
+        # Visualize the avg loss
+        # The number of devices will be dynamically selected by the
+        # numerical value assigned to num_splits at run-time) and used
+        # to update the loss summaries correctly
+        self.avg_loss = self.Optimizer.get_avg_loss(self.num_splits)
         tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
-                          self.avg_tower_loss, summaries)
+                          self.avg_loss, summaries)
         if is_training:
             # Add the per-component loss summaries
-            for k, v in self.Optimizer.mean_losses_comp:
-                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % k,
-                                  v[:self.num_splits], summaries)
+            avg_comp_loss = self.Optimizer.get_avg_comp_loss(self.num_splits)
+            for k, v in avg_comp_loss.iteritems():
+                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % k, v,
+                                  summaries)
 
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
@@ -534,8 +543,13 @@ class Experiment(object):
                                                   var_name),
                                      var, summaries)
 
-        # Create the summary ops out of the summary collections that we used
-        # at graph creation time
+        # Create a list of summary ops that update the summary collections that
+        # we used at graph creation time. Thanks to the way we decremented the
+        # elements in the collections each time the graph for one device
+        # was created, the n-th op in this list will update all the summaries
+        # *up to* the n-th device. This will be used at run-time to ignore the
+        # devices that are not in use when there are not enough batches to feed
+        # all of them
         summary_ops = []
         for s in summaries:
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
@@ -709,10 +723,10 @@ class Experiment(object):
 
                 end = this_n_splits - 1
                 train_dict = {
-                    'avg_tower_loss': self.avg_tower_loss,
+                    'avg_loss': self.avg_loss,
                     'train_op': self.train_ops[end]}
                 train_summary_dict = {
-                    'avg_tower_loss': self.avg_tower_loss,
+                    'avg_loss': self.avg_loss,
                     'train_op': self.train_ops[end],
                     'summary_op': self.train_summary_ops[end]}
 
@@ -749,7 +763,7 @@ class Experiment(object):
                     self.cum_iter + 1, self.epoch_id + 1))
                 pbar.set_postfix(
                     {'D': '{:.2f}s'.format(t_data_load),
-                     'loss': '{:.3f}'.format(fetch_dict['avg_tower_loss'])})
+                     'loss': '{:.3f}'.format(fetch_dict['avg_loss'])})
                 pbar.update(1)
 
             # It's the end of the epoch

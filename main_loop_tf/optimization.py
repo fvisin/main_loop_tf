@@ -80,12 +80,12 @@ class DistributedOptimizer(object):
             raise NotImplementedError()
         self.lr = lr
 
-        # Per-device gradients
-        self._tower_grads = []
-        self._tower_loss = []
-        self._tower_comp = []
-        self.mean_losses = []
-        self.mean_losses_comp = {}
+        # Here will be stored lists with one value per device
+        self.dev_losses = []  # per device
+        self.dev_comp_losses = {}  # per_loss_comp, per device
+        self.dev_avg_losses = []  # per device
+        self.dev_avg_comp_losses = {}  # per loss comp, per device
+        self.__dev_grads = []  # per device
         return super(DistributedOptimizer, self).__init__(
             learning_rate=lr, **cfg.optimizer_params)
 
@@ -126,31 +126,30 @@ class DistributedOptimizer(object):
 
         return gradients, grad_noise_scale
 
-    def __compute_mean_gradients(self, loss_outs):
-        # Extend the per-device lists of losses and component-losses
-        #self._tower_loss.append(loss_outs['loss'])
-        for el in loss_outs['components']:
-            # Create a dictionary of components with a list of their
-            # values per each device
-            for k, v in el.iteritems():
-                self._tower_comp.setdefault(k, []).append(v)
+    def get_avg_loss(self, num_splits):
+        """Get the mean loss for the devices in use
 
-        # Compute the mean losses for the devices we processed so far.
-        # One of these will be dynamically selected at run-time (depending on
-        # the number of devices in use, i.e., the numerical value of
-        # num_splits_tensor) and used to update the loss summaries
-        # Overall loss
-        # -------------------------------------------------------------------
-        dev_losses_stack = tf.stack(self._tower_loss, axis=0,
-                                    name='concat_losses')
-        self.mean_losses.append(tf.reduce_mean(dev_losses_stack))
+        This will be dynamically selected by the numerical value
+        assigned to num_splits at run-time) and used to update the loss
+        summaries
+        """
+        loss_stack = tf.stack(self.dev_losses, axis=0,
+                              name='concat_losses')
+        return tf.reduce_mean(loss_stack[:num_splits])
 
-        # Loss per component
-        for (comp_k, comp_loss) in self._tower_comp.iteritems():
-            loss_comp_stack = tf.stack(comp_loss, axis=0,
-                                       name='concat_losses_comp_%s' % comp_k)
-            self.mean_losses_comp.setdefault(comp_k, []).append(
-                tf.reduce_mean(loss_comp_stack))
+    def get_avg_comp_loss(self, num_splits):
+        """Get the mean of the loss components for the devices in use
+
+        This will be dynamically selected by the numerical value
+        assigned to num_splitsat run-time) and used to update the loss
+        summaries
+        """
+        avg_comp_losses = {}
+        for (key, loss) in self.dev_comp_losses.iteritems():
+            dev_stack = tf.stack(loss, axis=0,
+                                 name='concat_losses_comp_%s' % key)
+            avg_comp_losses[key] = tf.reduce_mean(dev_stack[:num_splits])
+        return avg_comp_losses
 
     def __get_grad_noise_scale(self, gradients):
         if self.cfg.grad_noise_decay is None:
@@ -187,28 +186,29 @@ class DistributedOptimizer(object):
 
         return grad_noise_scale
 
-    def __add_summaries(self, gradients, grad_noise_scale,
+    def __add_summaries(self, grads_and_vars, grad_noise_scale,
                         dev_set_scope, summaries=[]):
         if summaries == []:
             return
 
         # Add summary for the noise on the gradient
         # -----------------------------------------
-        with tf.name_scope(dev_set_scope):
-            tf.summary.scalar("NoiseGrad", grad_noise_scale,
-                              summaries)
+        if grad_noise_scale is not None:
+            with tf.name_scope(dev_set_scope):
+                tf.summary.scalar("NoiseGrad", grad_noise_scale,
+                                  summaries)
 
         # Add histograms for variables, grads and grad norms
         # --------------------------------------------------
-        for gradient, variable in gradients:
-            if isinstance(gradient, tf.IndexedSlices):
-                grad_vals = gradient.values
+        for grad, var in grads_and_vars:
+            if isinstance(grad, tf.IndexedSlices):
+                grad_vals = grad.values
             else:
-                grad_vals = gradient
+                grad_vals = grad
 
             if grad_vals is not None:
                 # Remove model_name/
-                var_name = variable.op.name.replace(
+                var_name = var.op.name.replace(
                     self.cfg.model_name + '/', '')
                 scope_str = dev_set_scope + '_%s'  # metric
                 scope_str, var_name = squash_maybe(scope_str,
@@ -223,16 +223,19 @@ class DistributedOptimizer(object):
                         scope_str % ('GradientHist', var_name),
                         grad_vals, summaries)
 
+        # Add global norm summary
+        # -----------------------
         # Remove the name_scopes (the one from the variable_scope
         # and the one from the name_scope)
         with tf.name_scope(dev_set_scope):
             name = ('clipped_grad_norm' if self.cfg.max_grad_norm else
                     'grad_norm')
             tf.summary.scalar('Global_norm/' + name,
-                              tf.global_norm(list(zip(*gradients))[0]),
+                              tf.global_norm(list(zip(*grads_and_vars))[0]),
                               summaries)
 
-    def distributed_minimize(self, loss_outs, global_step=None, var_list=None,
+    def distributed_minimize(self, loss_outs, is_training=False,
+                             global_step=None, var_list=None,
                              gate_gradients=None, aggregation_method=None,
                              colocate_gradients_with_ops=False, name=None,
                              grad_loss=None, device=None, dev_set_scope='',
@@ -250,62 +253,71 @@ class DistributedOptimizer(object):
         """
         if loss is not None:
             raise ValueError('This Optimizer expects a dictionary of '
-                             'losses rather than a single loss')
+                             'losses rather than a single loss. Do not '
+                             'use it as a normal tf optimizer but rather '
+                             'rely on loss_outs')
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
-        grads_and_vars = self.compute_gradients(
-            loss_out['loss'], var_list=var_list, gate_gradients=gate_gradients,
-            aggregation_method=aggregation_method,
-            colocate_gradients_with_ops=colocate_gradients_with_ops,
-            grad_loss=grad_loss)
+        # Accumulate the loss outputs from each device into a list and
+        # the component of the loss into a dictionary with components as
+        # keys and a list with one value per device as value
+        self.dev_losses.append(loss_outs['loss'])
+        for k, v in loss_outs['components'].iteritems():
+            self.dev_comp_losses.setdefault(k, []).append(v)
 
-        # Add noise and multipliers to gradient
-        grads_and_vars, grad_noise_scale = self.__process_gradients(
-            grads_and_vars)
+        grad_op = None
+        if is_training:
+            # This device's gradients
+            grads_and_vars = self.compute_gradients(
+                loss_outs['loss'], var_list=var_list,
+                gate_gradients=gate_gradients,
+                aggregation_method=aggregation_method,
+                colocate_gradients_with_ops=colocate_gradients_with_ops,
+                grad_loss=grad_loss)
 
-        # Compute the average gradients over the devices seen so far
-        self.__compute_mean_gradients(loss_outs)
+            # Add noise and multipliers to gradient
+            grads_and_vars, grad_noise_scale = self.__process_gradients(
+                grads_and_vars)
 
-        # Create some summaries
-        self.__add_summaries(grads_and_vars, grad_noise_scale, dev_set_scope,
-                             summaries)
+            # Create some summaries
+            self.__add_summaries(grads_and_vars, grad_noise_scale,
+                                 dev_set_scope, summaries)
 
-        # Save gradients for each gpu to be averaged out
-        self._tower_grads.append(grads_and_vars)
+            # Gradient descent
+            # ----------------
+            # Save gradients for each device, to be averaged out
+            self.__dev_grads.append(grads_and_vars)
 
-        # Gradient descent
-        # ----------------
-        # Note the collection contains the ops for the devices processed
-        # so far
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        # TODO Do we still need this?
-        # Impose graph dependency so that update operations are computed
-        # even if they're are not explicit in the outputs of session.run
-        with tf.control_dependencies(update_ops):
-            vars_with_grad = [v for g, v in grads_and_vars
-                              if g is not None]
+            # Note the collection contains the ops for the devices processed
+            # so far
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+
+            vars_with_grad = [v for g, v in grads_and_vars if g is not None]
             if not vars_with_grad:
                 raise ValueError(
-                    "No gradients provided for any variable, check "
-                    "your graph for ops that do not support gradients, "
-                    "between variables %s and loss %s." %
-                    ([str(v) for _, v in grads_and_vars], loss))
+                    "No gradients provided for any variable, check your graph "
+                    "for ops that do not support gradients, between variables "
+                    "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
+                                         loss))
 
-            # Average the gradients over the devices processed so far
-            grads_and_vars = average_gradients(self._tower_grads)
-
-            grad_op = self.apply_gradients(grads_and_vars,
-                                           global_step=global_step,
-                                           name=name)
-        # TODO: Averaged gradients visualisation
-        # Add the histograms of the gradients
-        # with tf.name_scope('grad_summaries'):
-        #     for grad, var in grads_and_vars:
-        #         if grad is not None:
-        #             summaries['training'].append(
-        #                 tf.summary.histogram(
-        #                   var.op.name + '/gradients', grad))
+            # TODO Do we still need this?
+            # Impose graph dependency so that update operations are computed
+            # even if they're are not explicit in the outputs of session.run
+            with tf.control_dependencies(update_ops):
+                # Average the gradients over the devices processed so far
+                grads_and_vars = average_gradients(self.__dev_grads)
+                grad_op = self.apply_gradients(grads_and_vars,
+                                               global_step=global_step,
+                                               name=name)
+            # TODO: Averaged gradients visualisation
+            # Add the histograms of the gradients
+            # with tf.name_scope('grad_summaries'):
+            #     for grad, var in grads_and_vars:
+            #         if grad is not None:
+            #             summaries['training'].append(
+            #                 tf.summary.histogram(
+            #                   var.op.name + '/gradients', grad))
 
         return grad_op
 
@@ -329,13 +341,13 @@ def average_gradients(tower_grads):
     averaged across all towers.
     """
     average_grads = []
-    for grad_and_vars in zip(*tower_grads):
-        # Note that each grad_and_vars looks like the following:
+    for grads_and_vars in zip(*tower_grads):
+        # Note that each grads_and_vars looks like the following:
         #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
         # TODO no need for the loop here
         # grad.append(mean(grad_gpu[0..N]), var_gpu0)
         grads = []
-        for g, _ in grad_and_vars:
+        for g, _ in grads_and_vars:
             # Add 0 dimension to the gradients to represent the tower.
             expanded_g = tf.expand_dims(g, 0)
 
@@ -349,9 +361,9 @@ def average_gradients(tower_grads):
         # Keep in mind that the Variables are redundant because they are shared
         # across towers. So .. we will just return the first tower's pointer to
         # the Variable.
-        v = grad_and_vars[0][1]
-        grad_and_var = (grad, v)
-        average_grads.append(grad_and_var)
+        v = grads_and_vars[0][1]
+        grads_and_vars = (grad, v)
+        average_grads.append(grads_and_vars)
 
     return average_grads
 
