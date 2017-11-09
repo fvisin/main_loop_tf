@@ -23,15 +23,17 @@ from utils import squash_maybe
 smooth = 1.
 
 
-def get_optimizer(cfg, global_step):
+def get_optimizer(optimizer):
     try:
-        base = getattr(training, cfg.optimizer + 'Optimizer')
+        BaseClass = getattr(training, optimizer + 'Optimizer')
     except AttributeError:
-        base = getattr(training, cfg.optimizer.capitalize() + 'Optimizer')
-    return DistributedOptimizer(base, cfg, global_step)
+        BaseClass = getattr(training, optimizer.capitalize() + 'Optimizer')
+    return type("DistributedOptimizer",
+                (DistributedOptimizer, BaseClass), {})
 
 
-class DistributedOptimizer(Optimizer):
+class DistributedOptimizer(object):
+    """This class will be specialized by get_optimizer"""
     def __init__(self, cfg, global_step):
         self.cfg = cfg
         self.initial_lr = cfg.lr
@@ -81,7 +83,8 @@ class DistributedOptimizer(Optimizer):
         self._tower_comp = []
         self.mean_losses = []
         self.mean_losses_comp = {}
-        self.super(Optimizer).__init__(lr=lr, **cfg.optimizer_params)
+        return super(DistributedOptimizer, self).__init__(
+            learning_rate=lr, **cfg.optimizer_params)
 
     def __process_gradients(self, gradients):
         """Add noise and multipliers to gradient
