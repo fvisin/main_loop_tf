@@ -378,6 +378,7 @@ class Experiment(object):
         if is_training:
             inputs_per_gpu = self.train_inputs_per_gpu
             summaries_str = 'train_summaries_%s'
+            self.train_ops = []
         else:
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
@@ -394,8 +395,7 @@ class Experiment(object):
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
-        self.dev_model_outs = {}
-        self.train_ops = []
+        dev_model_outs = {}
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
@@ -432,7 +432,7 @@ class Experiment(object):
                 # dictionary with the same keys and a list of values,
                 # one for each device
                 for k, v in model_outs.iteritems():
-                    self.dev_model_outs.setdefault(k, []).append(v)
+                    dev_model_outs.setdefault(k, []).append(v)
 
                 # Loss
                 # TODO: create **loss_params to be specified externally
@@ -473,7 +473,8 @@ class Experiment(object):
                     dev_set_scope=dev_set_scope,
                     summaries=these_s,
                     colocate_gradients_with_ops=True)
-                self.train_ops.append(dev_train_op)
+                if is_training:  # dev_train_op will be None otherwise
+                    self.train_ops.append(dev_train_op)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -496,7 +497,7 @@ class Experiment(object):
         # Merge the towers on CPU
         # -----------------------
         out_dict = {}
-        for k, v in self.dev_model_outs.iteritems():
+        for k, v in dev_model_outs.iteritems():
             # Convert from list of tensors to concatenated tensor
             out_dict[k] = tf.concat(v, axis=0, name='concat_%s' % k)
             out_dict[k] = out_dict[k][:self.num_batches]
@@ -519,9 +520,9 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_splits at run-time) and used
         # to update the loss summaries correctly
-        self.avg_loss = optimizer.get_avg_loss(self.num_splits)
+        self.avg_loss[is_training] = optimizer.get_avg_loss(self.num_splits)
         tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
-                          self.avg_loss, summaries)
+                          self.avg_loss[is_training], summaries)
         if is_training:
             # Add the per-component loss summaries
             avg_comp_loss = optimizer.get_avg_comp_loss(self.num_splits)
@@ -555,14 +556,14 @@ class Experiment(object):
         # Save in the Experiment object whatever is useful elsewhere
         if is_training:
             self.train_summary_ops = summary_ops
-            self.train_out_dict = out_dict
+            self.train_outs = out_dict
         else:
             metrics_out, cm_update_ops, cm_reset_ops = self.metrics()
 
             self.val_summary_ops[which_set] = summary_ops
             self.val_cm_update_ops[which_set] = cm_update_ops
             self.val_cm_reset_ops[which_set] = cm_reset_ops
-            self.val_out[which_set] = out_dict
+            self.val_outs[which_set] = out_dict
             self.val_metrics[which_set] = metrics_out
 
     def run(self):
@@ -574,7 +575,7 @@ class Experiment(object):
                 self.sv.summary_computed(self.sess, summary_str)
 
             # Start training loop
-            return self.main_loop()
+            return self.__main_loop()
 
     def validate(self):
         self.__init_sess__()
@@ -585,7 +586,7 @@ class Experiment(object):
             if callable(validate):
                 for s in self.cfg.val_on_sets:
                     metrics[s] = validate(
-                        self.val_placeholders,
+                        self.val_inputs_per_gpu,
                         self.val_outs['eval_' + s],
                         self.val_metrics['eval_' + s],
                         self.val_summary_ops['eval_' + s],
@@ -630,7 +631,7 @@ class Experiment(object):
                                        tf_debug.has_inf_or_nan)
             self.sess = sess
 
-    def main_loop(self):
+    def __main_loop(self):
         cfg = gflags.cfg
 
         # Add TqdmHandler
@@ -719,14 +720,14 @@ class Experiment(object):
                 if len(x_batch) % cfg.batch_size != 0:
                     this_n_splits += 1
 
-                end = this_n_splits - 1
+                num_devs = this_n_splits - 1
                 train_dict = {
-                    'avg_loss': self.avg_loss,
-                    'train_op': self.train_ops[end]}
+                    'avg_loss': self.avg_loss[True],
+                    'train_op': self.train_ops[num_devs]}
                 train_summary_dict = {
-                    'avg_loss': self.avg_loss,
-                    'train_op': self.train_ops[end],
-                    'summary_op': self.train_summary_ops[end]}
+                    'avg_loss': self.avg_loss[False],
+                    'train_op': self.train_ops[num_devs],
+                    'summary_op': self.train_summary_ops[num_devs]}
 
                 # Get the per-device inputs
                 x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
@@ -736,7 +737,7 @@ class Experiment(object):
                 # Fill the placeholders with data up to this_n_splits, and
                 # then repeat one of the chunks. Note that this will be
                 # ignored later on (see comment where placeholders are created)
-                in_vals = list(zip_longest(self.inputs_per_gpu,
+                in_vals = list(zip_longest(self.train_inputs_per_gpu,
                                            x_batch_chunks,
                                            fillvalue=x_batch_chunks[0]))
                 in_vals.extend(list(zip_longest(self.labels_per_gpu,
@@ -787,7 +788,7 @@ class Experiment(object):
                 metric_val = {}
                 for s in cfg.val_on_sets:
                     metric_val[s] = validate(
-                        self.val_placeholders,
+                        self.val_inputs_per_gpu,
                         self.val_outs['eval_' + s],
                         self.val_metrics['eval_' + s],
                         self.val_summary_ops['eval_' + s],
