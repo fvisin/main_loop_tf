@@ -55,7 +55,7 @@ class Experiment(object):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_loss(self, dev_labels, model_out, inputs):
+    def build_loss(self, dev_labels, model_outs, inputs):
         pass
 
     @abc.abstractmethod
@@ -414,16 +414,16 @@ class Experiment(object):
                 reuse_variables = True
 
                 # Model preactivation, activation (softmax) and prediction
-                model_out = self.build_model(dev_inputs, is_training)
+                model_outs = self.build_model(dev_inputs, is_training)
 
-                assert isinstance(model_out, dict), """
+                assert isinstance(model_outs, dict), """
                     Your model should return a dictionary"""
-                assert 'out_preact' in model_out, """Your model
+                assert 'out_preact' in model_outs, """Your model
                     function should return a dictionary with attribute
                     'out_preact'!"""
-                assert 'out_act' in model_out, """Your model function
+                assert 'out_act' in model_outs, """Your model function
                     should return a dictionary with attribute 'out_act'!"""
-                assert 'pred' in model_out, """Your model function should
+                assert 'pred' in model_outs, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
                 # Store this device's model outputs in the tower
@@ -433,7 +433,7 @@ class Experiment(object):
                 # Loss
                 # TODO: create **loss_params to be specified externally
                 # when specializing Experiment
-                loss_dict = self.build_loss(dev_labels, model_out,
+                loss_dict = self.build_loss(dev_labels, model_outs,
                                             inputs=dev_inputs)
 
                 # Validate loss_dict
