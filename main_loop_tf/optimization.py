@@ -40,12 +40,14 @@ class DistributedOptimizer(object):
         self.lr_decay = cfg.lr_decay
 
         # Learning rate schedule
-        if cfg.lr_decay == 'exp':
-            self.lr = exponential_decay(cfg.lr,
-                                        self.global_step,
-                                        cfg.decay_steps,
-                                        cfg.decay_rate,
-                                        staircase=cfg.staircase)
+        if cfg.lr_decay is None:
+            lr = self.initial_lr
+        elif cfg.lr_decay == 'exp':
+            lr = exponential_decay(cfg.lr,
+                                   self.global_step,
+                                   cfg.decay_steps,
+                                   cfg.decay_rate,
+                                   staircase=cfg.staircase)
         elif cfg.lr_decay == 'piecewise':
             lr = piecewise_constant(self.global_step,
                                     cfg.lr_boundaries,
@@ -76,6 +78,7 @@ class DistributedOptimizer(object):
             lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
         else:
             raise NotImplementedError()
+        self.lr = lr
 
         # Per-device gradients
         self._tower_grads = []
@@ -96,10 +99,6 @@ class DistributedOptimizer(object):
         """
         grad_noise_scale = self.__get_grad_noise_scale(gradients)
 
-        if grad_noise_scale is None:
-            raise NotImplementedError('Unknown value of '
-                                      'cfg.grad_noise_decay: %s' %
-                                      self.cfg.grad_noise_decay)
         if grad_noise_scale is not None:
             gradients = _add_scaled_noise_to_gradients(
                 gradients, grad_noise_scale)
@@ -182,7 +181,9 @@ class DistributedOptimizer(object):
                     self.global_step + 1, self.cfg._FLOATX), -gamma))
         else:
             # Raise ValueError
-            return None
+            raise NotImplementedError('Unknown value of '
+                                      'cfg.grad_noise_decay: %s' %
+                                      self.cfg.grad_noise_decay)
 
         return grad_noise_scale
 
