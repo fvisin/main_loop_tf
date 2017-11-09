@@ -247,14 +247,18 @@ class Experiment(object):
 
         self.cfg = cfg
 
-        # Build the graph
-        self.__build_graph__()
-
-        # Set Optimizer
-        if Optimizer is None:
-            self.Optimizer = get_optimizer(cfg, self.global_step)
-        else:
-            self.Optimizer = Optimizer(cfg, self.global_step)
+        with tf.Graph().as_default():
+            self.global_step = tf.Variable(0,
+                                           trainable=False,
+                                           name='global_step',
+                                           dtype='int32')
+            # Set Optimizer
+            if Optimizer is None:
+                self.Optimizer = get_optimizer(cfg.optimizer)(
+                    cfg=cfg, global_step=self.global_step)
+            else:
+                self.Optimizer = Optimizer(cfg=cfg,
+                                           global_step=self.global_step)
 
         self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                          max(1, cfg.val_every_epochs) - 1)
@@ -265,6 +269,9 @@ class Experiment(object):
         self.val_cm_reset_ops = {}
         self.val_outs = {}
         self.val_metrics = {}
+
+        # Build the graph
+        self.__build_graph__()
 
     def __build_graph__(self):
         cfg = self.cfg
@@ -284,11 +291,6 @@ class Experiment(object):
         # BUILD GRAPH
         tf.logging.info("Building the model ...")
         with tf.Graph().as_default():
-            self.global_step = tf.Variable(0,
-                                           trainable=False,
-                                           name='global_step',
-                                           dtype='int32')
-
             # Create a list of input placeholders for each GPU.
             # When the batchsize is not big enough to fill all of them we
             # would want to use a subset of the placeholders, but TF raises
