@@ -126,10 +126,10 @@ class DistributedOptimizer(object):
 
         return gradients, grad_noise_scale
 
-    def __compute_mean_gradients(self, loss_out):
+    def __compute_mean_gradients(self, loss_outs):
         # Extend the per-device lists of losses and component-losses
-        self._tower_loss.append(loss_out['loss'])
-        for el in loss_out['components']:
+        #self._tower_loss.append(loss_outs['loss'])
+        for el in loss_outs['components']:
             # Create a dictionary of components with a list of their
             # values per each device
             for k, v in el.iteritems():
@@ -232,7 +232,7 @@ class DistributedOptimizer(object):
                               tf.global_norm(list(zip(*gradients))[0]),
                               summaries)
 
-    def distributed_minimize(self, loss_out, global_step=None, var_list=None,
+    def distributed_minimize(self, loss_outs, global_step=None, var_list=None,
                              gate_gradients=None, aggregation_method=None,
                              colocate_gradients_with_ops=False, name=None,
                              grad_loss=None, device=None, dev_set_scope='',
@@ -265,7 +265,7 @@ class DistributedOptimizer(object):
             grads_and_vars)
 
         # Compute the average gradients over the devices seen so far
-        self.__compute_mean_gradients(loss_out)
+        self.__compute_mean_gradients(loss_outs)
 
         # Create some summaries
         self.__add_summaries(grads_and_vars, grad_noise_scale, dev_set_scope,

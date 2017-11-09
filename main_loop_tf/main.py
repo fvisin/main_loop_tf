@@ -435,15 +435,15 @@ class Experiment(object):
                 # Loss
                 # TODO: create **loss_params to be specified externally
                 # when specializing Experiment
-                loss_dict = self.build_loss(dev_labels, model_outs,
+                loss_outs = self.build_loss(dev_labels, model_outs,
                                             inputs=dev_inputs)
 
-                # Validate loss_dict
-                assert loss_dict is not None and isinstance(loss_dict, dict), (
+                # Validate loss_outs
+                assert loss_outs is not None and isinstance(loss_outs, dict), (
                     """Your loss should return a dictionary""")
-                assert 'loss' in loss_dict, """Your loss function should
+                assert 'loss' in loss_outs, """Your loss function should
                     return a dictionary with attribute 'loss'!"""
-                assert 'components' in loss_dict, """Your loss function should
+                assert 'components' in loss_outs, """Your loss function should
                     return a dictionary with attribute 'components'
                     containing the list of terms that composes the total
                     loss!"""
@@ -455,7 +455,7 @@ class Experiment(object):
                 scope_str = dev_set_str + '_stats'
                 with tf.name_scope(None):
                     with tf.name_scope(scope_str) as dev_set_scope:
-                        tf.summary.scalar('Loss', loss_dict['loss'], these_s)
+                        tf.summary.scalar('Loss', loss_outs['loss'], these_s)
 
                 # Gradients
                 if is_training:
@@ -465,7 +465,7 @@ class Experiment(object):
                     # of the list updates the gradients of the devices *up to*
                     # the t-th device
                     dev_train_op = self.Optimizer.distributed_minimize(
-                        loss_dict['loss'],
+                        loss_outs=loss_outs['loss'],
                         device=device,
                         colocate_gradients_with_ops=True,
                         dev_set_scope=dev_set_scope,
