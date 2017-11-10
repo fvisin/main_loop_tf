@@ -784,6 +784,7 @@ class Experiment(object):
         return fetch_dict
 
     def batch_end(self, minibatch, fetch_dict):
+        self.cum_iter += 1
         self.pbar.set_description('({:3d}) Ep {:d}'.format(
             self.cum_iter + 1, self.epoch_id + 1))
         self.pbar.set_postfix(
