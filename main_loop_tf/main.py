@@ -581,6 +581,21 @@ class Experiment(object):
             # Start training loop
             return self.__main_loop()
 
+    def evaluate(self):
+        with self.__init_sess__() as self.sess:
+            validate_fn = getattr(self, "validate_fn", None)
+            if validate_fn is not None:
+                metrics_val = {}
+                for s in self.cfg.val_on_sets:
+                    metrics_val[s] = validate_fn(
+                        self.val_inputs_per_gpu,
+                        self.val_graph_outs[s],
+                        which_set=s)
+                return metrics_val
+            else:
+                raise ValueError('No validation function defined! You '
+                                 'should implement __validate_fn')
+
     def __init_sess__(self):
         cfg = self.cfg
         with self.graph.as_default():
@@ -809,13 +824,12 @@ class Experiment(object):
 
         # Validate if last epoch, early stop or we reached valid_every
         metrics_val = {}
-        validate = getattr(self, "validate", None)
-        if callable(validate) and (
+        validate_fn = getattr(self, "validate_fn", None)
+        if callable(validate_fn) and (
              self.last_epoch or self.estop or not self.val_skip):
 
-            # TODO remove cm_reset_ops etc
             for s in self.cfg.val_on_sets:
-                metrics_val[s] = self.validate(
+                metrics_val[s] = validate_fn(
                     self.val_inputs_per_gpu,
                     self.val_graph_outs[s],
                     which_set=s)
