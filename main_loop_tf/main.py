@@ -258,6 +258,8 @@ class Experiment(object):
         self.val_outs = {}
         self.val_metrics = {}
 
+        self.avg_loss = {}
+
         # Build the graph
         self.__build_graph__()
 
