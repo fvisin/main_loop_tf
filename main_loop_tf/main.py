@@ -293,6 +293,7 @@ class Experiment(object):
             train_inputs_per_gpu = []
             val_inputs_per_gpu = []
             labels_per_gpu = []
+            # TODO add function to get the placeholders
             self.num_splits = tf.placeholder(np.int32, shape=None,
                                              name='num_splits')
             self.num_batches = tf.placeholder(np.int32, shape=None,
@@ -634,6 +635,85 @@ class Experiment(object):
     def __main_loop(self):
         cfg = gflags.cfg
 
+        self.experiment_begin(cfg)
+
+        while not self.sv.should_stop():
+            self.epoch_id = (self.cum_iter+1) // self.train.nbatches
+
+            # Callback
+            self.epoch_begin(cfg)
+
+            for batch_id in range(self.train.nbatches):
+                self.cum_iter = self.sv.global_step.eval(self.sess)
+                iter_start = time()
+
+                # inputs and labels
+                minibatch = self.train.next()
+                self.t_data_load = time() - iter_start
+                x_batch, y_batch = minibatch['data'], minibatch['labels']
+                # sh = inputs.shape  # do NOT provide a list of shapes
+
+                # Callback
+                self.batch_begin(cfg, minibatch)
+
+                # Is this batch shorter than batch_size?
+                # Check if this batch will not be processed by all the devices.
+                # When the sequence is shorter than seq_length or the number of
+                # batches is smaller than batch_size, the batch will be smaller
+                # than usual. When this happens we might not be able to feed
+                # all the CPUs/GPUs altogether. In that case here we compute
+                # the number of GPUs that we can use for the current batch
+                # Spread the batch over the lowest number of GPUs
+                this_n_splits = len(x_batch) // cfg.batch_size
+                if len(x_batch) % cfg.batch_size != 0:
+                    this_n_splits += 1
+                num_devs = this_n_splits - 1
+
+                # Get the per-device inputs
+                # TODO inputs should be a list (as well as placeholders)
+                x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
+                                                                 y_batch,
+                                                                 this_n_splits)
+
+                # Fill the placeholders with data up to this_n_splits, and
+                # then repeat one of the chunks. Note that this will be
+                # ignored later on (see comment where placeholders are created)
+                in_vals = list(zip_longest(self.train_inputs_per_gpu,
+                                           x_batch_chunks,
+                                           fillvalue=x_batch_chunks[0]))
+                in_vals.extend(list(zip_longest(self.labels_per_gpu,
+                                                y_batch_chunks,
+                                                fillvalue=y_batch_chunks[0])))
+                in_vals.extend([(self.num_splits, this_n_splits)])
+                in_vals.extend([(self.num_batches, len(x_batch))])
+                in_vals.extend([(self.prev_err, self.loss_value)])
+                feed_dict = {p: v for(p, v) in in_vals}
+
+                # Callback
+                fetch_dict = self.batch_do(cfg, num_devs, feed_dict)
+
+                # Callback
+                self.batch_end(cfg, minibatch, fetch_dict)
+
+            self.epoch_end(cfg, minibatch, fetch_dict)
+
+            # Verify epochs' loop exit conditions
+            if self.estop:
+                tf.logging.info('Early Stop!')
+                self.sv.request_stop()
+                break
+            if self.last_epoch:
+                tf.logging.info('Last epoch!')
+                self.sv.request_stop()
+                break
+
+        self.experiment_end(cfg, fetch_dict)
+        return self.return_val
+
+    # ###########
+    # Callbacks #
+    # ###########
+    def experiment_begin(self, cfg):
         # Add TqdmHandler
         handler = TqdmHandler()
         handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT, None))
@@ -661,186 +741,142 @@ class Experiment(object):
         self.history_acc = np.array([]).tolist()
 
         # Start the training loop
-        start = time()
+        self.start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
 
-        while not self.sv.should_stop():
-            self.epoch_id = (self.cum_iter+1) // self.train.nbatches
-            summary_val = tf.Summary.Value(tag='control_flow/Epoch',
-                                           simple_value=self.epoch_id + 1)
-            summary = tf.Summary(value=[summary_val])
-            self.sv.summary_computed(self.sess, summary,
-                                     global_step=self.epoch_id)
-            pbar = tqdm(total=self.train.nbatches,
-                        bar_format='{n_fmt}/{total_fmt}{desc}'
-                                   '{percentage:3.0f}%|{bar}| '
-                                   '[{elapsed}<{remaining},'
-                                   '{rate_fmt}{postfix}]')
+    def epoch_begin(self, cfg):
+        summary_val = tf.Summary.Value(tag='control_flow/Epoch',
+                                       simple_value=self.epoch_id + 1)
+        summary = tf.Summary(value=[summary_val])
+        self.sv.summary_computed(self.sess, summary,
+                                 global_step=self.epoch_id)
+        self.pbar = tqdm(total=self.train.nbatches,
+                         bar_format='{n_fmt}/{total_fmt}{desc}'
+                                    '{percentage:3.0f}%|{bar}| '
+                                    '[{elapsed}<{remaining},'
+                                    '{rate_fmt}{postfix}]')
 
-            for batch_id in range(self.train.nbatches):
-                self.cum_iter = self.sv.global_step.eval(self.sess)
-                iter_start = time()
+    def batch_begin(self, cfg, minibatch):
+        # TODO move in reconvnets
+        x_batch = minibatch['data']
+        # Show optical flow for debug
+        if pygtk and cfg.debug_of:
+            for x_b in x_batch:
+                for x_frame in x_b:
+                    rgb_of_frame = np.concatenate(
+                        [x_frame[..., :3], x_frame[..., 3:]],
+                        axis=1).astype(np.float32)
+                    rgb_of_frame = cv2.cvtColor(rgb_of_frame,
+                                                cv2.COLOR_RGB2BGR)
+                    cv2.imshow("rgb-optflow", rgb_of_frame)
+                    cv2.waitKey(100)
 
-                # inputs and labels
-                minibatch = self.train.next()
-                t_data_load = time() - iter_start
-                x_batch, y_batch = minibatch['data'], minibatch['labels']
-                # sh = inputs.shape  # do NOT provide a list of shapes
+        # reset_states(model, sh)
 
-                # Show optical flow for debug
-                if pygtk and cfg.debug_of:
-                    for x_b in x_batch:
-                        for x_frame in x_b:
-                            rgb_of_frame = np.concatenate(
-                                [x_frame[..., :3], x_frame[..., 3:]],
-                                axis=1).astype(np.float32)
-                            rgb_of_frame = cv2.cvtColor(rgb_of_frame,
-                                                        cv2.COLOR_RGB2BGR)
-                            cv2.imshow("rgb-optflow", rgb_of_frame)
-                            cv2.waitKey(100)
+    def batch_do(self, cfg, num_devs, feed_dict):
+        # TODO move in reconvnets
+        # Do not add noise if loss is less than threshold
+        # TODO: It should be IoU or any other metric, but in this
+        # case our loss is Dice Coefficient so it's fine
+        self.loss_value = (-1.0 if self.loss_value < -cfg.thresh_loss
+                           else self.loss_value)
 
-                # reset_states(model, sh)
+        train_dict = {
+            'avg_loss': self.avg_loss[True],
+            'train_op': self.train_ops[num_devs]}
+        train_summary_dict = {
+            'avg_loss': self.avg_loss[True],
+            'train_op': self.train_ops[num_devs],
+            'summary_op': self.train_summary_ops[num_devs]}
 
-                # Do not add noise if loss is less than threshold
-                # TODO: It should be IoU or any other metric, but in this
-                # case our loss is Dice Coefficient so it's fine
-                self.loss_value = (-1.0 if self.loss_value < -cfg.thresh_loss
-                                   else self.loss_value)
+        # Compute (summaries and) loss
+        if self.cum_iter % cfg.train_summary_freq == 0:
+            fetch_dict = self.sess.run(
+                train_summary_dict,
+                feed_dict=feed_dict)
+            self.sv.summary_computed(self.sess,
+                                     fetch_dict['summary_op'])
+        else:
+            fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
+        return fetch_dict
 
-                # Is this batch shorter than batch_size?
-                # Check if this batch will not be processed by all the devices.
-                # When the sequence is shorter than seq_length or the number of
-                # batches is smaller than batch_size, the batch will be smaller
-                # than usual. When this happens we might not be able to feed
-                # all the CPUs/GPUs altogether. In that case here we compute
-                # the number of GPUs that we can use for the current batch
-                # Spread the batch over the lowest number of GPUs
-                this_n_splits = len(x_batch) // cfg.batch_size
-                if len(x_batch) % cfg.batch_size != 0:
-                    this_n_splits += 1
+    def batch_end(self, minibatch, fetch_dict):
+        self.pbar.set_description('({:3d}) Ep {:d}'.format(
+            self.cum_iter + 1, self.epoch_id + 1))
+        self.pbar.set_postfix(
+            {'D': '{:.2f}s'.format(self.t_data_load),
+             'loss': '{:.3f}'.format(fetch_dict['avg_loss'])})
+        self.pbar.update(1)
 
-                num_devs = this_n_splits - 1
-                train_dict = {
-                    'avg_loss': self.avg_loss[True],
-                    'train_op': self.train_ops[num_devs]}
-                train_summary_dict = {
-                    'avg_loss': self.avg_loss[False],
-                    'train_op': self.train_ops[num_devs],
-                    'summary_op': self.train_summary_ops[num_devs]}
+    def epoch_end(self, cfg):
+        self.pbar.close()
+        # TODO Add val_every_iter?
+        # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
-                # Get the per-device inputs
-                x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
-                                                                 y_batch,
-                                                                 this_n_splits)
+        # Is it also the last epoch?
+        if self.sv.should_stop() or self.epoch_id == cfg.max_epochs - 1:
+            self.last_epoch = True
 
-                # Fill the placeholders with data up to this_n_splits, and
-                # then repeat one of the chunks. Note that this will be
-                # ignored later on (see comment where placeholders are created)
-                in_vals = list(zip_longest(self.train_inputs_per_gpu,
-                                           x_batch_chunks,
-                                           fillvalue=x_batch_chunks[0]))
-                in_vals.extend(list(zip_longest(self.labels_per_gpu,
-                                                y_batch_chunks,
-                                                fillvalue=y_batch_chunks[0])))
-                in_vals.extend([(self.num_splits, this_n_splits)])
-                in_vals.extend([(self.num_batches, len(x_batch))])
-                in_vals.extend([(self.prev_err, self.loss_value)])
-                feed_dict = {p: v for(p, v) in in_vals}
+        # Early stop if patience is over
+        self.patience_counter += 1
+        if (self.epoch_id >= cfg.min_epochs and
+                self.patience_counter >= cfg.patience):
+            self.estop = True
 
-                # Compute (summaries and) loss
-                if self.cum_iter % cfg.train_summary_freq == 0:
-                    fetch_dict = self.sess.run(
-                        train_summary_dict,
-                        feed_dict=feed_dict)
-                    self.sv.summary_computed(self.sess,
-                                             fetch_dict['summary_op'])
-                else:
-                    fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
+        # Validate if last epoch, early stop or we reached valid_every
+        validate = getattr(self, "validate", None)
+        if callable(validate) and (
+             self.last_epoch or self.estop or not self.val_skip):
 
-                pbar.set_description('({:3d}) Ep {:d}'.format(
-                    self.cum_iter + 1, self.epoch_id + 1))
-                pbar.set_postfix(
-                    {'D': '{:.2f}s'.format(t_data_load),
-                     'loss': '{:.3f}'.format(fetch_dict['avg_loss'])})
-                pbar.update(1)
+            metric_val = {}
+            for s in cfg.val_on_sets:
+                metric_val[s] = validate(
+                    self.val_inputs_per_gpu,
+                    self.val_outs['eval_' + s],
+                    self.val_metrics['eval_' + s],
+                    self.val_summary_ops['eval_' + s],
+                    self.val_cm_reset_ops['eval_' + s],
+                    self.val_cm_update_ops['eval_' + s],
+                    which_set='eval_' + s)
 
-            # It's the end of the epoch
-            pbar.close()
-            # TODO Add val_every_iter?
-            # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
+            # TODO gsheet
+            self.history_acc.append([metric_val.get('valid')])
 
-            # Is it also the last epoch?
-            if self.sv.should_stop() or self.epoch_id == cfg.max_epochs - 1:
-                self.last_epoch = True
+            # Did we improve *validation* metric?
+            best_hist = np.array(self.history_acc).max()
+            if (len(self.history_acc) == 0 or
+                    metric_val.get('valid') >= best_hist):
+                tf.logging.info('## Best model found! ##')
+                t_save = time()
+                checkpoint_path = os.path.join(cfg.checkpoints_dir,
+                                               '{}_best.ckpt'.format(
+                                                   cfg.model_name))
 
-            # Early stop if patience is over
-            self.patience_counter += 1
-            if (self.epoch_id >= cfg.min_epochs and
-                    self.patience_counter >= cfg.patience):
-                self.estop = True
+                self.saver.save(self.sess, checkpoint_path,
+                                global_step=cfg.global_step)
+                t_save = time() - t_save
+                tf.logging.info('Checkpoint saved in {}s'.format(t_save))
 
-            # Validate if last epoch, early stop or we reached valid_every
-            validate = getattr(self, "validate", None)
-            if callable(validate) and (
-                 self.last_epoch or self.estop or not self.val_skip):
+                self.patience_counter = 0
+                self.estop = False
+            # Start skipping again
+            self.val_skip = max(1, cfg.val_every_epochs) - 1
+        else:
+            # We skipped validation, decrease the counter
+            self.val_skip -= 1
 
-                metric_val = {}
-                for s in cfg.val_on_sets:
-                    metric_val[s] = validate(
-                        self.val_inputs_per_gpu,
-                        self.val_outs['eval_' + s],
-                        self.val_metrics['eval_' + s],
-                        self.val_summary_ops['eval_' + s],
-                        self.val_cm_reset_ops['eval_' + s],
-                        self.val_cm_update_ops['eval_' + s],
-                        which_set='eval_' + s)
-
-                # TODO gsheet
-                self.history_acc.append([metric_val.get('valid')])
-
-                # Did we improve *validation* metric?
-                best_hist = np.array(self.history_acc).max()
-                if (len(self.history_acc) == 0 or
-                        metric_val.get('valid') >= best_hist):
-                    tf.logging.info('## Best model found! ##')
-                    t_save = time()
-                    checkpoint_path = os.path.join(cfg.checkpoints_dir,
-                                                   '{}_best.ckpt'.format(
-                                                       cfg.model_name))
-
-                    self.saver.save(self.sess, checkpoint_path,
-                                    global_step=cfg.global_step)
-                    t_save = time() - t_save
-                    tf.logging.info('Checkpoint saved in {}s'.format(t_save))
-
-                    self.patience_counter = 0
-                    self.estop = False
-                # Start skipping again
-                self.val_skip = max(1, cfg.val_every_epochs) - 1
-            else:
-                # We skipped validation, decrease the counter
-                self.val_skip -= 1
-
-            # Verify epochs' loop exit conditions
-            if self.estop:
-                tf.logging.info('Early Stop!')
-                self.sv.request_stop()
-                break
-            if self.last_epoch:
-                tf.logging.info('Last epoch!')
-                self.sv.request_stop()
-                break
-
+    def experiment_end(self, cfg, fetch_dict):
         max_valid_idx = np.argmax(np.array(self.history_acc))
         best = self.history_acc[max_valid_idx]
         tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
 
         end = time()
-        m, s = divmod(end - start, 60)
+        m, s = divmod(end - self.start, 60)
         h, m = divmod(m, 60)
         tf.logging.info("Total time elapsed: %d:%02d:%02d" % (h, m, s))
 
+        self.return_val = best
         # # Move complete models and stuff to shared fs
         # tf.logging.info('\n\nEND OF TRAINING!!\n\n')
 
@@ -864,4 +900,3 @@ class Experiment(object):
         # move_if_exist(tmp_path + save_name + ".svg",
         #               'models/' + save_name + '.svg')
         # validate = True  # Print the best model's test error
-        return best
