@@ -252,11 +252,7 @@ class Experiment(object):
                          max(1, cfg.val_every_epochs) - 1)
 
         # Init variables
-        self.val_summary_ops = {}
-        self.val_cm_update_ops = {}
-        self.val_cm_reset_ops = {}
-        self.val_outs = {}
-        self.val_metrics = {}
+        self.val_graph_outs = {}
 
         self.avg_loss = {}
 
@@ -326,12 +322,13 @@ class Experiment(object):
             # Gradient Average and the rest of the operations are on CPU
             with tf.device('/cpu:0'):
                 # Build the training graph
-                self.__build_device_graph(which_set='train',
-                                          is_training=True)
+                self.train_graph_outs = self.__build_device_graph(
+                    which_set='train', is_training=True)
 
                 # Build the validation graphs (reusing variables)
                 for s in cfg.val_on_sets:
-                    self.__build_device_graph(which_set=s, is_training=False)
+                    self.val_graph_outs[s] = self.__build_device_graph(
+                        which_set=s, is_training=False)
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
@@ -379,10 +376,10 @@ class Experiment(object):
         reuse_variables = not is_training
 
         labels_per_gpu = self.labels_per_gpu
+        grad_ops = []
         if is_training:
             inputs_per_gpu = self.train_inputs_per_gpu
             summaries_str = 'train_summaries_%s'
-            self.train_ops = []
         else:
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
@@ -399,7 +396,7 @@ class Experiment(object):
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
-        dev_model_outs = {}
+        devs_model_outs = {}
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
@@ -419,32 +416,33 @@ class Experiment(object):
                 reuse_variables = True
 
                 # Model preactivation, activation (softmax) and prediction
-                model_outs = self.build_model(dev_inputs, dev_labels,
-                                              is_training)
-
-                assert isinstance(model_outs, dict), """
+                model_out = self.build_model(dev_inputs, dev_labels,
+                                             is_training)
+                assert isinstance(model_out, dict), """
                     Your model should return a dictionary"""
-                assert 'out_preact' in model_outs, """Your model
+                assert 'out_preact' in model_out, """Your model
                     function should return a dictionary with attribute
                     'out_preact'!"""
-                assert 'out_act' in model_outs, """Your model function
+                assert 'out_act' in model_out, """Your model function
                     should return a dictionary with attribute 'out_act'!"""
-                assert 'pred' in model_outs, """Your model function should
+                assert 'pred' in model_out, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
                 # Accumulate the loss outputs from each device into a
                 # dictionary with the same keys and a list of values,
                 # one for each device
-                for k, v in model_outs.iteritems():
-                    dev_model_outs.setdefault(k, []).append(v)
+                for k, v in model_out.iteritems():
+                    devs_model_outs.setdefault(k, []).append(v)
 
                 # Loss
                 # TODO: create **loss_params to be specified externally
                 # when specializing Experiment
-                loss_outs = self.build_loss(dev_labels, model_outs,
+                loss_outs = self.build_loss(dev_labels, model_out,
+                                            is_training=is_training,
+                                            # l2_reg=weight_decay,
+                                            # gdl=cfg.gdl,
+                                            # tv=cfg.tv,
                                             inputs=dev_inputs)
-
-                # Validate loss_outs
                 assert loss_outs is not None and isinstance(loss_outs, dict), (
                     """Your loss should return a dictionary""")
                 assert 'loss' in loss_outs, """Your loss function should
@@ -470,7 +468,7 @@ class Experiment(object):
                 # Create a *list* of gradient update ops. The t-th element
                 # of the list updates the gradients of the devices *up to*
                 # the t-th device
-                dev_train_op = optimizer.distributed_minimize(
+                grad_op = optimizer.distributed_minimize(
                     loss_outs=loss_outs,
                     is_training=is_training,
                     device=device,
@@ -478,7 +476,7 @@ class Experiment(object):
                     summaries=these_s,
                     colocate_gradients_with_ops=True)
                 if is_training:  # dev_train_op will be None otherwise
-                    self.train_ops.append(dev_train_op)
+                    grad_ops.append(grad_op)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -500,22 +498,23 @@ class Experiment(object):
 
         # Merge the towers on CPU
         # -----------------------
-        out_dict = {}
-        for k, v in dev_model_outs.iteritems():
+        merged_model_outs = {}
+        for k, v in devs_model_outs.iteritems():
             # Convert from list of tensors to concatenated tensor
-            out_dict[k] = tf.concat(v, axis=0, name='concat_%s' % k)
-            out_dict[k] = out_dict[k][:self.num_batches]
+            merged_model_outs[k] = tf.concat(v, axis=0, name='concat_%s' % k)
+            merged_model_outs[k] = merged_model_outs[k][:self.num_batches]
 
         tf.summary.scalar('control_flow/batch_size_' + which_set,
-                          tf.shape(out_dict['pred'])[0], summaries)
+                          tf.shape(merged_model_outs['pred'])[0], summaries)
 
         # Concatenate the per-gpu placeholders to get a placeholder for the
         # full list of gpus and one for the subset to be used for
         # the minibatch with less batches
         labels = tf.concat(self.labels_per_gpu, axis=0, name='concat_labels')
         # Remove the unused batches from the flattened labels
-        # (equivalent to labels[:np.prod(out_dict.shape)])
-        labels = labels[:tf.shape(tf.reshape(out_dict['pred'], [-1]))[0]]
+        # (equivalent to labels[:np.prod(merged_model_outs.shape)])
+        labels = labels[:tf.shape(
+            tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
         #############
         # SUMMARIES #
@@ -557,18 +556,20 @@ class Experiment(object):
         for s in summaries:
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
-        # Save in the Experiment object whatever is useful elsewhere
+        graph_out = {
+            'model_outs': merged_model_outs,
+            'summary_ops': summary_ops,
+            }
         if is_training:
-            self.train_summary_ops = summary_ops
-            self.train_outs = out_dict
-        else:
-            metrics_out, cm_update_ops, cm_reset_ops = self.metrics()
+            graph_out['grad_ops'] = grad_ops
 
-            self.val_summary_ops[which_set] = summary_ops
-            self.val_cm_update_ops[which_set] = cm_update_ops
-            self.val_cm_reset_ops[which_set] = cm_reset_ops
-            self.val_outs[which_set] = out_dict
-            self.val_metrics[which_set] = metrics_out
+        # User defined function to compute some metrics in the graph
+        if hasattr(self, 'compute_metrics'):
+            metrics_outs, metrics_ops = self.compute_metrics()
+            graph_out['metrics_outs'] = metrics_outs
+            graph_out['metrics_ops'] = metrics_ops
+
+        return graph_out
 
     def run(self):
         with self.__init_sess__() as self.sess:
@@ -766,17 +767,16 @@ class Experiment(object):
 
         train_dict = {
             'avg_loss': self.avg_loss[True],
-            'train_op': self.train_ops[num_devs]}
+            'train_op': self.train_graph_outs['grad_ops'][num_devs]}
         train_summary_dict = {
             'avg_loss': self.avg_loss[True],
-            'train_op': self.train_ops[num_devs],
-            'summary_op': self.train_summary_ops[num_devs]}
+            'train_op': self.train_graph_outs['grad_ops'][num_devs],
+            'summary_op': self.train_graph_outs['summary_ops'][num_devs]}
 
         # Compute (summaries and) loss
         if self.cum_iter % self.cfg.train_summary_freq == 0:
-            fetch_dict = self.sess.run(
-                train_summary_dict,
-                feed_dict=feed_dict)
+            fetch_dict = self.sess.run(train_summary_dict,
+                                       feed_dict=feed_dict)
             self.sv.summary_computed(self.sess,
                                      fetch_dict['summary_op'])
         else:
@@ -817,11 +817,7 @@ class Experiment(object):
             for s in self.cfg.val_on_sets:
                 metrics_val[s] = self.validate(
                     self.val_inputs_per_gpu,
-                    self.val_outs[s],
-                    self.val_metrics_val[s],
-                    self.val_summary_ops[s],
-                    self.val_cm_reset_ops[s],
-                    self.val_cm_update_ops[s],
+                    self.val_graph_outs[s],
                     which_set=s)
 
             # TODO gsheet
