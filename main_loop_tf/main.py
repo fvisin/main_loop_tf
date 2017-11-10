@@ -578,26 +578,6 @@ class Experiment(object):
             # Start training loop
             return self.__main_loop()
 
-    def validate(self):
-        self.__init_sess__()
-        with self.sess:
-            # Perform validation only
-            metrics = {}
-            validate = getattr(self, "validate", None)
-            if callable(validate):
-                for s in self.cfg.val_on_sets:
-                    metrics[s] = validate(
-                        self.val_inputs_per_gpu,
-                        self.val_outs['eval_' + s],
-                        self.val_metrics['eval_' + s],
-                        self.val_summary_ops['eval_' + s],
-                        self.val_cm_updatet_ops['eval_' + s],
-                        self.val_cm_reset_ops['eval_' + s],
-                        which_set='eval_' + s)
-                return metrics
-            else:
-                raise NotImplementedError('Validation method not implemented!')
-
     def __init_sess__(self):
         cfg = self.cfg
         with tf.Graph().as_default() as graph:
@@ -825,28 +805,30 @@ class Experiment(object):
             self.estop = True
 
         # Validate if last epoch, early stop or we reached valid_every
+        metrics_val = {}
         validate = getattr(self, "validate", None)
         if callable(validate) and (
              self.last_epoch or self.estop or not self.val_skip):
 
-            metric_val = {}
+            # TODO do not resort to "eval_"
+            # TODO remove cm_reset_ops etc
             for s in cfg.val_on_sets:
-                metric_val[s] = validate(
+                metrics_val[s] = self.validate(
                     self.val_inputs_per_gpu,
                     self.val_outs['eval_' + s],
-                    self.val_metrics['eval_' + s],
+                    self.val_metrics[s],
                     self.val_summary_ops['eval_' + s],
                     self.val_cm_reset_ops['eval_' + s],
                     self.val_cm_update_ops['eval_' + s],
                     which_set='eval_' + s)
 
             # TODO gsheet
-            self.history_acc.append([metric_val.get('valid')])
+            self.history_acc.append([metrics_val.get('valid')])
 
             # Did we improve *validation* metric?
             best_hist = np.array(self.history_acc).max()
             if (len(self.history_acc) == 0 or
-                    metric_val.get('valid') >= best_hist):
+                    metrics_val.get('valid') >= best_hist):
                 tf.logging.info('## Best model found! ##')
                 t_save = time()
                 checkpoint_path = os.path.join(cfg.checkpoints_dir,
@@ -865,6 +847,7 @@ class Experiment(object):
         else:
             # We skipped validation, decrease the counter
             self.val_skip -= 1
+        self.metrics_val = metrics_val
 
     def experiment_end(self, cfg, fetch_dict):
         max_valid_idx = np.argmax(np.array(self.history_acc))
