@@ -564,8 +564,8 @@ class Experiment(object):
             graph_out['grad_ops'] = grad_ops
 
         # User defined function to compute some metrics in the graph
-        if hasattr(self, 'compute_metrics'):
-            metrics_outs, metrics_ops = self.compute_metrics()
+        if hasattr(self, 'metrics_graph_fn'):
+            metrics_outs, metrics_ops = self.metrics_graph_fn()
             graph_out['metrics_outs'] = metrics_outs
             graph_out['metrics_ops'] = metrics_ops
 
