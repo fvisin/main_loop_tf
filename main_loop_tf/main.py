@@ -277,7 +277,8 @@ class Experiment(object):
         #     pass
 
         tf.logging.info("Building the model ...")
-        with tf.Graph().as_default():
+        self.graph = tf.Graph()
+        with self.graph.as_default():
             # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
             # would want to use a subset of the placeholders, but TF raises
@@ -323,11 +324,12 @@ class Experiment(object):
             # Gradient Average and the rest of the operations are on CPU
             with tf.device('/cpu:0'):
                 # Build the training graph
-                self.__build_device_graph__(which_set='train')
+                self.__build_device_graph__(which_set='train',
+                                            is_training=True)
 
                 # Build the validation graphs (reusing variables)
-                for s in ['eval_' + v for v in cfg.val_on_sets]:
-                    self.__build_device_graph__(which_set=s)
+                for s in cfg.val_on_sets:
+                    self.__build_device_graph__(which_set=s, is_training=False)
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
@@ -349,7 +351,7 @@ class Experiment(object):
                                                  axis=0), [2, -1])))
                     self.summary_text_op = tf.summary.merge(summary_text)
 
-    def __build_device_graph__(self, which_set):
+    def __build_device_graph__(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
 
         This function creates a copy of the computation graph on each GPU. The
@@ -372,7 +374,6 @@ class Experiment(object):
         depending on the batch size.  batch size.
         '''
         cfg = self.cfg
-        is_training = which_set == 'train'
         reuse_variables = not is_training
 
         labels_per_gpu = self.labels_per_gpu
@@ -568,8 +569,7 @@ class Experiment(object):
             self.val_metrics[which_set] = metrics_out
 
     def run(self):
-        self.__init_sess__()
-        with self.sess:
+        with self.__init_sess__() as self.sess:
             if self.cfg.hyperparams_summaries is not None:
                 # write Hyper parameters text summaries
                 summary_str = self.sess.run(self.summary_text_op)
@@ -580,7 +580,7 @@ class Experiment(object):
 
     def __init_sess__(self):
         cfg = self.cfg
-        with tf.Graph().as_default() as graph:
+        with self.graph.as_default():
             # Group global and local init into one op. Could be split into
             # two different ops and passed to `init_op` and `local_init_op`
             init_op = tf.group(tf.global_variables_initializer(),
@@ -590,7 +590,7 @@ class Experiment(object):
                 max_to_keep=cfg.checkpoints_to_keep)
 
             sv = Supervisor(
-                graph=graph,
+                graph=self.graph,
                 init_op=init_op,
                 summary_op=None,
                 global_step=self.global_step,
@@ -604,24 +604,24 @@ class Experiment(object):
             self.sv = sv
 
             tf_config = tf.ConfigProto(allow_soft_placement=True)
-            sess = sv.managed_session(cfg.supervisor_master, tf_config)
+            sess_gen = sv.managed_session(cfg.supervisor_master, tf_config)
             if self.cfg.debug:
                 from tensorflow.python import debug as tf_debug
-                sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-                sess.add_tensor_filter("has_inf_or_nan",
-                                       tf_debug.has_inf_or_nan)
-            self.sess = sess
+                sess_gen = tf_debug.LocalCLIDebugWrapperSession(sess_gen)
+                sess_gen.add_tensor_filter("has_inf_or_nan",
+                                           tf_debug.has_inf_or_nan)
+            return sess_gen
 
     def __main_loop(self):
         cfg = gflags.cfg
 
-        self.experiment_begin(cfg)
+        self.experiment_begin()
 
         while not self.sv.should_stop():
             self.epoch_id = (self.cum_iter+1) // self.train.nbatches
 
             # Callback
-            self.epoch_begin(cfg)
+            self.epoch_begin()
 
             for batch_id in range(self.train.nbatches):
                 self.cum_iter = self.sv.global_step.eval(self.sess)
@@ -634,7 +634,7 @@ class Experiment(object):
                 # sh = inputs.shape  # do NOT provide a list of shapes
 
                 # Callback
-                self.batch_begin(cfg, minibatch)
+                self.batch_begin(minibatch)
 
                 # Is this batch shorter than batch_size?
                 # Check if this batch will not be processed by all the devices.
@@ -670,12 +670,12 @@ class Experiment(object):
                 feed_dict = {p: v for(p, v) in in_vals}
 
                 # Callback
-                fetch_dict = self.batch_do(cfg, num_devs, feed_dict)
+                fetch_dict = self.batch_do(num_devs, feed_dict)
 
                 # Callback
-                self.batch_end(cfg, minibatch, fetch_dict)
+                self.batch_end(minibatch, fetch_dict)
 
-            self.epoch_end(cfg, minibatch, fetch_dict)
+            self.epoch_end(minibatch, fetch_dict)
 
             # Verify epochs' loop exit conditions
             if self.estop:
@@ -687,13 +687,13 @@ class Experiment(object):
                 self.sv.request_stop()
                 break
 
-        self.experiment_end(cfg, fetch_dict)
+        self.experiment_end(fetch_dict)
         return self.return_val
 
     # ###########
     # Callbacks #
     # ###########
-    def experiment_begin(self, cfg):
+    def experiment_begin(self):
         # Add TqdmHandler
         handler = TqdmHandler()
         handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT, None))
@@ -702,16 +702,16 @@ class Experiment(object):
         logger.addHandler(handler)
 
         tf.logging.info('\nTrain dataset params:\n{}\n'.format(
-            cfg.dataset_params))
+            self.cfg.dataset_params))
         tf.logging.info('Validation dataset params:\n{}\n\n'.format(
-            cfg.valid_params))
-        if pygtk and cfg.debug_of:
+            self.cfg.valid_params))
+        if pygtk and self.cfg.debug_of:
             cv2.namedWindow("rgb-optflow")
 
         self.train = self.Dataset(
             which_set='train',
             return_list=False,
-            **cfg.dataset_params)
+            **self.cfg.dataset_params)
 
         # Setup loop parameters
         self.cum_iter = self.sv.global_step.eval(self.sess)
@@ -725,7 +725,7 @@ class Experiment(object):
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
 
-    def epoch_begin(self, cfg):
+    def epoch_begin(self):
         summary_val = tf.Summary.Value(tag='control_flow/Epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
@@ -737,11 +737,11 @@ class Experiment(object):
                                     '[{elapsed}<{remaining},'
                                     '{rate_fmt}{postfix}]')
 
-    def batch_begin(self, cfg, minibatch):
+    def batch_begin(self, minibatch):
         # TODO move in reconvnets
         x_batch = minibatch['data']
         # Show optical flow for debug
-        if pygtk and cfg.debug_of:
+        if pygtk and self.cfg.debug_of:
             for x_b in x_batch:
                 for x_frame in x_b:
                     rgb_of_frame = np.concatenate(
@@ -754,12 +754,12 @@ class Experiment(object):
 
         # reset_states(model, sh)
 
-    def batch_do(self, cfg, num_devs, feed_dict):
+    def batch_do(self, num_devs, feed_dict):
         # TODO move in reconvnets
         # Do not add noise if loss is less than threshold
         # TODO: It should be IoU or any other metric, but in this
         # case our loss is Dice Coefficient so it's fine
-        self.loss_value = (-1.0 if self.loss_value < -cfg.thresh_loss
+        self.loss_value = (-1.0 if self.loss_value < -self.cfg.thresh_loss
                            else self.loss_value)
 
         train_dict = {
@@ -771,7 +771,7 @@ class Experiment(object):
             'summary_op': self.train_summary_ops[num_devs]}
 
         # Compute (summaries and) loss
-        if self.cum_iter % cfg.train_summary_freq == 0:
+        if self.cum_iter % self.cfg.train_summary_freq == 0:
             fetch_dict = self.sess.run(
                 train_summary_dict,
                 feed_dict=feed_dict)
@@ -789,19 +789,19 @@ class Experiment(object):
              'loss': '{:.3f}'.format(fetch_dict['avg_loss'])})
         self.pbar.update(1)
 
-    def epoch_end(self, cfg):
+    def epoch_end(self, minibatch, fetch_dict):
         self.pbar.close()
         # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
         # Is it also the last epoch?
-        if self.sv.should_stop() or self.epoch_id == cfg.max_epochs - 1:
+        if self.sv.should_stop() or self.epoch_id == self.cfg.max_epochs - 1:
             self.last_epoch = True
 
         # Early stop if patience is over
         self.patience_counter += 1
-        if (self.epoch_id >= cfg.min_epochs and
-                self.patience_counter >= cfg.patience):
+        if (self.epoch_id >= self.cfg.min_epochs and
+                self.patience_counter >= self.cfg.patience):
             self.estop = True
 
         # Validate if last epoch, early stop or we reached valid_every
@@ -810,17 +810,16 @@ class Experiment(object):
         if callable(validate) and (
              self.last_epoch or self.estop or not self.val_skip):
 
-            # TODO do not resort to "eval_"
             # TODO remove cm_reset_ops etc
-            for s in cfg.val_on_sets:
+            for s in self.cfg.val_on_sets:
                 metrics_val[s] = self.validate(
                     self.val_inputs_per_gpu,
-                    self.val_outs['eval_' + s],
-                    self.val_metrics[s],
-                    self.val_summary_ops['eval_' + s],
-                    self.val_cm_reset_ops['eval_' + s],
-                    self.val_cm_update_ops['eval_' + s],
-                    which_set='eval_' + s)
+                    self.val_outs[s],
+                    self.val_metrics_val[s],
+                    self.val_summary_ops[s],
+                    self.val_cm_reset_ops[s],
+                    self.val_cm_update_ops[s],
+                    which_set=s)
 
             # TODO gsheet
             self.history_acc.append([metrics_val.get('valid')])
@@ -831,25 +830,25 @@ class Experiment(object):
                     metrics_val.get('valid') >= best_hist):
                 tf.logging.info('## Best model found! ##')
                 t_save = time()
-                checkpoint_path = os.path.join(cfg.checkpoints_dir,
+                checkpoint_path = os.path.join(self.cfg.checkpoints_dir,
                                                '{}_best.ckpt'.format(
-                                                   cfg.model_name))
+                                                   self.cfg.model_name))
 
                 self.saver.save(self.sess, checkpoint_path,
-                                global_step=cfg.global_step)
+                                global_step=self.cfg.global_step)
                 t_save = time() - t_save
                 tf.logging.info('Checkpoint saved in {}s'.format(t_save))
 
                 self.patience_counter = 0
                 self.estop = False
             # Start skipping again
-            self.val_skip = max(1, cfg.val_every_epochs) - 1
+            self.val_skip = max(1, self.cfg.val_every_epochs) - 1
         else:
             # We skipped validation, decrease the counter
             self.val_skip -= 1
         self.metrics_val = metrics_val
 
-    def experiment_end(self, cfg, fetch_dict):
+    def experiment_end(self, fetch_dict):
         max_valid_idx = np.argmax(np.array(self.history_acc))
         best = self.history_acc[max_valid_idx]
         tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
