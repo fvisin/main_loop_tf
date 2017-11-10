@@ -62,6 +62,12 @@ class Experiment(object):
     def build_model(self, dev_inputs, is_training):
         pass
 
+    # def validate_fn(self, input_placeholders, graph_outs, which_set):
+    #     return dict
+
+    # def metrics_graph_fn(self)
+    #     return metrics_outs, metrics_ops
+
     def __init__(self, flags_argv, Optimizer=None):
         """Create an Experiment object
 
