@@ -594,7 +594,6 @@ class Experiment(object):
                 metrics_val = {}
                 for s in self.cfg.val_on_sets:
                     metrics_val[s] = validate_fn(
-                        self.val_inputs_per_gpu,
                         self.val_graph_outs[s],
                         which_set=s)
                 return metrics_val
@@ -836,7 +835,6 @@ class Experiment(object):
 
             for s in self.cfg.val_on_sets:
                 metrics_val[s] = validate_fn(
-                    self.val_inputs_per_gpu,
                     self.val_graph_outs[s],
                     which_set=s)
 
