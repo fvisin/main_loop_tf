@@ -326,12 +326,12 @@ class Experiment(object):
             # Gradient Average and the rest of the operations are on CPU
             with tf.device('/cpu:0'):
                 # Build the training graph
-                self.__build_device_graph__(which_set='train',
-                                            is_training=True)
+                self.__build_device_graph(which_set='train',
+                                          is_training=True)
 
                 # Build the validation graphs (reusing variables)
                 for s in cfg.val_on_sets:
-                    self.__build_device_graph__(which_set=s, is_training=False)
+                    self.__build_device_graph(which_set=s, is_training=False)
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
@@ -353,7 +353,7 @@ class Experiment(object):
                                                  axis=0), [2, -1])))
                     self.summary_text_op = tf.summary.merge(summary_text)
 
-    def __build_device_graph__(self, which_set, is_training):
+    def __build_device_graph(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
 
         This function creates a copy of the computation graph on each GPU. The
