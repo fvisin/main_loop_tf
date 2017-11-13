@@ -10,8 +10,6 @@ from main_loop_tf import gflags_ext
 gflags.DEFINE_string('optimizer', 'adam', 'The optimizer')
 gflags_ext.DEFINE_multidict('optimizer_params', {},
                             'The params for the optimizer')
-gflags.DEFINE_string('loss_fn', 'sparse_softmax_cross_entropy_with_logits',
-                     'The loss function')
 gflags.DEFINE_bool('stateful_validation', False, 'If True the state of '
                    'the RNNs will be kept to process the next batch (if '
                    'consecutive)')

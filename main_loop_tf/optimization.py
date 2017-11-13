@@ -38,6 +38,7 @@ class DistributedOptimizer(object):
         self.cfg = cfg
         self.initial_lr = cfg.lr
         self.lr_decay = cfg.lr_decay
+        self.global_step = global_step
 
         # Learning rate schedule
         if cfg.lr_decay is None:
@@ -235,7 +236,7 @@ class DistributedOptimizer(object):
                               summaries)
 
     def distributed_minimize(self, loss_outs, is_training=False,
-                             global_step=None, var_list=None,
+                             var_list=None,
                              gate_gradients=None, aggregation_method=None,
                              colocate_gradients_with_ops=False, name=None,
                              grad_loss=None, device=None, dev_set_scope='',
@@ -308,7 +309,7 @@ class DistributedOptimizer(object):
                 # Average the gradients over the devices processed so far
                 grads_and_vars = average_gradients(self.__dev_grads)
                 grad_op = self.apply_gradients(grads_and_vars,
-                                               global_step=global_step,
+                                               global_step=self.global_step,
                                                name=name)
             # TODO: Averaged gradients visualisation
             # Add the histograms of the gradients
