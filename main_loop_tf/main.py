@@ -498,7 +498,6 @@ class Experiment(object):
                         var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
                         aggregation_method=None,
-                        # TODO do we want this?
                         colocate_gradients_with_ops=True,
                         name=None,
                         grad_loss=None,
@@ -720,6 +719,7 @@ class Experiment(object):
         tf.logging.info('Validation dataset params:\n{}\n\n'.format(
             self.cfg.valid_params))
 
+        # TODO find a better name?
         self.train = self.Dataset(
             which_set='train',
             return_list=False,
@@ -730,6 +730,8 @@ class Experiment(object):
         self.estop = False
         self.last_epoch = False
         self.history_scores = []
+        # TODO add a config to select if we want to minimize or maximise
+        # the metric
         self.best_score = 0
 
         # Start the training loop
@@ -864,6 +866,7 @@ class Experiment(object):
                     which_set=s)
 
             valid_score = metrics_val.get('valid')
+            # TODO improve history_scores
             self.history_scores.append([valid_score])
 
             # Did we improve *validation* metric?
