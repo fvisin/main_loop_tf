@@ -82,7 +82,6 @@ class DistributedOptimizer(object):
         self.lr = lr
 
         # Here will be stored lists with one value per device
-        self.dev_losses = []  # per device
         self.dev_comp_losses = {}  # per_loss_comp, per device
         self.dev_avg_losses = []  # per device
         self.dev_avg_comp_losses = {}  # per loss comp, per device
@@ -126,20 +125,6 @@ class DistributedOptimizer(object):
                 type(self.cfg.max_grad_norm))
 
         return gradients, grad_noise_scale
-
-    def get_avg_comp_loss(self, num_splits):
-        """Get the mean of the loss components for the devices in use
-
-        This will be dynamically selected by the numerical value
-        assigned to num_splitsat run-time) and used to update the loss
-        summaries
-        """
-        avg_comp_losses = {}
-        for (key, loss) in self.dev_comp_losses.iteritems():
-            dev_stack = tf.stack(loss, axis=0,
-                                 name='concat_losses_comp_%s' % key)
-            avg_comp_losses[key] = tf.reduce_mean(dev_stack[:num_splits])
-        return avg_comp_losses
 
     def __get_grad_noise_scale(self, gradients):
         if self.cfg.grad_noise_decay is None:
@@ -248,13 +233,6 @@ class DistributedOptimizer(object):
                              'rely on loss_outs')
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
-
-        # Accumulate the loss outputs from each device into a list and
-        # the component of the loss into a dictionary with components as
-        # keys and a list with one value per device as value
-        self.dev_losses.append(loss_outs['loss'])
-        for k, v in loss_outs['components'].iteritems():
-            self.dev_comp_losses.setdefault(k, []).append(v)
 
         grad_op = None
         if is_training:

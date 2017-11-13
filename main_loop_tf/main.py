@@ -408,6 +408,8 @@ class Experiment(object):
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
         devs_model_outs = {}
+        dev_comp_losses = {}
+        dev_losses = []  # per device
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
@@ -462,6 +464,13 @@ class Experiment(object):
                     return a dictionary with attribute 'components'
                     containing the list of terms that composes the total
                     loss!"""
+
+                # Accumulate the loss outputs from each device into a list and
+                # the component of the loss into a dictionary with components
+                # as keys and a list with one value per device as value
+                dev_losses.append(loss_outs['loss'])
+                for k, v in loss_outs['components'].iteritems():
+                    dev_comp_losses.setdefault(k, []).append(v)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
@@ -536,7 +545,7 @@ class Experiment(object):
         # Compute the mean loss over the first num_splits devices (which
         # will be dynamically selected at run-time). This will also be
         # used to update the loss summaries
-        loss_stack = tf.stack(self.dev_losses, axis=0, name='concat_losses')
+        loss_stack = tf.stack(dev_losses, axis=0, name='concat_losses')
         avg_loss = tf.reduce_mean(loss_stack[:self.num_splits])
         self.avg_loss[is_training][which_set] = avg_loss
 
@@ -551,11 +560,17 @@ class Experiment(object):
                           avg_loss, summaries)
 
         if is_training:
-            # Add the per-component loss summaries
-            avg_comp_loss = optimizer.get_avg_comp_loss(self.num_splits)
-            for k, v in avg_comp_loss.iteritems():
-                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % k, v,
-                                  summaries)
+            # Write the summary of the mean per-component loss over the first
+            # num_splits devices (which will be dynamically selected at
+            # run-time). We do not want to clutter the summaries with these
+            # information for validation, but keep in mind that this could be
+            # computed for validation as well
+            for (key, loss) in dev_comp_losses.iteritems():
+                dev_stack = tf.stack(loss, axis=0,
+                                     name='concat_losses_comp_%s' % key)
+                avg_comp_loss = tf.reduce_mean(dev_stack[:self.num_splits])
+                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % key,
+                                  avg_comp_loss, summaries)
 
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
