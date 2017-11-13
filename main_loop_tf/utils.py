@@ -18,20 +18,20 @@ sys.setrecursionlimit(99999)
 tf.logging.set_verbosity(tf.logging.INFO)
 
 
-def split_in_chunks(x_batch, y_batch, gpus_used):
-    '''Return the splits per gpu
+def split_in_chunks(minibatch, num_splits, flatten_keys=['labels']):
+    '''Return the splits per device
 
-    Return
-        * the batches per gpu
-        * the labels elements per gpu
+    Return a list of dictionaries, one per device. Each dictionary
+    contains, for each key, the values that should be allocated on its
+    device.
     '''
-
-    x_batch_chunks = np.array_split(x_batch, gpus_used)
-    y_batch_chunks = np.array_split(y_batch, gpus_used)
-    for i in range(gpus_used):
-        y_batch_chunks[i] = y_batch_chunks[i].flatten()
-
-    return x_batch_chunks, y_batch_chunks
+    # Split the value of each key into chunks
+    for k, v in minibatch.iteritems():
+        minibatch[k] = np.array_split(v, num_splits)
+        if any(k == v for v in flatten_keys):
+            minibatch[k] = [el.flatten() for el in minibatch[k]]
+    return map(dict, zip(*[[(k, v) for v in value]
+                           for k, value in minibatch.items()]))
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,

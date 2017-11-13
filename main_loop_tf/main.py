@@ -55,11 +55,11 @@ class Experiment(object):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_loss(self, dev_labels, model_outs, inputs):
+    def build_loss(self, placeholders, model_outs, is_training):
         pass
 
     @abc.abstractmethod
-    def build_model(self, dev_inputs, is_training):
+    def build_model(self, placeholders, is_training):
         pass
 
     # def validate_fn(self, input_placeholders, graph_outs, which_set):
@@ -265,6 +265,38 @@ class Experiment(object):
         # Build the graph
         self.__build_graph()
 
+    def get_placeholders(self):
+        """Create the graph's placeholders
+
+        Return two lists of placeholders, for training and validation
+        respectively. Keeping them separated allows to train on cropped
+        inputs and validate at full size easily.
+
+        Each list will contain a dictionary per device, with all the
+        placeholders that will be used by the graph on that device.
+        """
+        cfg = self.cfg
+
+        train_placeholders = []
+        val_placeholders = []
+        # Iterate over the devices
+        for i, _ in enumerate(range(cfg.num_splits)):
+            train_ins = tf.placeholder(dtype=cfg._FLOATX,
+                                       shape=cfg.input_shape,
+                                       name='train_inputs_per_gpu_%i' % i)
+            val_ins = tf.placeholder(dtype=cfg._FLOATX,
+                                     shape=cfg.val_input_shape,
+                                     name='val_inputs_per_gpu_%i' % i)
+            targets = tf.placeholder(dtype=np.int32,
+                                     shape=[None],  # flattened
+                                     name='targets_per_gpu_%i' % i)
+            # Note, the keys have to match those of the minibatch
+            train_placeholders.append({'data': train_ins,
+                                       'labels': targets})
+            val_placeholders.append({'data': val_ins,
+                                     'labels': targets})
+        return train_placeholders, val_placeholders
+
     def __build_graph(self):
         cfg = self.cfg
 
@@ -285,6 +317,12 @@ class Experiment(object):
         with self.graph.as_default():
             self.global_step = tf.Variable(0, trainable=False,
                                            name='global_step', dtype='int32')
+            self.num_splits = tf.placeholder(np.int32, shape=None,
+                                             name='num_splits')
+            self.num_batches = tf.placeholder(np.int32, shape=None,
+                                              name='num_batches')
+            self.prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
+                                           name='prev_err')
 
             # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
@@ -298,32 +336,9 @@ class Experiment(object):
             # placeholder_with_default to assign a value to it's input but
             # the batch_size might change dynamically, so we rather
             # replicate the input at runtime.
-            train_inputs_per_gpu = []
-            val_inputs_per_gpu = []
-            labels_per_gpu = []
-            # TODO add function to get the placeholders
-            self.num_splits = tf.placeholder(np.int32, shape=None,
-                                             name='num_splits')
-            self.num_batches = tf.placeholder(np.int32, shape=None,
-                                              name='num_batches')
-            self.prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
-                                           name='prev_err')
-            for i, _ in enumerate(range(cfg.num_splits)):
-                train_inputs_per_gpu.append(tf.placeholder(
-                    dtype=cfg._FLOATX,
-                    shape=cfg.input_shape,
-                    name='inputs_per_gpu_%i' % i))
-                val_inputs_per_gpu.append(tf.placeholder(
-                    dtype=cfg._FLOATX,
-                    shape=cfg.val_input_shape,
-                    name='val_inputs_per_gpu_%i' % i))
-                labels_per_gpu.append(tf.placeholder(
-                    dtype=np.int32,
-                    shape=[None],  # flattened
-                    name='labels_per_gpu_%i' % i))
-            self.train_inputs_per_gpu = train_inputs_per_gpu
-            self.val_inputs_per_gpu = val_inputs_per_gpu
-            self.labels_per_gpu = labels_per_gpu
+            train_placeholders, val_placeholders = self.get_placeholders()
+            self.placeholders = {True: train_placeholders,
+                                 False: val_placeholders}
 
             # Model compilation
             # -----------------
@@ -388,13 +403,11 @@ class Experiment(object):
         cfg = self.cfg
         reuse_variables = not is_training
 
-        labels_per_gpu = self.labels_per_gpu
+        per_dev_placeholders = self.placeholders[is_training]
         if is_training:
             grad_ops = []
-            inputs_per_gpu = self.train_inputs_per_gpu
             summaries_str = 'train_summaries_%s'
         else:
-            inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
         if is_training:
@@ -425,17 +438,14 @@ class Experiment(object):
         # Build a graph for each device, each with its input and output
         # placeholders. Collect the outputs in "towers"
         # -------------------------------------------------------------
-        for device, dev_inputs, dev_labels in zip(cfg.devices,
-                                                  inputs_per_gpu,
-                                                  labels_per_gpu):
+        for device, dev_placeholders in zip(cfg.devices, per_dev_placeholders):
             with tf.name_scope('{}_{}'.format(device_str, which_set)), \
                     tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
                     tf.device(device):
                 reuse_variables = True
 
                 # Model preactivation, activation (softmax) and prediction
-                model_out = self.build_model(dev_inputs, dev_labels,
-                                             is_training)
+                model_out = self.build_model(dev_placeholders, is_training)
                 assert isinstance(model_out, dict), """
                     Your model should return a dictionary"""
                 assert 'out_preact' in model_out, """Your model
@@ -455,12 +465,8 @@ class Experiment(object):
                 # Loss
                 # TODO: create **loss_params to be specified externally
                 # when specializing Experiment
-                loss_outs = self.build_loss(dev_labels, model_out,
-                                            is_training=is_training,
-                                            # l2_reg=weight_decay,
-                                            # gdl=cfg.gdl,
-                                            # tv=cfg.tv,
-                                            inputs=dev_inputs)
+                loss_outs = self.build_loss(dev_placeholders, model_out,
+                                            is_training=is_training)
                 assert loss_outs is not None and isinstance(loss_outs, dict), (
                     """Your loss should return a dictionary""")
                 assert 'loss' in loss_outs, """Your loss function should
@@ -535,14 +541,17 @@ class Experiment(object):
         tf.summary.scalar('control_flow/batch_size_' + which_set,
                           tf.shape(merged_model_outs['pred'])[0], summaries)
 
-        # Concatenate the per-gpu placeholders to get a placeholder for the
-        # full list of gpus and one for the subset to be used for
-        # the minibatch with less batches
-        labels = tf.concat(self.labels_per_gpu, axis=0, name='concat_labels')
-        # Remove the unused batches from the flattened labels
-        # (equivalent to labels[:np.prod(merged_model_outs.shape)])
-        labels = labels[:tf.shape(
-            tf.reshape(merged_model_outs['pred'], [-1]))[0]]
+        # We are trying to be flexible with the placeholders, so we
+        # cannot use it at the moment. I'll keep it here for reference
+        # on how to concatenate the placeholders of the device being used
+        # # Concatenate the per-gpu placeholders to get a placeholder for the
+        # # full list of gpus and one for the subset to be used for
+        # # the minibatch with less batches
+        # labels = tf.concat(self.labels_per_gpu, axis=0, name='concat_labels')
+        # # Remove the unused batches from the flattened labels
+        # # (equivalent to labels[:np.prod(merged_model_outs.shape)])
+        # labels = labels[:tf.shape(
+        #     tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
         # Compute the mean loss over the first num_splits devices (which
         # will be dynamically selected at run-time). This will also be
@@ -772,7 +781,7 @@ class Experiment(object):
         cfg = self.cfg
 
         # inputs and labels
-        x_batch, y_batch = self._minibatch['data'], self._minibatch['labels']
+        x_batch = self._minibatch['data']
         # sh = inputs.shape  # do NOT provide a list of shapes
 
         # Is this batch shorter than batch_size?
@@ -786,27 +795,30 @@ class Experiment(object):
         this_n_splits = len(x_batch) // cfg.batch_size
         if len(x_batch) % cfg.batch_size != 0:
             this_n_splits += 1
-        num_devs = this_n_splits - 1
 
         # Get the per-device inputs
-        # TODO inputs should be a list (as well as placeholders)
-        x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
-                                                         y_batch,
-                                                         this_n_splits)
+        minibatch_chunks = split_in_chunks(self._minibatch, this_n_splits,
+                                           flatten_keys=['labels'])
 
-        # Fill the placeholders with data up to this_n_splits, and
-        # then repeat one of the chunks. Note that this will be
-        # ignored later on (see comment where placeholders are created)
-        in_vals = list(zip_longest(self.train_inputs_per_gpu,
-                                   x_batch_chunks,
-                                   fillvalue=x_batch_chunks[0]))
-        in_vals.extend(list(zip_longest(self.labels_per_gpu,
-                                        y_batch_chunks,
-                                        fillvalue=y_batch_chunks[0])))
-        in_vals.extend([(self.num_splits, this_n_splits)])
-        in_vals.extend([(self.num_batches, len(x_batch))])
-        in_vals.extend([(self.prev_err, self.loss_value)])
-        feed_dict = {p: v for(p, v) in in_vals}
+        # Associate each placeholder (of each device) with its input data. Note
+        # that the data is split in chunk, one per device. If this_n_splits is
+        # smaller than the number of devices, the placeholders of the "extra"
+        # devices are filled with the data of the first chunk. This is
+        # necessary to feed the graph with the expected number of inputs, but
+        # note that the extra outputs and loss will be ignored (see comment
+        # where placeholders are created)
+        feed_dict = {}
+        for p_dict, batch_dict in zip_longest(self.placeholders[True],
+                                              minibatch_chunks,
+                                              fillvalue=minibatch_chunks[0]):
+            for p_name, p_obj in p_dict.iteritems():
+                feed_dict[p_obj] = batch_dict[p_name]
+
+        # Extend the user-defined placeholders with those needed by the
+        # main loop
+        feed_dict[self.num_splits] = this_n_splits
+        feed_dict[self.num_batches] = len(x_batch)
+        feed_dict[self.prev_err] = self.loss_value
 
         # TODO move in reconvnets
         # Do not add noise if loss is less than threshold
