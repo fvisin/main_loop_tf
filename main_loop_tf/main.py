@@ -263,9 +263,9 @@ class Experiment(object):
         self.avg_loss = {True: {}, False: {}}
 
         # Build the graph
-        self.__build_graph__()
+        self.__build_graph()
 
-    def __build_graph__(self):
+    def __build_graph(self):
         cfg = self.cfg
 
         # ============ Train/validation
