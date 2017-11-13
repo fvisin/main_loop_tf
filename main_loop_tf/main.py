@@ -820,13 +820,6 @@ class Experiment(object):
         feed_dict[self.num_batches] = len(x_batch)
         feed_dict[self.prev_err] = self.loss_value
 
-        # TODO move in reconvnets
-        # Do not add noise if loss is less than threshold
-        # TODO: It should be IoU or any other metric, but in this
-        # case our loss is Dice Coefficient so it's fine
-        self.loss_value = (-1.0 if self.loss_value < -self.cfg.thresh_loss
-                           else self.loss_value)
-
         # Use the op for the number of devices the current batch can feed
         num_devs = this_n_splits - 1
         train_dict = {
@@ -846,6 +839,11 @@ class Experiment(object):
         else:
             fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
         self._fetch_dict = fetch_dict
+
+        # Update self.loss_value, used to decide the amount of gradient
+        # noise. Do not add noise if the loss is lower than a threshold
+        loss = fetch_dict['avg_loss']
+        self.loss_value = None if loss < self.cfg.thresh_loss else loss
 
     def batch_end(self):
         self.pbar.set_description('({:3d}) Ep {:d}'.format(self.gstep_val + 1,

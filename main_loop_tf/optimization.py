@@ -148,11 +148,14 @@ class DistributedOptimizer(object):
             grad_noise_scale = eta * tf.pow(tf.cast(
                 self.global_step + 1, self.cfg._FLOATX), -gamma)
         elif self.cfg.grad_noise_decay == 'neural_gpu':
-            eta = self.cfg.grad_noise_scale
-            gamma = 0.55
-            grad_noise_scale = eta * tf.sqrt(
-                self.prev_err * tf.pow(tf.cast(
-                    self.global_step + 1, self.cfg._FLOATX), -gamma))
+            if self.prev_err is None:
+                grad_noise_scale = self.cfg.grad_noise_scale
+            else:
+                eta = self.cfg.grad_noise_scale
+                gamma = 0.55
+                grad_noise_scale = eta * tf.sqrt(
+                    self.prev_err * tf.pow(tf.cast(
+                        self.global_step + 1, self.cfg._FLOATX), -gamma))
         else:
             # Raise ValueError
             raise NotImplementedError('Unknown value of '
