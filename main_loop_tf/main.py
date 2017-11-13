@@ -251,6 +251,7 @@ class Experiment(object):
         # Destroy temporary dataset objects
         train_temp.finish()
         valid_temp.finish()
+        del(train_temp, valid_temp)
 
         self.cfg = cfg
 
@@ -334,7 +335,11 @@ class Experiment(object):
                 self.train_graph_outs = self.__build_device_graph(
                     which_set='train', is_training=True)
 
-                # Build the validation graphs (reusing variables)
+                # Build the validation graphs (reusing variables) for
+                # each subset we want to run validation on. This is
+                # necessary to build two ops, one to use all the devices
+                # and a second to potentially use less if we cannot feed
+                # all of them with the last batch.
                 for s in cfg.val_on_sets:
                     self.val_graph_outs[s] = self.__build_device_graph(
                         which_set=s, is_training=False)
@@ -348,7 +353,7 @@ class Experiment(object):
                         header_list = []
                         text_list = []
                         for v in list_value:
-                            header_list.append('**'+v+'**')
+                            header_list.append('**' + v + '**')
                             text_list.append(str(getattr(cfg, v)))
                         header_tensor = tf.constant(header_list)
                         text_tensor = tf.constant(text_list)
@@ -649,9 +654,8 @@ class Experiment(object):
 
             for batch_id in range(self.train.nbatches):
                 self.cum_iter = self.sv.global_step.eval(self.sess)
-                iter_start = time()
-
                 # inputs and labels
+                iter_start = time()
                 minibatch = self.train.next()
                 self.t_data_load = time() - iter_start
                 x_batch, y_batch = minibatch['data'], minibatch['labels']
@@ -742,7 +746,8 @@ class Experiment(object):
         self.patience_counter = 0
         self.estop = False
         self.last_epoch = False
-        self.history_acc = np.array([]).tolist()
+        self.history_scores = []
+        self.best_score = 0
 
         # Start the training loop
         self.start = time()
@@ -786,6 +791,8 @@ class Experiment(object):
         self.loss_value = (-1.0 if self.loss_value < -self.cfg.thresh_loss
                            else self.loss_value)
 
+        # Use the op for the number of devices the current batch can feed
+        num_devs = this_n_splits - 1
         train_dict = {
             'avg_loss': self.avg_loss[True],
             'train_op': self.train_graph_outs['grad_ops'][num_devs]}
@@ -805,12 +812,11 @@ class Experiment(object):
         return fetch_dict
 
     def batch_end(self, minibatch, fetch_dict):
-        self.cum_iter += 1
-        self.pbar.set_description('({:3d}) Ep {:d}'.format(
-            self.cum_iter + 1, self.epoch_id + 1))
-        self.pbar.set_postfix(
-            {'D': '{:.2f}s'.format(self.t_data_load),
-             'loss': '{:.3f}'.format(fetch_dict['avg_loss'])})
+        self.pbar.set_description('({:3d}) Ep {:d}'.format(self.gstep_val + 1,
+                                                           self.epoch_id + 1))
+        self.pbar.set_postfix({'D': '{:.2f}s'.format(self.t_data_load),
+                               'loss': '{:.3f}'.format(
+                                   fetch_dict['avg_loss'])})
         self.pbar.update(1)
 
     def epoch_end(self, minibatch, fetch_dict):
@@ -818,7 +824,7 @@ class Experiment(object):
         # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
 
-        # Is it also the last epoch?
+        # Did we reach a break condition?
         if self.sv.should_stop() or self.epoch_id == self.cfg.max_epochs - 1:
             self.last_epoch = True
 
@@ -828,9 +834,10 @@ class Experiment(object):
                 self.patience_counter >= self.cfg.patience):
             self.estop = True
 
-        # Validate if last epoch, early stop or we reached valid_every
+        # Should we run validation?
         metrics_val = {}
         validate_fn = getattr(self, "validate_fn", None)
+        # Validate if last epoch, early stop or valid_every iterations passed
         if callable(validate_fn) and (
              self.last_epoch or self.estop or not self.val_skip):
 
@@ -839,23 +846,22 @@ class Experiment(object):
                     self.val_graph_outs[s],
                     which_set=s)
 
-            # TODO gsheet
-            self.history_acc.append([metrics_val.get('valid')])
+            valid_score = metrics_val.get('valid')
+            self.history_scores.append([valid_score])
 
             # Did we improve *validation* metric?
-            best_hist = np.array(self.history_acc).max()
-            if (len(self.history_acc) == 0 or
-                    metrics_val.get('valid') >= best_hist):
-                tf.logging.info('## Best model found! ##')
+            if self.history_scores == [] or valid_score >= self.best_score:
+                self.best_score = valid_score
+                tf.logging.info('## New best model found! ##')
                 t_save = time()
+                # Save best model as a separate checkpoint
                 checkpoint_path = os.path.join(self.cfg.checkpoints_dir,
                                                '{}_best.ckpt'.format(
                                                    self.cfg.model_name))
-
                 self.saver.save(self.sess, checkpoint_path,
-                                global_step=self.cfg.global_step)
+                                global_step=self.global_step)
                 t_save = time() - t_save
-                tf.logging.info('Checkpoint saved in {}s'.format(t_save))
+                tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
 
                 self.patience_counter = 0
                 self.estop = False
@@ -867,8 +873,7 @@ class Experiment(object):
         self.metrics_val = metrics_val
 
     def experiment_end(self, fetch_dict):
-        max_valid_idx = np.argmax(np.array(self.history_acc))
-        best = self.history_acc[max_valid_idx]
+        best = self.best_score
         tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
 
         end = time()

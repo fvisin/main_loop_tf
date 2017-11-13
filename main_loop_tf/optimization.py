@@ -45,17 +45,17 @@ class DistributedOptimizer(object):
             lr = self.initial_lr
         elif cfg.lr_decay == 'exp':
             lr = exponential_decay(cfg.lr,
-                                   self.global_step,
+                                   global_step,
                                    cfg.decay_steps,
                                    cfg.decay_rate,
                                    staircase=cfg.staircase)
         elif cfg.lr_decay == 'piecewise':
-            lr = piecewise_constant(self.global_step,
+            lr = piecewise_constant(global_step,
                                     cfg.lr_boundaries,
                                     cfg.lr_values)
         elif cfg.lr_decay == 'polynomial':
             lr = polynomial_decay(cfg.lr,
-                                  self.global_step,
+                                  global_step,
                                   cfg.decay_steps,
                                   end_learning_rate=cfg.end_lr,
                                   power=cfg.power,
@@ -63,19 +63,19 @@ class DistributedOptimizer(object):
 
         elif cfg.lr_decay == 'natural_exp':
             lr = natural_exp_decay(cfg.lr,
-                                   self.global_step,
+                                   global_step,
                                    cfg.decay_steps,
                                    cfg.decay_rate,
                                    staircase=cfg.staircase)
         elif cfg.lr_decay == 'inverse_time':
             lr = inverse_time_decay(cfg.lr,
-                                    self.global_step,
+                                    global_step,
                                     cfg.decay_steps,
                                     cfg.decay_rate,
                                     staircase=cfg.staircase)
 
         elif cfg.lr_decay == 'STN':
-            epoch = tf.cast(self.global_step / cfg.decay_steps, tf.int32)
+            epoch = tf.cast(global_step / cfg.decay_steps, tf.int32)
             lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
         else:
             raise NotImplementedError()
