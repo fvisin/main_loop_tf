@@ -622,7 +622,7 @@ class Experiment(object):
             # Start training loop
             return self.__main_loop()
 
-    def evaluate(self):
+    def validate(self):
         with self.__init_sess__() as self.sess:
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
