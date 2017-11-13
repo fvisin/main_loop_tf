@@ -647,13 +647,10 @@ class Experiment(object):
         self.experiment_begin()
 
         while not self.sv.should_stop():
-            self.epoch_id = (self.cum_iter+1) // self.train.nbatches
-
             # Callback
             self.epoch_begin()
 
             for batch_id in range(self.train.nbatches):
-                self.cum_iter = self.sv.global_step.eval(self.sess)
                 # inputs and labels
                 iter_start = time()
                 minibatch = self.train.next()
@@ -742,7 +739,6 @@ class Experiment(object):
             **self.cfg.dataset_params)
 
         # Setup loop parameters
-        self.cum_iter = self.sv.global_step.eval(self.sess)
         self.patience_counter = 0
         self.estop = False
         self.last_epoch = False
@@ -753,8 +749,11 @@ class Experiment(object):
         self.start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
+        self.gstep_val = self.global_step.eval(self.sess)
 
     def epoch_begin(self):
+        self.epoch_id = self.gstep_val // self.train.nbatches
+
         summary_val = tf.Summary.Value(tag='control_flow/Epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
@@ -802,7 +801,7 @@ class Experiment(object):
             'summary_op': self.train_graph_outs['summary_ops'][num_devs]}
 
         # Compute (summaries and) loss
-        if self.cum_iter % self.cfg.train_summary_freq == 0:
+        if self.gstep_val % self.cfg.train_summary_freq == 0:
             fetch_dict = self.sess.run(train_summary_dict,
                                        feed_dict=feed_dict)
             self.sv.summary_computed(self.sess,
@@ -818,6 +817,9 @@ class Experiment(object):
                                'loss': '{:.3f}'.format(
                                    fetch_dict['avg_loss'])})
         self.pbar.update(1)
+
+        # Update step counter
+        self.gstep_val = self.global_step.eval(self.sess)
 
     def epoch_end(self, minibatch, fetch_dict):
         self.pbar.close()
