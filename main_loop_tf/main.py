@@ -283,6 +283,9 @@ class Experiment(object):
         tf.logging.info("Building the model ...")
         self.graph = tf.Graph()
         with self.graph.as_default():
+            self.global_step = tf.Variable(0, trainable=False,
+                                           name='global_step', dtype='int32')
+
             # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
             # would want to use a subset of the placeholders, but TF raises
@@ -390,8 +393,6 @@ class Experiment(object):
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
-        self.global_step = tf.Variable(0, trainable=False, name='global_step',
-                                       dtype='int32')
         # Set Optimizer
         if self.UserOptimizer is None:
             optimizer = get_optimizer(cfg.optimizer)(
