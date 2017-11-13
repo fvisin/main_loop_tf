@@ -378,6 +378,9 @@ class Experiment(object):
                                                  axis=0), [2, -1])))
                     self.summary_text_op = tf.summary.merge(summary_text)
 
+    def get_grad_descent_var_list(self):
+        return None
+
     def __build_device_graph(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
 
@@ -497,7 +500,7 @@ class Experiment(object):
                     # create the op to apply it if needed.
                     grad_op = optimizer.minimize(
                         loss_outs=loss_outs,
-                        var_list=None,
+                        var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
                         aggregation_method=None,
                         # TODO do we want this?
