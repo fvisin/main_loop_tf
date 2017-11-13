@@ -378,6 +378,13 @@ class Experiment(object):
                                                  axis=0), [2, -1])))
                     self.summary_text_op = tf.summary.merge(summary_text)
 
+    def get_loss_extra_params(self):
+        """Add extra parameters to the loss function
+
+        Allow to potentially add extra parameters to the symbolic loss
+        function"""
+        return {}
+
     def get_grad_descent_var_list(self):
         return None
 
@@ -466,10 +473,10 @@ class Experiment(object):
                     devs_model_outs.setdefault(k, []).append(v)
 
                 # Loss
-                # TODO: create **loss_params to be specified externally
-                # when specializing Experiment
+                loss_params = self.get_loss_extra_params()
                 loss_outs = self.build_loss(dev_placeholders, model_out,
-                                            is_training=is_training)
+                                            is_training=is_training,
+                                            **loss_params)
                 assert loss_outs is not None and isinstance(loss_outs, dict), (
                     """Your loss should return a dictionary""")
                 assert 'loss' in loss_outs, """Your loss function should
