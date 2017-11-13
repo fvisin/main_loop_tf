@@ -389,21 +389,26 @@ class Experiment(object):
         reuse_variables = not is_training
 
         labels_per_gpu = self.labels_per_gpu
-        grad_ops = []
         if is_training:
+            grad_ops = []
             inputs_per_gpu = self.train_inputs_per_gpu
             summaries_str = 'train_summaries_%s'
         else:
             inputs_per_gpu = self.val_inputs_per_gpu
             summaries_str = 'val_%s_summaries' % which_set + '_%s'
 
-        # Set Optimizer
-        if self.UserOptimizer is None:
-            optimizer = get_optimizer(cfg.optimizer)(
-                cfg=cfg, global_step=self.global_step)
-        else:
-            optimizer = self.UserOptimizer(
-                cfg=cfg, global_step=self.global_step)
+        if is_training:
+            # Create a stateful Optimizer object
+            if self.UserOptimizer is None:
+                optimizer = get_optimizer(cfg.optimizer)(
+                    cfg=cfg, global_step=self.global_step)
+            else:
+                optimizer = self.UserOptimizer(
+                    cfg=cfg, global_step=self.global_step)
+            if hasattr(self, 'optimizer'):
+                raise ValueError('Training on multiple sets is not '
+                                 'supported.')
+            self.optimizer = optimizer
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
@@ -481,24 +486,21 @@ class Experiment(object):
                     with tf.name_scope(scope_str) as dev_set_scope:
                         tf.summary.scalar('Loss', loss_outs['loss'], these_s)
 
-                # Compute loss, gradients, add noise to the gradient and
-                # create the op to apply it if needed.
-                # Note that has to be called in validation as well to
-                # compute the loss.
-                grad_op = optimizer.minimize(
-                    loss_outs=loss_outs,
-                    var_list=None,
-                    gate_gradients=None,
-                    aggregation_method=None,
-                    # TODO do we want this?
-                    colocate_gradients_with_ops=True,
-                    name=None,
-                    grad_loss=None,
-                    device=device,
-                    dev_set_scope=dev_set_scope,
-                    is_training=is_training,
-                    summaries=these_s)
-                if is_training:  # dev_train_op will be None otherwise
+                if is_training:
+                    # Compute gradients, add noise to the gradient and
+                    # create the op to apply it if needed.
+                    grad_op = optimizer.minimize(
+                        loss_outs=loss_outs,
+                        var_list=None,
+                        gate_gradients=None,
+                        aggregation_method=None,
+                        # TODO do we want this?
+                        colocate_gradients_with_ops=True,
+                        name=None,
+                        grad_loss=None,
+                        device=device,
+                        dev_set_scope=dev_set_scope,
+                        summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
                     # of the list updates the gradients of the devices *up to*
                     # the t-th device

@@ -212,7 +212,7 @@ class DistributedOptimizer(object):
     def minimize(self, loss_outs, var_list=None, gate_gradients=None,
                  aggregation_method=None, colocate_gradients_with_ops=False,
                  name=None, grad_loss=None, device=None, dev_set_scope='',
-                 is_training=False, summaries=None, loss=None):
+                 summaries=None, loss=None):
         """Minimize over multiple devices with grad noise
 
         Extend Optimizer.minimize() in several ways:
@@ -234,58 +234,56 @@ class DistributedOptimizer(object):
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
-        grad_op = None
-        if is_training:
-            # This device's gradients
-            grads_and_vars = self.compute_gradients(
-                loss_outs['loss'], var_list=var_list,
-                gate_gradients=gate_gradients,
-                aggregation_method=aggregation_method,
-                colocate_gradients_with_ops=colocate_gradients_with_ops,
-                grad_loss=grad_loss)
+        # This device's gradients
+        grads_and_vars = self.compute_gradients(
+            loss_outs['loss'], var_list=var_list,
+            gate_gradients=gate_gradients,
+            aggregation_method=aggregation_method,
+            colocate_gradients_with_ops=colocate_gradients_with_ops,
+            grad_loss=grad_loss)
 
-            # Add noise and multipliers to gradient
-            grads_and_vars, grad_noise_scale = self.__process_gradients(
-                grads_and_vars)
+        # Add noise and multipliers to gradient
+        grads_and_vars, grad_noise_scale = self.__process_gradients(
+            grads_and_vars)
 
-            # Create some summaries
-            self.__add_summaries(grads_and_vars, grad_noise_scale,
-                                 dev_set_scope, summaries)
+        # Create some summaries
+        self.__add_summaries(grads_and_vars, grad_noise_scale,
+                             dev_set_scope, summaries)
 
-            # Gradient descent
-            # ----------------
-            # Save gradients for each device, to be averaged out
-            self.__dev_grads.append(grads_and_vars)
+        # Gradient descent
+        # ----------------
+        # Save gradients for each device, to be averaged out
+        self.__dev_grads.append(grads_and_vars)
 
-            # Note the collection contains the ops for the devices processed
-            # so far
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        # Note the collection contains the ops for the devices processed
+        # so far
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
-            vars_with_grad = [v for g, v in grads_and_vars if g is not None]
-            if not vars_with_grad:
-                raise ValueError(
-                    "No gradients provided for any variable, check your graph "
-                    "for ops that do not support gradients, between variables "
-                    "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
-                                         loss))
+        vars_with_grad = [v for g, v in grads_and_vars if g is not None]
+        if not vars_with_grad:
+            raise ValueError(
+                "No gradients provided for any variable, check your graph "
+                "for ops that do not support gradients, between variables "
+                "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
+                                     loss))
 
-            # TODO Do we still need this?
-            # Impose graph dependency so that update operations are computed
-            # even if they're are not explicit in the outputs of session.run
-            with tf.control_dependencies(update_ops):
-                # Average the gradients over the devices processed so far
-                grads_and_vars = average_gradients(self.__dev_grads)
-                grad_op = self.apply_gradients(grads_and_vars,
-                                               global_step=self.global_step,
-                                               name=name)
-            # TODO: Averaged gradients visualisation
-            # Add the histograms of the gradients
-            # with tf.name_scope('grad_summaries'):
-            #     for grad, var in grads_and_vars:
-            #         if grad is not None:
-            #             summaries['training'].append(
-            #                 tf.summary.histogram(
-            #                   var.op.name + '/gradients', grad))
+        # TODO Do we still need this?
+        # Impose graph dependency so that update operations are computed
+        # even if they're are not explicit in the outputs of session.run
+        with tf.control_dependencies(update_ops):
+            # Average the gradients over the devices processed so far
+            grads_and_vars = average_gradients(self.__dev_grads)
+            grad_op = self.apply_gradients(grads_and_vars,
+                                           global_step=self.global_step,
+                                           name=name)
+        # TODO: Averaged gradients visualisation
+        # Add the histograms of the gradients
+        # with tf.name_scope('grad_summaries'):
+        #     for grad, var in grads_and_vars:
+        #         if grad is not None:
+        #             summaries['training'].append(
+        #                 tf.summary.histogram(
+        #                   var.op.name + '/gradients', grad))
 
         return grad_op
 
