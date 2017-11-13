@@ -476,17 +476,23 @@ class Experiment(object):
                 # create the op to apply it if needed.
                 # Note that has to be called in validation as well to
                 # compute the loss.
-                # Create a *list* of gradient update ops. The t-th element
-                # of the list updates the gradients of the devices *up to*
-                # the t-th device
-                grad_op = optimizer.distributed_minimize(
+                grad_op = optimizer.minimize(
                     loss_outs=loss_outs,
-                    is_training=is_training,
+                    var_list=None,
+                    gate_gradients=None,
+                    aggregation_method=None,
+                    # TODO do we want this?
+                    colocate_gradients_with_ops=True,
+                    name=None,
+                    grad_loss=None,
                     device=device,
                     dev_set_scope=dev_set_scope,
-                    summaries=these_s,
-                    colocate_gradients_with_ops=True)
+                    is_training=is_training,
+                    summaries=these_s)
                 if is_training:  # dev_train_op will be None otherwise
+                    # Create a *list* of gradient update ops. The t-th element
+                    # of the list updates the gradients of the devices *up to*
+                    # the t-th device
                     grad_ops.append(grad_op)
 
             # Print regularization

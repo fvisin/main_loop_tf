@@ -224,22 +224,22 @@ class DistributedOptimizer(object):
                               tf.global_norm(list(zip(*grads_and_vars))[0]),
                               summaries)
 
-    def distributed_minimize(self, loss_outs, is_training=False,
-                             var_list=None,
-                             gate_gradients=None, aggregation_method=None,
-                             colocate_gradients_with_ops=False, name=None,
-                             grad_loss=None, device=None, dev_set_scope='',
-                             summaries=None, loss=None):
-        """Distributed minimize with grad noise
+    def minimize(self, loss_outs, var_list=None, gate_gradients=None,
+                 aggregation_method=None, colocate_gradients_with_ops=False,
+                 name=None, grad_loss=None, device=None, dev_set_scope='',
+                 is_training=False, summaries=None, loss=None):
+        """Minimize over multiple devices with grad noise
 
-        Extend minimize() in several ways:
+        Extend Optimizer.minimize() in several ways:
             * Add noise and multipliers
             * Add various gradient summaries
             * Be stateful and keep trace of previously computed
-            gradients
+              gradients
             * Add a control dependency on update ops before computing
               the gradient
             * Average gradient over the devices processed so far.
+            * It also does not have global_step as an argument, as it's
+              in the state of the optimizer already.
         """
         if loss is not None:
             raise ValueError('This Optimizer expects a dictionary of '
