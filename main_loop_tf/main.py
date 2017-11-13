@@ -260,8 +260,7 @@ class Experiment(object):
 
         # Init variables
         self.val_graph_outs = {}
-
-        self.avg_loss = {}
+        self.avg_loss = {True: {}, False: {}}
 
         # Build the graph
         self.__build_graph__()
@@ -528,6 +527,13 @@ class Experiment(object):
         labels = labels[:tf.shape(
             tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
+        # Compute the mean loss over the first num_splits devices (which
+        # will be dynamically selected at run-time). This will also be
+        # used to update the loss summaries
+        loss_stack = tf.stack(self.dev_losses, axis=0, name='concat_losses')
+        avg_loss = tf.reduce_mean(loss_stack[:self.num_splits])
+        self.avg_loss[is_training][which_set] = avg_loss
+
         #############
         # SUMMARIES #
         #############
@@ -535,9 +541,9 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_splits at run-time) and used
         # to update the loss summaries correctly
-        self.avg_loss[is_training] = optimizer.get_avg_loss(self.num_splits)
         tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
-                          self.avg_loss[is_training], summaries)
+                          avg_loss, summaries)
+
         if is_training:
             # Add the per-component loss summaries
             avg_comp_loss = optimizer.get_avg_comp_loss(self.num_splits)
@@ -789,10 +795,10 @@ class Experiment(object):
         # Use the op for the number of devices the current batch can feed
         num_devs = this_n_splits - 1
         train_dict = {
-            'avg_loss': self.avg_loss[True],
+            'avg_loss': self.avg_loss[True]['train'],
             'train_op': self.train_graph_outs['grad_ops'][num_devs]}
         train_summary_dict = {
-            'avg_loss': self.avg_loss[True],
+            'avg_loss': self.avg_loss[True]['train'],
             'train_op': self.train_graph_outs['grad_ops'][num_devs],
             'summary_op': self.train_graph_outs['summary_ops'][num_devs]}
 

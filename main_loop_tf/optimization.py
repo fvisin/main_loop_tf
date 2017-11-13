@@ -127,17 +127,6 @@ class DistributedOptimizer(object):
 
         return gradients, grad_noise_scale
 
-    def get_avg_loss(self, num_splits):
-        """Get the mean loss for the devices in use
-
-        This will be dynamically selected by the numerical value
-        assigned to num_splits at run-time) and used to update the loss
-        summaries
-        """
-        loss_stack = tf.stack(self.dev_losses, axis=0,
-                              name='concat_losses')
-        return tf.reduce_mean(loss_stack[:num_splits])
-
     def get_avg_comp_loss(self, num_splits):
         """Get the mean of the loss components for the devices in use
 
