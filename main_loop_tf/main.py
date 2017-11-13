@@ -642,65 +642,18 @@ class Experiment(object):
             return sess_gen
 
     def __main_loop(self):
-        cfg = gflags.cfg
 
         self.experiment_begin()
 
         while not self.sv.should_stop():
-            # Callback
             self.epoch_begin()
 
             for batch_id in range(self.train.nbatches):
-                # inputs and labels
-                iter_start = time()
-                minibatch = self.train.next()
-                self.t_data_load = time() - iter_start
-                x_batch, y_batch = minibatch['data'], minibatch['labels']
-                # sh = inputs.shape  # do NOT provide a list of shapes
+                self.batch_begin()
+                self.batch_do()
+                self.batch_end()
 
-                # Callback
-                self.batch_begin(minibatch)
-
-                # Is this batch shorter than batch_size?
-                # Check if this batch will not be processed by all the devices.
-                # When the sequence is shorter than seq_length or the number of
-                # batches is smaller than batch_size, the batch will be smaller
-                # than usual. When this happens we might not be able to feed
-                # all the CPUs/GPUs altogether. In that case here we compute
-                # the number of GPUs that we can use for the current batch
-                # Spread the batch over the lowest number of GPUs
-                this_n_splits = len(x_batch) // cfg.batch_size
-                if len(x_batch) % cfg.batch_size != 0:
-                    this_n_splits += 1
-                num_devs = this_n_splits - 1
-
-                # Get the per-device inputs
-                # TODO inputs should be a list (as well as placeholders)
-                x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
-                                                                 y_batch,
-                                                                 this_n_splits)
-
-                # Fill the placeholders with data up to this_n_splits, and
-                # then repeat one of the chunks. Note that this will be
-                # ignored later on (see comment where placeholders are created)
-                in_vals = list(zip_longest(self.train_inputs_per_gpu,
-                                           x_batch_chunks,
-                                           fillvalue=x_batch_chunks[0]))
-                in_vals.extend(list(zip_longest(self.labels_per_gpu,
-                                                y_batch_chunks,
-                                                fillvalue=y_batch_chunks[0])))
-                in_vals.extend([(self.num_splits, this_n_splits)])
-                in_vals.extend([(self.num_batches, len(x_batch))])
-                in_vals.extend([(self.prev_err, self.loss_value)])
-                feed_dict = {p: v for(p, v) in in_vals}
-
-                # Callback
-                fetch_dict = self.batch_do(num_devs, feed_dict)
-
-                # Callback
-                self.batch_end(minibatch, fetch_dict)
-
-            self.epoch_end(minibatch, fetch_dict)
+            self.epoch_end()
 
             # Verify epochs' loop exit conditions
             if self.estop:
@@ -712,7 +665,7 @@ class Experiment(object):
                 self.sv.request_stop()
                 break
 
-        self.experiment_end(fetch_dict)
+        self.experiment_end()
         return self.return_val
 
     # ###########
@@ -765,10 +718,14 @@ class Experiment(object):
                                     '[{elapsed}<{remaining},'
                                     '{rate_fmt}{postfix}]')
 
-    def batch_begin(self, minibatch):
+    def batch_begin(self):
+        iter_start = time()
+        self._minibatch = self.train.next()
+        self._t_data_load = time() - iter_start
+
         # TODO move in reconvnets
-        x_batch = minibatch['data']
         # Show optical flow for debug
+        x_batch = self._minibatch['data']
         if pygtk and self.cfg.debug_of:
             for x_b in x_batch:
                 for x_frame in x_b:
@@ -782,7 +739,46 @@ class Experiment(object):
 
         # reset_states(model, sh)
 
-    def batch_do(self, num_devs, feed_dict):
+    def batch_do(self):
+        cfg = self.cfg
+
+        # inputs and labels
+        x_batch, y_batch = self._minibatch['data'], self._minibatch['labels']
+        # sh = inputs.shape  # do NOT provide a list of shapes
+
+        # Is this batch shorter than batch_size?
+        # Check if this batch will not be processed by all the devices.
+        # When the sequence is shorter than seq_length or the number of
+        # batches is smaller than batch_size, the batch will be smaller
+        # than usual. When this happens we might not be able to feed
+        # all the CPUs/GPUs altogether. In that case here we compute
+        # the number of GPUs that we can use for the current batch
+        # Spread the batch over the lowest number of GPUs
+        this_n_splits = len(x_batch) // cfg.batch_size
+        if len(x_batch) % cfg.batch_size != 0:
+            this_n_splits += 1
+        num_devs = this_n_splits - 1
+
+        # Get the per-device inputs
+        # TODO inputs should be a list (as well as placeholders)
+        x_batch_chunks, y_batch_chunks = split_in_chunks(x_batch,
+                                                         y_batch,
+                                                         this_n_splits)
+
+        # Fill the placeholders with data up to this_n_splits, and
+        # then repeat one of the chunks. Note that this will be
+        # ignored later on (see comment where placeholders are created)
+        in_vals = list(zip_longest(self.train_inputs_per_gpu,
+                                   x_batch_chunks,
+                                   fillvalue=x_batch_chunks[0]))
+        in_vals.extend(list(zip_longest(self.labels_per_gpu,
+                                        y_batch_chunks,
+                                        fillvalue=y_batch_chunks[0])))
+        in_vals.extend([(self.num_splits, this_n_splits)])
+        in_vals.extend([(self.num_batches, len(x_batch))])
+        in_vals.extend([(self.prev_err, self.loss_value)])
+        feed_dict = {p: v for(p, v) in in_vals}
+
         # TODO move in reconvnets
         # Do not add noise if loss is less than threshold
         # TODO: It should be IoU or any other metric, but in this
@@ -808,20 +804,20 @@ class Experiment(object):
                                      fetch_dict['summary_op'])
         else:
             fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
-        return fetch_dict
+        self._fetch_dict = fetch_dict
 
-    def batch_end(self, minibatch, fetch_dict):
+    def batch_end(self):
         self.pbar.set_description('({:3d}) Ep {:d}'.format(self.gstep_val + 1,
                                                            self.epoch_id + 1))
-        self.pbar.set_postfix({'D': '{:.2f}s'.format(self.t_data_load),
-                               'loss': '{:.3f}'.format(
-                                   fetch_dict['avg_loss'])})
+        avg_loss = self._fetch_dict['avg_loss']
+        self.pbar.set_postfix({'D': '{:.2f}s'.format(self._t_data_load),
+                               'loss': '{:.3f}'.format(avg_loss)})
         self.pbar.update(1)
 
         # Update step counter
         self.gstep_val = self.global_step.eval(self.sess)
 
-    def epoch_end(self, minibatch, fetch_dict):
+    def epoch_end(self):
         self.pbar.close()
         # TODO Add val_every_iter?
         # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
@@ -874,7 +870,7 @@ class Experiment(object):
             self.val_skip -= 1
         self.metrics_val = metrics_val
 
-    def experiment_end(self, fetch_dict):
+    def experiment_end(self):
         best = self.best_score
         tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
 
