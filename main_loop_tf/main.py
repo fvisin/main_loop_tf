@@ -23,18 +23,6 @@ from utils import save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler
 # config module load all flags from source files
 import config  # noqa
 
-import cv2
-try:
-    import pygtk  # noqa
-    import gtk
-    gtk.gdk.threads_init()
-except:
-    import warnings
-    warnings.warn('pygtk is not installed, it will not be possible to '
-                  'debug the optical flow')
-    pygtk = None
-    gtk = None
-
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
@@ -731,8 +719,6 @@ class Experiment(object):
             self.cfg.dataset_params))
         tf.logging.info('Validation dataset params:\n{}\n\n'.format(
             self.cfg.valid_params))
-        if pygtk and self.cfg.debug_of:
-            cv2.namedWindow("rgb-optflow")
 
         self.train = self.Dataset(
             which_set='train',
@@ -770,22 +756,6 @@ class Experiment(object):
         iter_start = time()
         self._minibatch = self.train.next()
         self._t_data_load = time() - iter_start
-
-        # TODO move in reconvnets
-        # Show optical flow for debug
-        x_batch = self._minibatch['data']
-        if pygtk and self.cfg.debug_of:
-            for x_b in x_batch:
-                for x_frame in x_b:
-                    rgb_of_frame = np.concatenate(
-                        [x_frame[..., :3], x_frame[..., 3:]],
-                        axis=1).astype(np.float32)
-                    rgb_of_frame = cv2.cvtColor(rgb_of_frame,
-                                                cv2.COLOR_RGB2BGR)
-                    cv2.imshow("rgb-optflow", rgb_of_frame)
-                    cv2.waitKey(100)
-
-        # reset_states(model, sh)
 
     def batch_do(self):
         cfg = self.cfg
