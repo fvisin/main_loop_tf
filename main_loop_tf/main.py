@@ -854,6 +854,7 @@ class Experiment(object):
         feed_dict[self.num_splits] = this_n_splits
         feed_dict[self.num_batches] = len(x_batch)
         feed_dict[self.prev_err] = self.loss_value
+        self._feed_dict = feed_dict
 
         # Use the op for the number of devices the current batch can feed
         num_devs = this_n_splits - 1
