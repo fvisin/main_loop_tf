@@ -83,6 +83,16 @@ class Experiment(object):
             print('%s' % FLAGS)
             sys.exit(0)
 
+        self.process_cfg_flags()
+
+        # Init variables
+        self.val_graph_outs = {}
+        self.avg_loss = {True: {}, False: {}}
+
+        # Build the graph
+        self.__build_graph()
+
+    def process_cfg_flags(self):
         # Convert FLAGS to namespace, so we can modify it
         from argparse import Namespace
         cfg = Namespace()
@@ -243,17 +253,10 @@ class Experiment(object):
         valid_temp.finish()
         del(train_temp, valid_temp)
 
-        self.cfg = cfg
-
         self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
                          max(1, cfg.val_every_epochs) - 1)
 
-        # Init variables
-        self.val_graph_outs = {}
-        self.avg_loss = {True: {}, False: {}}
-
-        # Build the graph
-        self.__build_graph()
+        self.cfg = cfg
 
     def get_placeholders(self):
         """Create the graph's placeholders
