@@ -474,7 +474,9 @@ class Experiment(object):
         # placeholders. Collect the outputs in "towers"
         # -------------------------------------------------------------
         for device, dev_placeholders in zip(cfg.devices, per_dev_placeholders):
-            with tf.name_scope('{}_{}'.format(device_str, which_set)), \
+            device_str = device.replace('/', '').replace(':', '').lower()
+            dev_set_str = '{}_{}'.format(device_str, which_set)
+            with tf.name_scope(dev_set_str), \
                     tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
                     tf.device(device):
                 reuse_variables = True
