@@ -104,6 +104,8 @@ class Experiment(object):
                         'train_summary_freq', 'use_threads',
                         'val_every_epochs', 'val_on_sets', 'val_skip_first',
                         'val_summary_freq', 'summary_per_subset']
+        if hasattr(self, 'extra_exclude_list'):
+            exclude_list.extend(self.extra_exclude_list)
         param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
                       if k not in exclude_list}
         h = hashlib.md5()
