@@ -384,6 +384,9 @@ class Experiment(object):
         return {}
 
     def get_grad_descent_var_list(self):
+        """Select which variables to train
+
+        Allow to potentially specify which symbolic variables to train on"""
         return None
 
     def __build_device_graph(self, which_set, is_training):
