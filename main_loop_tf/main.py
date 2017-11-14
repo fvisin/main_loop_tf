@@ -53,9 +53,6 @@ class Experiment(object):
     # def validate_fn(self, input_placeholders, graph_outs, which_set):
     #     return dict
 
-    # def metrics_graph_fn(self)
-    #     return metrics_outs, metrics_ops
-
     def __init__(self, flags_argv, Optimizer=None):
         """Create an Experiment object
 
@@ -389,6 +386,33 @@ class Experiment(object):
         Allow to potentially specify which symbolic variables to train on"""
         return None
 
+    def dev_model_out_post(self, model_out, device, dev_placeholders,
+                           dev_set_str, these_s):
+        """Process the model output for visualization
+
+        Allow to potentially symbolically postprocess the output of the
+        model, e.g., for visualization, once the loss has been defined"""
+        return model_out
+
+    def dev_extra_summaries(self, dev_losses, dev_comp_losses, devs_model_outs,
+                            is_training, dev_set_str, these_s):
+        """Add user-defined per-device summaries"""
+        pass
+
+    def extra_summaries(self, merged_model_outs, dev_comp_losses,
+                        devs_model_outs, dev_losses, is_training, summaries):
+        """Add user-defined global summaries"""
+        pass
+
+    def metrics_graph_fn(self, graph_out, merged_model_outs, dev_comp_losses,
+                         devs_model_outs, dev_losses, is_training):
+        """Add user-defined metrics to the graph
+
+        Allow the user to define some extra metric into the graph. This
+        should be returned via the graph_out dictionary and/or
+        modifications to self"""
+        pass
+
     def __build_device_graph(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
 
@@ -494,6 +518,13 @@ class Experiment(object):
                 for k, v in loss_outs['components'].iteritems():
                     dev_comp_losses.setdefault(k, []).append(v)
 
+                # Allow to potentially postprocess the output of the
+                # model, e.g., for visualization, once the loss has been
+                # computed
+                model_out = self.dev_model_out_post(model_out, device,
+                                                    dev_placeholders,
+                                                    dev_set_str, these_s)
+
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
                 # TODO:
@@ -521,6 +552,10 @@ class Experiment(object):
                     # of the list updates the gradients of the devices *up to*
                     # the t-th device
                     grad_ops.append(grad_op)
+
+                self.dev_extra_summaries(dev_losses, dev_comp_losses,
+                                         devs_model_outs, is_training,
+                                         dev_set_str, these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -605,6 +640,10 @@ class Experiment(object):
                                                   var_name),
                                      var, summaries)
 
+        self.extra_summaries(merged_model_outs, dev_comp_losses,
+                             devs_model_outs, dev_losses, is_training,
+                             summaries)
+
         # Create a list of summary ops that update the summary collections that
         # we used at graph creation time. Thanks to the way we decremented the
         # elements in the collections each time the graph for one device
@@ -623,11 +662,10 @@ class Experiment(object):
         if is_training:
             graph_out['grad_ops'] = grad_ops
 
-        # User defined function to compute some metrics in the graph
-        if hasattr(self, 'metrics_graph_fn'):
-            metrics_outs, metrics_ops = self.metrics_graph_fn()
-            graph_out['metrics_outs'] = metrics_outs
-            graph_out['metrics_ops'] = metrics_ops
+        # Allow the user to define custom metrics to be applied and
+        # added to graph_out
+        self.metrics_graph_fn(graph_out, merged_model_outs, dev_comp_losses,
+                              devs_model_outs, dev_losses, is_training)
 
         return graph_out
 
