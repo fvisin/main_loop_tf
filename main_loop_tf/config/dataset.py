@@ -14,6 +14,11 @@ gflags.DEFINE_integer('seq_per_subset', None, 'Limit the number of sequences '
                       'per subset (i.e., video or prefix or directory).  If '
                       'zero all the possible sequences will be returned',
                       lower_bound=0)
+gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
+                   'the first and last frame of each video to allow for '
+                   'middle frame prediction')
+gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
+                   'the middle frame segmentation mask only for each sequence')
 gflags.DEFINE_integer('overlap', None, 'The overlap (in number of frames) '
                       'of consecutive sequences of the same video for '
                       'training. If negative not all the frames will be '

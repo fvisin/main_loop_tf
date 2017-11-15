@@ -26,12 +26,6 @@ import config  # noqa
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
-gflags.DEFINE_bool('return_extended_sequences', False, 'If True, repeats '
-                   'the first and last frame of each video to allow for '
-                   'middle frame prediction')
-gflags.DEFINE_bool('return_middle_frame_only', False, 'If True, return '
-                   'the middle frame segmentation mask only for each sequence')
-
 gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
                      'for the checkpoint file')
 gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
@@ -205,7 +199,6 @@ class Experiment(object):
             'overlap': cfg.val_overlap,
             'shuffle_at_each_epoch': (cfg.val_overlap is not None and
                                       cfg.val_overlap != 0),
-            'return_middle_frame_only': False,
             'one_subset_per_batch': True,  # prevent multiple subsets
             'use_threads': False,  # prevent shuffling
             # prevent crop
