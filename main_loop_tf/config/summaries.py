@@ -21,6 +21,8 @@ gflags.DEFINE_bool('show_heatmaps_summaries', False, 'Whether to save the '
                    'per each class')
 gflags.DEFINE_bool('save_rec_videos', False, 'Whether to save '
                    'reconstruction videos')
+gflags.DEFINE_bool('save_ref_videos', False, 'Whether to save '
+                   'refinement videos')
 gflags.DEFINE_bool('save_segm_videos', False, 'Whether to save '
                    'segmentation videos')
 gflags.DEFINE_bool('save_of_videos', False, 'Whether to save '

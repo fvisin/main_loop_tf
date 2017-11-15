@@ -73,6 +73,12 @@ def validate(placeholders,
     if (epoch_id + 1) % 10 == 0 and epoch_id > 10:
         print('\nMemory limit reached. Deleting previous videos..')
         for i in range(epoch_id - 19, epoch_id - 9):
+            if cfg.mask_refinement != '' and cfg.save_ref_videos:
+                video_ref_dir = os.path.join(cfg.checkpoints_dir,
+                                             'videos_ref',
+                                             str(i))
+                if os.path.exists(video_ref_dir):
+                    shutil.rmtree(video_ref_dir)
             if cfg.save_rec_videos:
                 video_rec_dir = os.path.join(cfg.checkpoints_dir,
                                              'videos_rec',
@@ -103,6 +109,9 @@ def validate(placeholders,
     video_segm = []
     video_of = []
     video_obj = []
+    video_ref = []
+    video_ref_dir = os.path.join(cfg.checkpoints_dir, 'videos_ref',
+                                 str(epoch_id))
     video_rec_dir = os.path.join(cfg.checkpoints_dir, 'videos_rec',
                                  str(epoch_id))
     video_segm_dir = os.path.join(cfg.checkpoints_dir, 'videos_segm',
@@ -110,6 +119,9 @@ def validate(placeholders,
     of_dir = os.path.join(cfg.checkpoints_dir, 'videos_of', str(epoch_id))
     video_obj_dir = os.path.join(cfg.checkpoints_dir, 'videos_obj',
                                  str(epoch_id))
+    if cfg.mask_refinement != '' and cfg.save_ref_videos:
+        if not os.path.exists(video_ref_dir):
+            os.makedirs(video_ref_dir)
     if cfg.save_rec_videos:
         if not os.path.exists(video_rec_dir):
             os.makedirs(video_rec_dir)
@@ -138,7 +150,16 @@ def validate(placeholders,
     cidx = (epoch_id*this_set.nbatches)
     frame_idx = cidx
 
-    def save_videos(video_rec, video_segm, video_obj, video_of, prev_subset):
+    def save_videos(video_ref, video_rec, video_segm,
+                    video_obj, video_of, prev_subset):
+        if cfg.mask_refinement != '' and cfg.save_ref_videos:
+            # write segmentation videos
+            frames = np.array(video_ref)
+            sdx = 2 if frames.ndim == 5 else 1
+            frames = frames.reshape([-1] + list(frames.shape[sdx:]))
+            # frames = (frames * 255.0).astype('uint8')
+            fname = os.path.join(video_ref_dir, prev_subset + '.mp4')
+            write_video(frames, fname, 15, codec='X264', mask=True)
         if cfg.save_rec_videos:
             # write reconstruction videos
             frames = np.array(video_rec)
@@ -234,14 +255,18 @@ def validate(placeholders,
             if prev_subset is not None and subset[0] != prev_subset:
                 # Write videos for each subset
                 # ----------------------------
-                save_videos(video_rec, video_segm, video_obj, video_of,
-                            prev_subset)
+                save_videos(video_ref, video_rec, video_segm,
+                            video_obj, video_of, prev_subset)
                 # Save per-subset segmentations for evaluation
                 if (cfg.eval_metrics or
                         (epoch_id + 1) % cfg.metrics_freq == 0):
-                    per_subset_segmentations[prev_subset] = video_segm
+                    if cfg.mask_refinement != '':
+                        per_subset_segmentations[prev_subset] = video_ref
+                    else:
+                        per_subset_segmentations[prev_subset] = video_segm
 
                 video_rec = []
+                video_ref = []
                 video_segm = []
                 video_of = []
                 video_obj = []
@@ -325,6 +350,8 @@ def validate(placeholders,
         y_pred_mask_batch = fetch_dict['pred_mask']
         y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
         y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
+        if cfg.mask_refinement != '':
+            y_refined_batch = fetch_dict['refined_mask']
         if cfg.masks_linear_interpolation or cfg.masks_interp_conv_layer:
             y_pred_mask_fw_batch = fetch_dict['pred_mask_fw']
             y_pred_mask_fw_batch[np.where(y_pred_mask_fw_batch > 0.5)] = 1
@@ -337,10 +364,14 @@ def validate(placeholders,
                 prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
             else:
                 raise NotImplementedError()
+        elif cfg.mask_refinement != '':
+            prev_pred_mask = np.squeeze(y_refined_batch, axis=-1)
         else:
             prev_pred_mask = np.squeeze(y_pred_mask_batch, axis=-1)
         blend_batch = fetch_dict['blend']
         y_prob_batch = fetch_dict['out_act']
+        if cfg.mask_refinement != '' and cfg.save_ref_videos:
+            video_ref.append(y_refined_batch)
         if cfg.save_rec_videos:
             video_rec.append(y_pred_batch)
         if (cfg.save_segm_videos or
@@ -369,11 +400,15 @@ def validate(placeholders,
     class_labels = this_set.mask_labels[:this_set.non_void_nclasses]
     if cfg.compute_mean_iou:
         # Save the metrics for the last subset
-        save_videos(video_rec, video_segm, video_obj, video_of, prev_subset)
+        save_videos(video_ref, video_rec, video_segm,
+                    video_obj, video_of, prev_subset)
 
         # Save per-subset segmentation for evaluation
         if cfg.eval_metrics or (epoch_id + 1) % cfg.metrics_freq == 0:
-            per_subset_segmentations[prev_subset] = video_segm
+            if cfg.mask_refinement != '':
+                per_subset_segmentations[prev_subset] = video_ref
+            else:
+                per_subset_segmentations[prev_subset] = video_segm
             # START EVALUATION #
             evaluation = db_eval(subsets_list,
                                  per_subset_segmentations,

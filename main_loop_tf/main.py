@@ -44,6 +44,9 @@ except:
     pygtk = None
     gtk = None
 
+# Set tensorflow random seed
+tf.set_random_seed(8112017)
+
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
@@ -95,7 +98,7 @@ def __parse_config(argv=None):
                     'group_summaries', 'help', 'hyperparams_summaries',
                     'max_epochs', 'min_epochs', 'model_name', 'nthreads',
                     'patience', 'restore_model', 'save_rec_videos',
-                    'save_segm_videos', 'save_obj_videos',
+                    'save_segm_videos', 'save_obj_videos', 'save_ref_videos',
                     'generate_images', 'eval_metrics', 'measures',
                     'statistics', 'metrics_freq', 'eval_n_jobs'
                     'save_gif_frames_on_disk', 'save_gif_on_disk',
@@ -526,6 +529,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
     loss_fn_rec = cfg.loss_fn_rec
     loss_fn_segm = cfg.loss_fn_segm
     loss_fn_obj = cfg.loss_fn_obj
+    loss_fn_ref = cfg.loss_fn_ref
     devices = cfg.devices
     nclasses = cfg.nclasses
     global_step = cfg.global_step
@@ -577,7 +581,7 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
             # Loss
             # TODO: create **loss_params to  be defined in model repo
             loss_dict = build_loss(dev_labels, model_out_dict, loss_fn_rec,
-                                   loss_fn_segm, loss_fn_obj,
+                                   loss_fn_segm, loss_fn_obj, loss_fn_ref,
                                    is_training=is_training,
                                    l2_reg=weight_decay,
                                    gdl=cfg.gdl,
@@ -592,8 +596,23 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                     obj_pred = tf.argmax(tf.nn.softmax(
                         model_out_dict['obj_prob']),
                         axis=-1)
+                elif cfg.loss_fn_obj == 'dice_coef':
+                    obj_pred = tf.expand_dims(tf.argmax(model_out_dict['obj_prob'],
+                                              axis=-1), -1)
+                elif cfg.loss_fn_obj == 'cross_entropy_sigmoid':
+                    obj_pred = tf.cast(tf.nn.sigmoid(
+                        model_out_dict['obj_prob']) + 0.5, tf.int32)
 
                 model_out_dict['obj_pred'] = obj_pred
+
+            if cfg.mask_refinement != '':
+                if cfg.loss_fn_ref == 'cross_entropy_sigmoid':
+                    refined_mask = tf.cast(tf.nn.sigmoid(
+                        model_out_dict['refined_mask']) + 0.5, tf.int32)
+                elif cfg.loss_fn_ref == 'rmse':
+                    refined_mask = tf.cast(
+                        model_out_dict['refined_mask'] + 0.5, tf.int32)
+                model_out_dict['refined_mask'] = refined_mask
 
             # Group outputs from each model tower
             for k, v in model_out_dict.iteritems():

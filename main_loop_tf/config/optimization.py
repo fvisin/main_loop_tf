@@ -17,7 +17,9 @@ gflags.DEFINE_string('loss_fn_segm', 'cross_entropy_sigmoid', 'The loss '
                      'function for the foreground/background segmentation '
                      'problem')
 gflags.DEFINE_string('loss_fn_obj', 'cross_entropy_softmax', 'The loss '
-                     'function for the objctness problem')
+                     'function for the objectness problem')
+gflags.DEFINE_string('loss_fn_ref', 'cross_entropy_sigmoid', 'The loss '
+                     'function for the refined prediction')
 gflags.DEFINE_bool('stateful_validation', False, 'If True the state of '
                    'the RNNs will be kept to process the next batch (if '
                    'consecutive)')
