@@ -486,12 +486,6 @@ class Experiment(object):
                 assert 'pred' in model_out, """Your model function should
                     return a dictionary with at least attribute 'pred'!"""
 
-                # Accumulate the loss outputs from each device into a
-                # dictionary with the same keys and a list of values,
-                # one for each device
-                for k, v in model_out.iteritems():
-                    devs_model_outs.setdefault(k, []).append(v)
-
                 # Loss
                 loss_params = self.get_loss_extra_params()
                 loss_outs = self.build_loss(dev_placeholders, model_out,
@@ -519,6 +513,12 @@ class Experiment(object):
                 model_out = self.dev_model_out_post(model_out, device,
                                                     dev_placeholders,
                                                     dev_set_str, these_s)
+
+                # Accumulate the loss outputs from each device into a
+                # dictionary with the same keys and a list of values,
+                # one for each device
+                for k, v in model_out.iteritems():
+                    devs_model_outs.setdefault(k, []).append(v)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
