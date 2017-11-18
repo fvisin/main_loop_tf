@@ -120,7 +120,8 @@ class Experiment(object):
             # If the model should not be restored from a checkpoint,
             # change the checkpoints directory by adding an incremental
             # suffix
-            cfg.checkpoints_dir = os.path.join(cfg.checkpoints_dir,
+            cfg.checkpoints_basedir = cfg.checkpoints_dir
+            cfg.checkpoints_dir = os.path.join(cfg.checkpoints_basedir,
                                                cfg.model_name, cfg.hash)
             incr_num = 0
             logdir = cfg.checkpoints_dir
