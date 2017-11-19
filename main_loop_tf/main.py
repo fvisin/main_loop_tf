@@ -27,10 +27,6 @@ import config  # noqa
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
-gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
-                     'for the checkpoint file')
-gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
-                     'Supervisor')
 
 
 class Experiment(object):
@@ -94,11 +90,12 @@ class Experiment(object):
 
         # ============ Hash, (gsheet) and checkpoints
         # Exclude non JSONable and not interesting objects
-        exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
-                        'debug', 'debug_of', 'devices', 'do_validation_only',
-                        'group_summaries', 'help', 'hyperparams_summaries',
-                        'max_epochs', 'min_epochs', 'model_name', 'nthreads',
-                        'patience', 'restore_model',
+        exclude_list = ['checkpoints_basedir', 'checkpoints_to_keep',
+                        'dataset', 'debug', 'debug_of', 'devices',
+                        'do_validation_only', 'suite_name', 'group_summaries',
+                        'help', 'hyperparams_summaries', 'max_epochs',
+                        'min_epochs', 'model_name', 'model_suffix', 'nthreads',
+                        'patience', 'restore_model', 'restore_suite',
                         'save_gif_frames_on_disk', 'save_gif_on_disk',
                         'save_raw_predictions_on_disk',
                         'show_heatmaps_summaries', 'show_samples_summaries',
@@ -117,36 +114,48 @@ class Experiment(object):
                                                      'dataset_loaders',
                                                      'main_loop_tf'])
 
-        if cfg.restore_model is None or cfg.restore_model == 'False':
+        checkpoints_path = cfg.checkpoints_basedir
+        if cfg.suite_name != '':
+            checkpoints_path = os.path.join(checkpoints_path, cfg.suite_name)
+        cfg.checkpoints_path = checkpoints_path
+
+        model_name = cfg.model_name if cfg.model_name != '' else cfg.hash
+        if cfg.model_suffix != '':
+            model_name += cfg.model_suffix
+        save_path = os.path.join(checkpoints_path, model_name)
+        cfg.model_name = model_name
+
+        if cfg.restore_model.lower() == 'false':
             # If the model should not be restored from a checkpoint,
-            # change the checkpoints directory by adding an incremental
-            # suffix
-            cfg.checkpoints_basedir = cfg.checkpoints_dir
-            cfg.checkpoints_dir = os.path.join(cfg.checkpoints_basedir,
-                                               cfg.model_name, cfg.hash)
+            # and the save path exists, make the save path unique by
+            # adding an incremental suffix
             incr_num = 0
-            logdir = cfg.checkpoints_dir
-            while(os.path.exists(logdir)):
+            tmp_path = save_path
+            while(os.path.exists(save_path)):
                 incr_num += 1
                 if incr_num == 1:
-                    logdir += '_' + str(incr_num)
+                    tmp_path += '_' + str(incr_num)
                 else:
-                    logdir = cfg.checkpoints_dir + '_' + str(incr_num)
-            cfg.checkpoints_dir = logdir
-            del(logdir)
+                    tmp_path = save_path + '_' + str(incr_num)
+            save_path = tmp_path
         else:
-            restore_checkpoints_dir = os.path.join(cfg.checkpoints_dir,
-                                                   cfg.model_name,
-                                                   cfg.restore_model)
-            # If you want to reload a specific  hash
-            if os.path.exists(restore_checkpoints_dir):
-                cfg.checkpoints_dir = restore_checkpoints_dir
-            else:  # If you just want to reload the default hash
-                cfg.checkpoints_dir = os.path.join(
-                    cfg.checkpoints_dir, cfg.model_name, cfg.hash)
-
-        cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
-        cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
+            if cfg.restore_model.lower() not in ['', 'true']:
+                # Use the specified restore path
+                restore_path = cfg.checkpoints_basedir
+                if cfg.restore_suite != '':
+                    restore_path = os.path.join(restore_path,
+                                                cfg.restore_suite)
+                restore_path = os.path.join(restore_path, cfg.restore_model)
+            elif cfg.restore_model.lower() == 'false':
+                # Disable restore
+                restore_path = None
+            else:
+                # Restore path == save path
+                restore_path = os.path.join(save_path)
+        cfg.save_path = save_path
+        cfg.restore_path = restore_path
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
 
         # ============ A bunch of derived params
         cfg._FLOATX = 'float32'
@@ -663,6 +672,8 @@ class Experiment(object):
 
     def run(self):
         with self.__init_sess__() as self.sess:
+            if self.cfg.restore_path:
+                self.saver.restore(self.sess, self.cfg.restore_path)
             if self.cfg.hyperparams_summaries is not None:
                 # write Hyper parameters text summaries
                 summary_str = self.sess.run(self.summary_text_op)
@@ -673,6 +684,8 @@ class Experiment(object):
 
     def validate(self):
         with self.__init_sess__() as self.sess:
+            if self.cfg.restore_path:
+                self.saver.restore(self.sess, self.cfg.restore_path)
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
                 metrics_val = {}
@@ -702,8 +715,7 @@ class Experiment(object):
                 summary_op=None,
                 global_step=self.global_step,
                 # TODO add option to restore best rather than last?
-                logdir=cfg.checkpoints_dir,
-                checkpoint_basename=cfg.model_name,
+                logdir=self.cfg.save_path,
                 saver=self.saver,
                 # session_manager
                 # summary_writer
@@ -919,10 +931,7 @@ class Experiment(object):
                 tf.logging.info('## New best model found! ##')
                 t_save = time()
                 # Save best model as a separate checkpoint
-                checkpoint_path = os.path.join(self.cfg.checkpoints_dir,
-                                               '{}_best.ckpt'.format(
-                                                   self.cfg.model_name))
-                self.saver.save(self.sess, checkpoint_path,
+                self.saver.save(self.sess, self.cfg.save_path + '_best.ckpt',
                                 global_step=self.global_step)
                 t_save = time() - t_save
                 tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
