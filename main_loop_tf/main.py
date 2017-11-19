@@ -673,7 +673,12 @@ class Experiment(object):
     def run(self):
         with self.__init_sess__() as self.sess:
             if self.cfg.restore_path:
-                self.saver.restore(self.sess, self.cfg.restore_path)
+                try:
+                    self.saver.restore(self.sess, self.cfg.restore_path)
+                except:
+                    tf.logging.debug('Cannot restore model:\n{}'.format(
+                                         self.cfg.restore_path))
+
             if self.cfg.hyperparams_summaries is not None:
                 # write Hyper parameters text summaries
                 summary_str = self.sess.run(self.summary_text_op)
