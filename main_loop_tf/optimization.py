@@ -245,6 +245,15 @@ class DistributedOptimizer(object):
             colocate_gradients_with_ops=colocate_gradients_with_ops,
             grad_loss=grad_loss)
 
+        # Check if no gradient
+        vars_with_grad = [v for g, v in grads_and_vars if g is not None]
+        if not vars_with_grad:
+            raise ValueError(
+                "No gradients provided for any variable, check your graph "
+                "for ops that do not support gradients, between variables "
+                "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
+                                     loss))
+
         # Add noise and multipliers to gradient
         grads_and_vars, grad_noise_scale = self.__process_gradients(
             grads_and_vars)
@@ -258,27 +267,12 @@ class DistributedOptimizer(object):
         # Save gradients for each device, to be averaged out
         self.__dev_grads.append(grads_and_vars)
 
-        # Note the collection contains the ops for the devices processed
-        # so far
-        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        # Average the gradients over the devices processed so far
+        grads_and_vars = average_gradients(self.__dev_grads)
+        grad_op = self.apply_gradients(grads_and_vars,
+                                       global_step=self.global_step,
+                                       name=name)
 
-        vars_with_grad = [v for g, v in grads_and_vars if g is not None]
-        if not vars_with_grad:
-            raise ValueError(
-                "No gradients provided for any variable, check your graph "
-                "for ops that do not support gradients, between variables "
-                "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
-                                     loss))
-
-        # TODO Do we still need this?
-        # Impose graph dependency so that update operations are computed
-        # even if they're are not explicit in the outputs of session.run
-        with tf.control_dependencies(update_ops):
-            # Average the gradients over the devices processed so far
-            grads_and_vars = average_gradients(self.__dev_grads)
-            grad_op = self.apply_gradients(grads_and_vars,
-                                           global_step=self.global_step,
-                                           name=name)
         # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients
         # with tf.name_scope('grad_summaries'):
