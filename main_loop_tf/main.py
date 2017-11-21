@@ -18,7 +18,8 @@ from tqdm import tqdm
 
 import gflags
 from optimization import get_optimizer
-from utils import save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler
+from utils import (recursive_dict_stack, recursive_truncate_dict,
+                   save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler)
 
 # config module load all flags from source files
 import config  # noqa
@@ -388,18 +389,18 @@ class Experiment(object):
         model, e.g., for visualization, once the loss has been defined"""
         return model_out
 
-    def dev_extra_summaries(self, dev_losses, dev_comp_losses, devs_model_outs,
+    def dev_extra_summaries(self, stacked_model_outs, stacked_loss_outs,
                             is_training, dev_set_str, these_s):
         """Add user-defined per-device summaries"""
         pass
 
-    def extra_summaries(self, merged_model_outs, dev_comp_losses,
-                        devs_model_outs, dev_losses, is_training, summaries):
+    def extra_summaries(self, stacked_model_outs, stacked_loss_outs,
+                        is_training, these_s):
         """Add user-defined global summaries"""
         pass
 
-    def metrics_graph_fn(self, graph_out, merged_model_outs, dev_comp_losses,
-                         devs_model_outs, dev_losses, is_training):
+    def metrics_graph_fn(self, graph_out, stacked_model_outs,
+                         stacked_loss_outs, is_training):
         """Add user-defined metrics to the graph
 
         Allow the user to define some extra metric into the graph. This
@@ -454,9 +455,8 @@ class Experiment(object):
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
-        devs_model_outs = {}
-        dev_comp_losses = {}
-        dev_losses = []  # per device
+        stacked_model_outs = {}
+        stacked_loss_outs = {}
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
@@ -500,13 +500,8 @@ class Experiment(object):
                     return a dictionary with attribute 'components'
                     containing the list of terms that composes the total
                     loss!"""
-
-                # Accumulate the loss outputs from each device into a list and
-                # the component of the loss into a dictionary with components
-                # as keys and a list with one value per device as value
-                dev_losses.append(loss_outs['loss'])
-                for k, v in loss_outs['components'].iteritems():
-                    dev_comp_losses.setdefault(k, []).append(v)
+                # Append this device's loss outs to those of prev devices
+                recursive_dict_stack(loss_outs, stacked_loss_outs)
 
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
@@ -514,12 +509,8 @@ class Experiment(object):
                 model_out = self.dev_model_out_post(model_out, device,
                                                     dev_placeholders,
                                                     dev_set_str, these_s)
-
-                # Accumulate the loss outputs from each device into a
-                # dictionary with the same keys and a list of values,
-                # one for each device
-                for k, v in model_out.iteritems():
-                    devs_model_outs.setdefault(k, []).append(v)
+                # Append this device's model outs to those of prev devices
+                recursive_dict_stack(model_out, stacked_model_outs)
 
                 # Remove the name_scopes (the one from the variable_scope and
                 # the one from the name_scope) and assign dev_set_str
@@ -549,9 +540,8 @@ class Experiment(object):
                     # the t-th device
                     grad_ops.append(grad_op)
 
-                self.dev_extra_summaries(dev_losses, dev_comp_losses,
-                                         devs_model_outs, is_training,
-                                         dev_set_str, these_s)
+                self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
+                                         is_training, dev_set_str, these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -573,14 +563,20 @@ class Experiment(object):
 
         # Merge the towers on CPU
         # -----------------------
-        merged_model_outs = {}
-        for k, v in devs_model_outs.iteritems():
-            # Convert from list of tensors to concatenated tensor
-            merged_model_outs[k] = tf.concat(v, axis=0, name='concat_%s' % k)
-            merged_model_outs[k] = merged_model_outs[k][:self.num_batches]
+        # Convert the lists of tensors to concatenated tensors and keep
+        # the first `num_splits`, i.e., dynamically select at runtime
+        # which devices' outputs to consider
+        recursive_truncate_dict(stacked_model_outs, self.num_splits,
+                                parent_k=summaries_str + '/outs',
+                                exact_len=cfg.num_devs)
+        recursive_truncate_dict(stacked_loss_outs, self.num_splits,
+                                parent_k=summaries_str + '/losses',
+                                exact_len=cfg.num_devs)
 
+        # Plot the cumulative batch size of the aggregated predictions
+        # for debugging purposes
         tf.summary.scalar('control_flow/batch_size_' + which_set,
-                          tf.shape(merged_model_outs['pred'])[0], summaries)
+                          tf.shape(stacked_model_outs['pred'])[0], summaries)
 
         # We are trying to be flexible with the placeholders, so we
         # cannot use it at the moment. I'll keep it here for reference
@@ -594,11 +590,9 @@ class Experiment(object):
         # labels = labels[:tf.shape(
         #     tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
-        # Compute the mean loss over the first num_splits devices (which
-        # will be dynamically selected at run-time). This will also be
-        # used to update the loss summaries
-        loss_stack = tf.stack(dev_losses, axis=0, name='concat_losses')
-        avg_loss = tf.reduce_mean(loss_stack[:self.num_splits])
+        # Compute the mean loss over the first num_splits devices. This
+        # will also be used to update the loss summaries
+        avg_loss = tf.reduce_mean(stacked_loss_outs['loss'])
         self.avg_loss[is_training][which_set] = avg_loss
 
         #############
@@ -608,8 +602,8 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_splits at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
-                          avg_loss, summaries)
+        tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Loss', avg_loss,
+                          summaries)
 
         if is_training:
             # Write the summary of the mean per-component loss over the first
@@ -617,11 +611,9 @@ class Experiment(object):
             # run-time). We do not want to clutter the summaries with these
             # information for validation, but keep in mind that this could be
             # computed for validation as well
-            for (key, loss) in dev_comp_losses.iteritems():
-                dev_stack = tf.stack(loss, axis=0,
-                                     name='concat_losses_comp_%s' % key)
-                avg_comp_loss = tf.reduce_mean(dev_stack[:self.num_splits])
-                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % key,
+            for (key, loss) in stacked_loss_outs['components'].iteritems():
+                avg_comp_loss = tf.reduce_mean(loss)
+                tf.summary.scalar(dev_set_scope + 'avg_losses/comp_%s' % key,
                                   avg_comp_loss, summaries)
 
             # Add the histograms for trainable variables
@@ -636,9 +628,8 @@ class Experiment(object):
                                                   var_name),
                                      var, summaries)
 
-        self.extra_summaries(merged_model_outs, dev_comp_losses,
-                             devs_model_outs, dev_losses, is_training,
-                             summaries)
+        self.extra_summaries(stacked_model_outs, stacked_loss_outs,
+                             is_training, these_s)
 
         # Create a list of summary ops that update the summary collections that
         # we used at graph creation time. Thanks to the way we decremented the
@@ -652,7 +643,7 @@ class Experiment(object):
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
         graph_out = {
-            'model_outs': merged_model_outs,
+            'model_outs': stacked_model_outs,
             'summary_ops': summary_ops,
             }
         if is_training:
@@ -660,8 +651,8 @@ class Experiment(object):
 
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
-        self.metrics_graph_fn(graph_out, merged_model_outs, dev_comp_losses,
-                              devs_model_outs, dev_losses, is_training)
+        self.metrics_graph_fn(graph_out, stacked_model_outs, stacked_loss_outs,
+                              is_training)
 
         return graph_out
 

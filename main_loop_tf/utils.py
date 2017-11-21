@@ -257,3 +257,55 @@ def makeColorwheel():
         255. * np.arange(0., MR) / MR)
     colorwheel[col+0:col+MR, 0] = 255.
     return colorwheel, ncols
+
+
+def recursive_dict_stack(a_dict, a_target_dict):
+    """Stack dictionaries values in lists
+
+    Stack all the values returned of the first dictionary in a list in
+    the second dictionary, so that the second dictionary contains the
+    same keys but has a list as associated value, where the values of
+    different calls are accumulated."""
+    for k, v in a_dict.iteritems():
+        if isinstance(v, dict):
+            recursive_dict_stack(
+                v, a_target_dict.setdefault(k, {}))
+        else:
+            a_target_dict.setdefault(k, []).append(v)
+
+
+def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
+                            exact_len=None):
+    """Truncate lists in (nested) dictionaries
+
+    This function gets as an input a dictionary whose values are either
+    lists or a nested dictionaries with the same property. The leafes of this
+    structure are converted from from lists of tensors to concatenated tensors.
+    These are finally truncated to be at most `sym_max_len` long.
+
+    Parameters
+    ----------
+    a_dict: dictionary
+        The dictionary to be truncated
+    sym_max_len: Tensor or Placeholder or Variable
+        The index of the truncation
+    parent_k: string (optional)
+        A string to be prepended to the key of the dict in the name of the op
+    exact_len: int (optional)
+        The number of elements that each list should have. If provided,
+        the length of lists will be checked.
+    """
+    for k, v in a_dict.iteritems():
+        if isinstance(v, dict):
+            k_list = [parent_k, k] if parent_k else [k]
+            recursive_truncate_dict(v, sym_max_len, '_'.join(k_list))
+        else:
+            if not isinstance(v, list):
+                raise ValueError('The input should be a dictionary of lists')
+            if exact_len:
+                assert len(v) == exact_len, 'Key {} len: {}'.format(k, len(v))
+            try:
+                tmp = tf.concat(v, axis=0, name='concat_%s' % k)
+            except ValueError:
+                tmp = tf.stack(v, axis=0, name='stack_%s' % k)
+            a_dict[k] = tmp[:sym_max_len]
