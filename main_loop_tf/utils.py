@@ -127,7 +127,7 @@ def squash_maybe(scope_str, var_name):
         # Squash the first two levels into the name_scope
         # to merge the summaries that belong to the same
         # part of the model together in tensorboard
-        scope_str = '_'.join([scope_str] + var_name.split('/')[:2])
+        scope_str = '.'.join([scope_str] + var_name.split('/')[:2])
         var_name = '/'.join(var_name.split('/')[2:])
     return scope_str, var_name
 

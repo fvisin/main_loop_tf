@@ -470,7 +470,7 @@ class Experiment(object):
             device_str = device.replace('/', '').replace(':', '').lower()
             dev_set_str = phase_set_str + device_str
             # The name scope helps organize the graph in tensorboard
-            # The variable scope is neede to reuse the variables among
+            # The variable scope is needed to reuse the variables among
             # the various graphs
             with tf.name_scope(dev_set_str), \
                     tf.variable_scope('dev_graph', reuse=reuse_variables), \
@@ -505,24 +505,26 @@ class Experiment(object):
                 # Append this device's loss outs to those of prev devices
                 recursive_dict_stack(loss_outs, stacked_loss_outs)
 
+                # Append '_stats' to the name scope and remove the
+                # implicit name scope of the variable_scope
+                scope_str = dev_set_str + '_stats'
+                with tf.name_scope(None):
+                    with tf.name_scope(scope_str) as dev_set_scope:
+                        tf.summary.scalar('Loss', loss_outs['loss'], these_s)
+
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
                 # computed
                 model_out = self.dev_model_out_post(model_out, device,
                                                     dev_placeholders,
-                                                    dev_set_str, these_s)
+                                                    dev_set_scope, dev_set_str,
+                                                    these_s)
                 # Append this device's model outs to those of prev devices
                 recursive_dict_stack(model_out, stacked_model_outs)
 
                 # Add '_stats' to the name scope
                 # To avoid a nested name scope we remove the previous name
                 # scopes (the explicit one from the name_scope and the implicit
-                # one from the variable_scope and
-                scope_str = dev_set_str + '_stats'
-                with tf.name_scope(None):
-                    with tf.name_scope(scope_str):
-                        tf.summary.scalar('loss', loss_outs['loss'], these_s)
-
                 if is_training:
                     # Compute gradients, add noise to the gradient and
                     # create the op to apply it if needed.
@@ -535,7 +537,7 @@ class Experiment(object):
                         name=None,
                         grad_loss=None,
                         device=device,
-                        scope_str=scope_str,
+                        dev_set_str=dev_set_str,
                         summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
                     # of the list updates the gradients of the devices *up to*
@@ -543,7 +545,8 @@ class Experiment(object):
                     grad_ops.append(grad_op)
 
                 self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
-                                         is_training, dev_set_str, these_s)
+                                         is_training, dev_set_scope,
+                                         dev_set_str, these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
