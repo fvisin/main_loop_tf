@@ -165,56 +165,50 @@ class DistributedOptimizer(object):
         return grad_noise_scale
 
     def __add_summaries(self, grads_and_vars, grad_noise_scale,
-                        dev_set_scope, summaries=[]):
+                        scope_str, summaries=[]):
         if summaries == []:
             return
 
-        # Add summary for the noise on the gradient
-        # -----------------------------------------
-        if grad_noise_scale is not None:
-            with tf.name_scope(dev_set_scope):
-                tf.summary.scalar("NoiseGrad", grad_noise_scale,
+        with tf.name_scope(None):
+            with tf.name_scope(scope_str):
+                # Add summary for the noise on the gradient
+                # -----------------------------------------
+                if grad_noise_scale is not None:
+                    tf.summary.scalar("NoiseGrad", grad_noise_scale,
+                                      summaries)
+
+                # Add global norm summary
+                # -----------------------
+                # Remove the name_scopes (the one from the variable_scope
+                # and the one from the name_scope)
+                name = ('clipped_grad_norm' if self.cfg.max_grad_norm else
+                        'grad_norm')
+                tf.summary.scalar('Global_norm/' + name,
+                                  tf.global_norm(list(zip(
+                                      *grads_and_vars))[0]),
                                   summaries)
 
-        # Add histograms for variables, grads and grad norms
-        # --------------------------------------------------
-        for grad, var in grads_and_vars:
-            if isinstance(grad, tf.IndexedSlices):
-                grad_vals = grad.values
-            else:
-                grad_vals = grad
+            # Add histograms for variables, grads and grad norms
+            # --------------------------------------------------
+            for grad, var in grads_and_vars:
+                if isinstance(grad, tf.IndexedSlices):
+                    grad = grad.values
 
-            if grad_vals is not None:
-                # Remove model_name/
-                var_name = var.op.name.replace(
-                    self.cfg.model_name + '/', '')
-                scope_str = dev_set_scope + '_%s'  # metric
-                scope_str, var_name = squash_maybe(scope_str,
-                                                   var_name)
-                scope_str += '_%s'  # var name
-                # Write the summary
-                with tf.name_scope(None):
-                    tf.summary.scalar(
-                        scope_str % ('GradientNorm', var_name),
-                        tf.global_norm([grad_vals]), summaries)
-                    tf.summary.histogram(
-                        scope_str % ('GradientHist', var_name),
-                        grad_vals, summaries)
-
-        # Add global norm summary
-        # -----------------------
-        # Remove the name_scopes (the one from the variable_scope
-        # and the one from the name_scope)
-        with tf.name_scope(dev_set_scope):
-            name = ('clipped_grad_norm' if self.cfg.max_grad_norm else
-                    'grad_norm')
-            tf.summary.scalar('Global_norm/' + name,
-                              tf.global_norm(list(zip(*grads_and_vars))[0]),
-                              summaries)
+                if grad is not None:
+                    # Remove model_name/
+                    var_name = var.op.name.replace('/dev_graph', '')
+                    sum_str = scope_str + '_%s'  # metric
+                    sum_str, var_name = squash_maybe(sum_str, var_name)
+                    sum_str += '_%s'  # var name
+                    # Write the summary
+                    tf.summary.scalar(sum_str % ('gradient_norm', var_name),
+                                      tf.global_norm([grad]), summaries)
+                    tf.summary.histogram(sum_str % ('gradient_hist', var_name),
+                                         grad, summaries)
 
     def minimize(self, loss_outs, var_list=None, gate_gradients=None,
                  aggregation_method=None, colocate_gradients_with_ops=False,
-                 name=None, grad_loss=None, device=None, dev_set_scope='',
+                 name=None, grad_loss=None, device=None, scope_str='',
                  summaries=None, loss=None):
         """Minimize over multiple devices with grad noise
 
@@ -260,7 +254,7 @@ class DistributedOptimizer(object):
 
         # Create some summaries
         self.__add_summaries(grads_and_vars, grad_noise_scale,
-                             dev_set_scope, summaries)
+                             scope_str, summaries)
 
         # Gradient descent
         # ----------------

@@ -460,7 +460,7 @@ class Experiment(object):
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
-            summaries.append(phase_set_str[:-1] + '-' + device_str + '.')
+            summaries.append(phase_set_str + device_str)
         these_s = summaries
 
         # Build a graph for each device, each with its input and output
@@ -468,9 +468,12 @@ class Experiment(object):
         # -------------------------------------------------------------
         for device, dev_placeholders in zip(cfg.devices, per_dev_placeholders):
             device_str = device.replace('/', '').replace(':', '').lower()
-            dev_set_str = '{}_{}'.format(device_str, which_set)
+            dev_set_str = phase_set_str + device_str
+            # The name scope helps organize the graph in tensorboard
+            # The variable scope is neede to reuse the variables among
+            # the various graphs
             with tf.name_scope(dev_set_str), \
-                    tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
+                    tf.variable_scope('dev_graph', reuse=reuse_variables), \
                     tf.device(device):
                 reuse_variables = True
 
@@ -511,13 +514,13 @@ class Experiment(object):
                 # Append this device's model outs to those of prev devices
                 recursive_dict_stack(model_out, stacked_model_outs)
 
-                # Remove the name_scopes (the one from the variable_scope and
-                # the one from the name_scope) and assign dev_set_str
-                # TODO:
-                # Save a summary with the loss per device
+                # Add '_stats' to the name scope
+                # To avoid a nested name scope we remove the previous name
+                # scopes (the explicit one from the name_scope and the implicit
+                # one from the variable_scope and
                 scope_str = dev_set_str + '_stats'
                 with tf.name_scope(None):
-                    with tf.name_scope(scope_str) as dev_set_scope:
+                    with tf.name_scope(scope_str):
                         tf.summary.scalar('loss', loss_outs['loss'], these_s)
 
                 if is_training:
@@ -532,7 +535,7 @@ class Experiment(object):
                         name=None,
                         grad_loss=None,
                         device=device,
-                        dev_set_scope=dev_set_scope,
+                        scope_str=scope_str,
                         summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
                     # of the list updates the gradients of the devices *up to*
@@ -780,7 +783,7 @@ class Experiment(object):
     def epoch_begin(self):
         self.epoch_id = self.gstep_val // self.train.nbatches
 
-        summary_val = tf.Summary.Value(tag='control_flow/Epoch',
+        summary_val = tf.Summary.Value(tag='T.control_flow/Epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
         self.sv.summary_computed(self.sess, summary,
