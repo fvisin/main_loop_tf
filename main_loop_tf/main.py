@@ -436,9 +436,9 @@ class Experiment(object):
         per_dev_placeholders = self.placeholders[is_training]
         if is_training:
             grad_ops = []
-            summaries_str = 'train_summaries_%s'
+            phase_set_str = 'T.'
         else:
-            summaries_str = 'val_%s_summaries' % which_set + '_%s'
+            phase_set_str = 'V-' + which_set + '.'
 
         if is_training:
             # Create a stateful Optimizer object
@@ -460,8 +460,7 @@ class Experiment(object):
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
-            dev_set_str = '{}_{}'.format(device_str, which_set)
-            summaries.append(summaries_str % device_str)
+            summaries.append(phase_set_str[:-1] + '-' + device_str + '.')
         these_s = summaries
 
         # Build a graph for each device, each with its input and output
@@ -519,7 +518,7 @@ class Experiment(object):
                 scope_str = dev_set_str + '_stats'
                 with tf.name_scope(None):
                     with tf.name_scope(scope_str) as dev_set_scope:
-                        tf.summary.scalar('Loss', loss_outs['loss'], these_s)
+                        tf.summary.scalar('loss', loss_outs['loss'], these_s)
 
                 if is_training:
                     # Compute gradients, add noise to the gradient and
@@ -567,15 +566,15 @@ class Experiment(object):
         # the first `num_splits`, i.e., dynamically select at runtime
         # which devices' outputs to consider
         recursive_truncate_dict(stacked_model_outs, self.num_splits,
-                                parent_k=summaries_str + '/outs',
+                                parent_k=phase_set_str + '/outs',
                                 exact_len=cfg.num_devs)
         recursive_truncate_dict(stacked_loss_outs, self.num_splits,
-                                parent_k=summaries_str + '/losses',
+                                parent_k=phase_set_str + '/losses',
                                 exact_len=cfg.num_devs)
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
-        tf.summary.scalar('control_flow/batch_size_' + which_set,
+        tf.summary.scalar(phase_set_str + 'control_flow/batch_size',
                           tf.shape(stacked_model_outs['pred'])[0], summaries)
 
         # We are trying to be flexible with the placeholders, so we
@@ -602,7 +601,7 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_splits at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Loss', avg_loss,
+        tf.summary.scalar(phase_set_str + 'avg_losses/tot_loss', avg_loss,
                           summaries)
 
         if is_training:
@@ -613,7 +612,7 @@ class Experiment(object):
             # computed for validation as well
             for (key, loss) in stacked_loss_outs['components'].iteritems():
                 avg_comp_loss = tf.reduce_mean(loss)
-                tf.summary.scalar(dev_set_scope + 'avg_losses/comp_%s' % key,
+                tf.summary.scalar(phase_set_str + 'avg_losses/comp_%s' % key,
                                   avg_comp_loss, summaries)
 
             # Add the histograms for trainable variables
