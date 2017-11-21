@@ -399,8 +399,8 @@ class Experiment(object):
         """Add user-defined global summaries"""
         pass
 
-    def metrics_graph_fn(self, graph_out, stacked_model_outs,
-                         stacked_loss_outs, is_training):
+    def extra_graph_out(self, graph_out, stacked_model_outs, stacked_loss_outs,
+                        is_training):
         """Add user-defined metrics to the graph
 
         Allow the user to define some extra metric into the graph. This
@@ -650,8 +650,8 @@ class Experiment(object):
 
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
-        self.metrics_graph_fn(graph_out, stacked_model_outs, stacked_loss_outs,
-                              is_training)
+        self.extra_graph_out(graph_out, stacked_model_outs, stacked_loss_outs,
+                             is_training)
 
         return graph_out
 
