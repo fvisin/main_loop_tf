@@ -152,7 +152,7 @@ class Experiment(object):
         cfg._FLOATX = 'float32'
         cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
         cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
-        cfg.num_splits = cfg.num_gpus + cfg.num_cpus
+        cfg.num_devs = cfg.num_gpus + cfg.num_cpus
 
         # ============ Dataset init
         try:
@@ -164,7 +164,7 @@ class Experiment(object):
         self.Dataset = Dataset
         # Add dataset extra parameters specific for the dataset
         dataset_params = cfg.train_extra_params
-        dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
+        dataset_params['batch_size'] = cfg.batch_size * cfg.num_devs
         data_augm_kwargs = dataset_params['data_augm_kwargs'] = {}
         if cfg.crop_mode == 'smart':
             data_augm_kwargs['crop_mode'] = cfg.crop_mode
@@ -196,7 +196,7 @@ class Experiment(object):
         cfg.dataset_params = dataset_params
         cfg.valid_params = deepcopy(cfg.dataset_params)
         cfg.valid_params.update({
-            'batch_size': cfg.val_batch_size * cfg.num_splits,
+            'batch_size': cfg.val_batch_size * cfg.num_devs,
             'seq_per_subset': 0,
             'overlap': cfg.val_overlap,
             'shuffle_at_each_epoch': (cfg.val_overlap is not None and
@@ -270,7 +270,7 @@ class Experiment(object):
         train_placeholders = []
         val_placeholders = []
         # Iterate over the devices
-        for i, _ in enumerate(range(cfg.num_splits)):
+        for i, _ in enumerate(range(cfg.num_devs)):
             train_ins = tf.placeholder(dtype=cfg._FLOATX,
                                        shape=cfg.input_shape,
                                        name='train_inputs_per_gpu_%i' % i)
@@ -307,12 +307,12 @@ class Experiment(object):
         with self.graph.as_default():
             self.global_step = tf.Variable(0, trainable=False,
                                            name='global_step', dtype='int32')
-            self.num_splits = tf.placeholder(np.int32, shape=None,
-                                             name='num_splits')
-            self.num_batches = tf.placeholder(np.int32, shape=None,
-                                              name='num_batches')
-            self.prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
-                                           name='prev_err')
+            self.sym_num_devs = tf.placeholder(np.int32, shape=None,
+                                               name='num_active_devs')
+            self.sym_num_batches = tf.placeholder(np.int32, shape=None,
+                                                  name='num_batches')
+            self.sym_prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
+                                               name='prev_err')
 
             # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
@@ -563,12 +563,12 @@ class Experiment(object):
         # Merge the towers on CPU
         # -----------------------
         # Convert the lists of tensors to concatenated tensors and keep
-        # the first `num_splits`, i.e., dynamically select at runtime
+        # the first `num_devs`, i.e., dynamically select at runtime
         # which devices' outputs to consider
-        recursive_truncate_dict(stacked_model_outs, self.num_splits,
+        recursive_truncate_dict(stacked_model_outs, self.sym_num_batches,
                                 parent_k=phase_set_str + '/outs',
                                 exact_len=cfg.num_devs)
-        recursive_truncate_dict(stacked_loss_outs, self.num_splits,
+        recursive_truncate_dict(stacked_loss_outs, self.sym_num_devs,
                                 parent_k=phase_set_str + '/losses',
                                 exact_len=cfg.num_devs)
 
@@ -589,7 +589,7 @@ class Experiment(object):
         # labels = labels[:tf.shape(
         #     tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
-        # Compute the mean loss over the first num_splits devices. This
+        # Compute the mean loss over the first num_devs devices. This
         # will also be used to update the loss summaries
         avg_loss = tf.reduce_mean(stacked_loss_outs['loss'])
         self.avg_loss[is_training][which_set] = avg_loss
@@ -599,14 +599,14 @@ class Experiment(object):
         #############
         # Visualize the avg loss
         # The number of devices will be dynamically selected by the
-        # numerical value assigned to num_splits at run-time) and used
+        # numerical value assigned to num_devs at run-time) and used
         # to update the loss summaries correctly
         tf.summary.scalar(phase_set_str + 'avg_losses/tot_loss', avg_loss,
                           summaries)
 
         if is_training:
             # Write the summary of the mean per-component loss over the first
-            # num_splits devices (which will be dynamically selected at
+            # num_devs devices (which will be dynamically selected at
             # run-time). We do not want to clutter the summaries with these
             # information for validation, but keep in mind that this could be
             # computed for validation as well
@@ -835,9 +835,9 @@ class Experiment(object):
 
         # Extend the user-defined placeholders with those needed by the
         # main loop
-        feed_dict[self.num_splits] = this_n_splits
-        feed_dict[self.num_batches] = len(x_batch)
-        feed_dict[self.prev_err] = self.loss_value
+        feed_dict[self.sym_num_devs] = this_n_splits
+        feed_dict[self.sym_num_batches] = len(x_batch)
+        feed_dict[self.sym_prev_err] = self.loss_value
         self._feed_dict = feed_dict
 
         # Use the op for the number of devices the current batch can feed
