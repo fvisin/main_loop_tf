@@ -672,13 +672,6 @@ class Experiment(object):
 
     def run(self):
         with self.__init_sess__() as self.sess:
-            if self.cfg.restore_path:
-                try:
-                    self.saver.restore(self.sess, self.cfg.restore_path)
-                except:
-                    tf.logging.debug('Cannot restore model:\n{}'.format(
-                                         self.cfg.restore_path))
-
             if self.cfg.hyperparams_summaries is not None:
                 # write Hyper parameters text summaries
                 summary_str = self.sess.run(self.summary_text_op)
@@ -689,8 +682,6 @@ class Experiment(object):
 
     def validate(self):
         with self.__init_sess__() as self.sess:
-            if self.cfg.restore_path:
-                self.saver.restore(self.sess, self.cfg.restore_path)
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
                 metrics_val = {}
@@ -711,15 +702,28 @@ class Experiment(object):
             init_op = tf.group(tf.global_variables_initializer(),
                                tf.local_variables_initializer())
 
+            load_pretrain = None
+            if self.cfg.restore_path:
+                pre_train_saver = tf.train.Saver()
+
+                def load_pretrain(sess):
+                    try:
+                        # TODO add option to restore best rather than last?
+                        pre_train_saver.restore(sess,
+                                                self.cfg.restore_path)
+                    except:
+                        tf.logging.debug('Cannot restore model:\n{}'.format(
+                                             self.cfg.restore_path))
+
             self.saver = tf.train.Saver(
                 max_to_keep=cfg.checkpoints_to_keep)
 
             sv = Supervisor(
                 graph=self.graph,
                 init_op=init_op,
+                init_fn=load_pretrain,
                 summary_op=None,
                 global_step=self.global_step,
-                # TODO add option to restore best rather than last?
                 logdir=self.cfg.save_path,
                 saver=self.saver,
                 # session_manager
