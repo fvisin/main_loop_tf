@@ -121,7 +121,7 @@ class Experiment(object):
 
         model_name = cfg.model_name if cfg.model_name != '' else cfg.hash
         if cfg.model_suffix != '':
-            model_name += cfg.model_suffix
+            model_name += '_' + cfg.model_suffix
         save_path = os.path.join(checkpoints_path, model_name)
         cfg.model_name = model_name
 
