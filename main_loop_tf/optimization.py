@@ -196,8 +196,8 @@ class DistributedOptimizer(object):
 
     def minimize(self, loss_outs, var_list=None, gate_gradients=None,
                  aggregation_method=None, colocate_gradients_with_ops=False,
-                 name=None, grad_loss=None, device=None, dev_set_str='',
-                 summaries=None, loss=None):
+                 name=None, grad_loss=None, dev_set_str='', summaries=None,
+                 loss=None):
         """Minimize over multiple devices with grad noise
 
         Extend Optimizer.minimize() in several ways:

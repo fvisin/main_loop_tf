@@ -475,15 +475,16 @@ class Experiment(object):
         # Build a graph for each device, each with its input and output
         # placeholders. Collect the outputs in "towers"
         # -------------------------------------------------------------
-        for device, dev_placeholders in zip(cfg.devices, per_dev_placeholders):
-            device_str = device.replace('/', '').replace(':', '').lower()
+        for dev_id, (dev, dev_placeholders) in enumerate(
+                zip(cfg.devices, per_dev_placeholders)):
+            device_str = 'dev_' + str(dev_id)
             dev_set_str = phase_set_str + device_str
             # The name scope helps organize the graph in tensorboard
             # The variable scope is needed to reuse the variables among
             # the various graphs
             with tf.name_scope(dev_set_str), \
                     tf.variable_scope('dev_graph', reuse=reuse_variables), \
-                    tf.device(device):
+                    tf.device(dev):
                 reuse_variables = True
 
                 # Model preactivation, activation (softmax) and prediction
@@ -524,7 +525,7 @@ class Experiment(object):
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
                 # computed
-                model_out = self.dev_model_out_post(model_out, device,
+                model_out = self.dev_model_out_post(model_out, device_str,
                                                     dev_placeholders,
                                                     dev_set_scope, dev_set_str,
                                                     these_s)
@@ -545,7 +546,6 @@ class Experiment(object):
                         colocate_gradients_with_ops=True,
                         name=None,
                         grad_loss=None,
-                        device=device,
                         dev_set_str=dev_set_str,
                         summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
