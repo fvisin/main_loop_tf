@@ -304,8 +304,12 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
                 raise ValueError('The input should be a dictionary of lists')
             if exact_len:
                 assert len(v) == exact_len, 'Key {} len: {}'.format(k, len(v))
-            try:
-                tmp = tf.concat(v, axis=0, name='concat_%s' % k)
-            except ValueError:
-                tmp = tf.stack(v, axis=0, name='stack_%s' % k)
-            a_dict[k] = tmp[:sym_max_len]
+            # No need to concat if it's just one value
+            if len(v) == 1:
+                a_dict[k] = v[0]
+            else:
+                try:
+                    tmp = tf.concat(v, axis=0, name='concat_%s' % k)
+                except ValueError:
+                    tmp = tf.stack(v, axis=0, name='stack_%s' % k)
+                a_dict[k] = tmp[:sym_max_len]
