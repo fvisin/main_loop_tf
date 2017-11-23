@@ -69,6 +69,16 @@ gflags_ext.DEFINE_intlist('a', [[10, 10], [20, 20]], 'A list of ints')
 
 See `gflags_ext` for the other DEFINEs.
 
+#### Paths
+The models will be **saved** in:
+  `<checkpoints_basedir>(/<suite_name>)/<model_name>(_model_suffix)`
+  
+and **restored** from:
+  `<checkpoints_basedir>(/<restore_suite>)/<restore_model>`
+  
+* *model_name* and *restore_model*: default to the hash of the hyperparameters if not specified
+* *suite_name*, *restore_suite* and *model_suffix*: are ignored if not specified
+
 ### Notes
 * **The code is provided as is, please expect minimal-to-none support on it.**
 * This code is provided for research purposes only. Although we tried our 
