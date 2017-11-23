@@ -78,6 +78,7 @@ and **restored** from:
   
 * *model_name* and *restore_model*: default to the hash of the hyperparameters if not specified
 * *suite_name*, *restore_suite* and *model_suffix*: are ignored if not specified
+* *checkpoints_path* is set to `<checkpoints_basedir>(/<suite_name>)`
 
 ### Notes
 * **The code is provided as is, please expect minimal-to-none support on it.**
