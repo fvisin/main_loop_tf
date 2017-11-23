@@ -704,7 +704,7 @@ class Experiment(object):
 
             load_pretrain = None
             if self.cfg.restore_path:
-                pre_train_saver = tf.train.Saver()
+                pre_train_saver = tf.train.Saver(name='Restorer')
 
                 def load_pretrain(sess):
                     try:
@@ -716,6 +716,8 @@ class Experiment(object):
                                              self.cfg.restore_path))
 
             self.saver = tf.train.Saver(
+                name='Saver',
+                save_relative_path=True,
                 max_to_keep=cfg.checkpoints_to_keep)
 
             sv = Supervisor(
