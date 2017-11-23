@@ -1,4 +1,5 @@
 import logging
+import os
 from subprocess import check_output
 import sys
 import tqdm
@@ -85,9 +86,10 @@ def apply_l2_penalty(loss, weight_decay):
 
 def save_repos_hash(params_dict, this_repo_name, packages=['theano']):
     # Repository hash and diff
-    params_dict[this_repo_name + '_hash'] = check_output('git rev-parse HEAD',
-                                                         shell=True)[:-1]
-    diff = check_output('git diff', shell=True)
+    cwd = os.path.dirname(os.path.realpath(__file__))
+    params_dict[this_repo_name + '_hash'] = check_output(
+        'git rev-parse HEAD', cwd=cwd, shell=True)[:-1]
+    diff = check_output('git diff', cwd=cwd, shell=True)
     if diff != '':
         params_dict[this_repo_name + '_diff'] = diff
     # packages
