@@ -27,12 +27,13 @@ def split_in_chunks(minibatch, num_splits, flatten_keys=['labels']):
     device.
     '''
     # Split the value of each key into chunks
+    out = {}
     for k, v in minibatch.iteritems():
-        minibatch[k] = np.array_split(v, num_splits)
+        out[k] = np.array_split(v.copy(), num_splits)
         if any(k == v for v in flatten_keys):
-            minibatch[k] = [el.flatten() for el in minibatch[k]]
+            out[k] = [el.flatten() for el in out[k]]
     return map(dict, zip(*[[(k, v) for v in value]
-                           for k, value in minibatch.items()]))
+                           for k, value in out.items()]))
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
