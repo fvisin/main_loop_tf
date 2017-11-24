@@ -477,7 +477,7 @@ class Experiment(object):
         # -------------------------------------------------------------
         for dev_id, (dev, dev_placeholders) in enumerate(
                 zip(cfg.devices, per_dev_placeholders)):
-            device_str = 'dev_' + str(dev_id)
+            device_str = 'dev' + str(dev_id)
             dev_set_str = phase_set_str + device_str
             # The name scope helps organize the graph in tensorboard
             # The variable scope is needed to reuse the variables among
