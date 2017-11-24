@@ -717,7 +717,7 @@ class Experiment(object):
 
             self.saver = tf.train.Saver(
                 name='Saver',
-                save_relative_path=True,
+                save_relative_paths=True,
                 max_to_keep=cfg.checkpoints_to_keep)
 
             sv = Supervisor(
