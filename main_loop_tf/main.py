@@ -46,6 +46,7 @@ except:
 
 # Set tensorflow random seed
 tf.set_random_seed(8112017)
+np.random.seed(8112017)
 
 FLAGS = gflags.FLAGS
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
@@ -614,6 +615,9 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
                         model_out_dict['refined_mask'] + 0.5, tf.int32)
                 model_out_dict['refined_mask'] = refined_mask
 
+            model_out_dict['pred_mask'] = tf.cast(
+                model_out_dict['pred_mask'] + 0.5, tf.int32)
+
             # Group outputs from each model tower
             for k, v in model_out_dict.iteritems():
                 tower_out_dict.setdefault(k, []).append(v)
@@ -816,15 +820,15 @@ def build_graph(placeholders, input_shape, build_model, build_loss, which_set):
         # Compute the (potentially masked) mean IoU
         mask = tf.ones_like(labels_iou)
         if len(cfg.void_labels):
-            mask = tf.cast(tf.less_equal(labels_iou, nclasses), tf.int32)
+            mask = tf.cast(tf.less_equal(labels_iou, 2), tf.int32)
 
-        if not is_training:
-            pred_flat = tf.reshape(
-                tf.cast(out_dict['pred_mask'] + 0.5, tf.int32), [-1])
-        else:
-            pred_flat = tf.reshape(out_dict['pred_mask'], [-1])
+        # if not is_training:
+        #     pred_flat = tf.reshape(
+        #         tf.cast(out_dict['pred_mask'] + 0.5, tf.int32), [-1])
+        # else:
+        pred_flat = tf.reshape(out_dict['pred_mask'], [-1])
         m_iou, per_class_iou, cm_update_op, reset_cm_op = compute_mean_iou(
-            labels_iou, pred_flat, nclasses, mask)
+            labels_iou, pred_flat, 2, mask)
     else:
         cm_update_op = None
         reset_cm_op = None

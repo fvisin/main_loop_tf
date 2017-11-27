@@ -36,7 +36,7 @@ def validate(placeholders,
         cfg.valid_params.update({'resize_images': False})
 
     this_set = cfg.Dataset(
-        which_set=which_set,
+        which_set='valid',
         **cfg.valid_params)
 
     # Prepare the threads to save the images
@@ -348,8 +348,8 @@ def validate(placeholders,
         y_pred_fw_batch = fetch_dict['pred_fw']
         y_pred_bw_batch = fetch_dict['pred_bw']
         y_pred_mask_batch = fetch_dict['pred_mask']
-        y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
-        y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
+        # y_pred_mask_batch[np.where(y_pred_mask_batch > 0.5)] = 1
+        # y_pred_mask_batch[np.where(y_pred_mask_batch < 1)] = 0
         if cfg.mask_refinement != '':
             y_refined_batch = fetch_dict['refined_mask']
         if cfg.masks_linear_interpolation or cfg.masks_interp_conv_layer:
@@ -423,7 +423,8 @@ def validate(placeholders,
                                        'results', which_set, exp_hash)
             if not os.path.exists(results_dir):
                 os.makedirs(results_dir)
-            results_file = os.path.join(results_dir, 'results.json')
+            results_file = os.path.join(results_dir,
+                                        'results'+str(epoch_id)+'.json')
             with open(results_file, 'w') as f:
                 json.dump(evaluation, f)
             # Get mean IoU for early stopping

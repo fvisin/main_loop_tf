@@ -21,7 +21,7 @@ from parallel import Parallel, delayed
 _db_measures = {
         'J': measures.db_eval_iou,
         'F': measures.db_eval_boundary,
-        'T': measures.db_eval_t_stab,
+        'T': measures.db_eval_boundary
         }
 
 
