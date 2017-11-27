@@ -169,30 +169,35 @@ class DistributedOptimizer(object):
         if summaries == []:
             return
 
+        # Add summary for the noise on the gradient
+        # -----------------------------------------
+        if grad_noise_scale is not None:
+            tf.summary.scalar(phase_set_dev + "grad_noise", grad_noise_scale,
+                              summaries)
+
+        # Add histograms for variables, grads and grad norms
+        # --------------------------------------------------
         with tf.name_scope(None):
-            # Add summary for the noise on the gradient
-            # -----------------------------------------
-            if grad_noise_scale is not None:
-                tf.summary.scalar(phase_set_dev + ".Grad_noise",
-                                  grad_noise_scale, summaries)
+            with tf.name_scope(phase_set_dev + 'grad_norms') as norm_scope:
+                with tf.name_scope(phase_set_dev + 'grad_hists') as hist_scope:
+                    for grad, var in grads_and_vars:
+                        if isinstance(grad, tf.IndexedSlices):
+                            grad = grad.values
 
-            # Add histograms for variables, grads and grad norms
-            # --------------------------------------------------
-            for grad, var in grads_and_vars:
-                if isinstance(grad, tf.IndexedSlices):
-                    grad = grad.values
-
-                if grad is not None:
-                    # Remove the implicit name_scope of the variable scope
-                    var_name = var.op.name.replace('model/', '')
-                    sum_str = phase_set_dev + '.%s'  # metric
-                    sum_str, var_name = squash_maybe(sum_str, var_name)
-                    sum_str += '/%s'  # var name
-                    # Write the summary
-                    tf.summary.scalar(sum_str % ('Grad_norm', var_name),
-                                      tf.global_norm([grad]), summaries)
-                    tf.summary.histogram(sum_str % ('Grad_hist', var_name),
-                                         grad, summaries)
+                        if grad is not None:
+                            # Remove the implicit name_scope of the variable
+                            # scope
+                            var_name = var.op.name.replace('model/', '')
+                            _, var_name = squash_maybe('', var_name)
+                            # Write the summary
+                            with tf.name_scope(norm_scope):
+                                tf.summary.scalar(var_name,
+                                                  tf.global_norm([grad]),
+                                                  summaries)
+                            with tf.name_scope(hist_scope):
+                                tf.summary.histogram(var_name,
+                                                     grad,
+                                                     summaries)
 
     def minimize(self, loss_out, var_list=None, gate_gradients=None,
                  aggregation_method=None, colocate_gradients_with_ops=False,
@@ -219,13 +224,16 @@ class DistributedOptimizer(object):
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
-        # This device's gradients
-        grads_and_vars = self.compute_gradients(
-            loss_out['loss'], var_list=var_list,
-            gate_gradients=gate_gradients,
-            aggregation_method=aggregation_method,
-            colocate_gradients_with_ops=colocate_gradients_with_ops,
-            grad_loss=grad_loss)
+        # Add suffix to name_scope (rather than nesting # scopes)
+        with tf.name_scope(None):
+            with tf.name_scope(phase_set_dev + 'grad_computation'):
+                # This device's gradients
+                grads_and_vars = self.compute_gradients(
+                    loss_out['loss'], var_list=var_list,
+                    gate_gradients=gate_gradients,
+                    aggregation_method=aggregation_method,
+                    colocate_gradients_with_ops=colocate_gradients_with_ops,
+                    grad_loss=grad_loss)
 
         # Check if no gradient
         vars_with_grad = [v for g, v in grads_and_vars if g is not None]
@@ -237,8 +245,10 @@ class DistributedOptimizer(object):
                                      loss))
 
         # Add noise and multipliers to gradient
-        grads_and_vars, grad_noise_scale = self.__process_gradients(
-            grads_and_vars)
+        with tf.name_scope(None):
+            with tf.name_scope(phase_set_dev + 'grad_processing'):
+                grads_and_vars, grad_noise_scale = self.__process_gradients(
+                    grads_and_vars)
 
         # Create some summaries
         self.__add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
@@ -251,10 +261,12 @@ class DistributedOptimizer(object):
             self._dev_grads.setdefault(v, []).append(g)
 
         # Average the gradients over the devices processed so far
-        grads_and_vars = average_gradients(self._dev_grads)
-        grad_op = self.apply_gradients(grads_and_vars,
-                                       global_step=self.global_step,
-                                       name=name)
+        grads_and_vars = average_gradients(self._dev_grads, phase_set_dev)
+        with tf.name_scope(None):
+            with tf.name_scope(phase_set_dev + 'grad_application'):
+                grad_op = self.apply_gradients(grads_and_vars,
+                                               global_step=self.global_step,
+                                               name=name)
 
         # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients
@@ -268,7 +280,7 @@ class DistributedOptimizer(object):
         return grad_op
 
 
-def average_gradients(grad_dict):
+def average_gradients(grad_dict, phase_set_dev):
     """Calculate the mean gradient for the devices processed so far
 
     Note
@@ -287,14 +299,15 @@ def average_gradients(grad_dict):
     averaged across all towers.
     """
     average_grads = []
-    for v, grads_list in grad_dict.iteritems():
-        with tf.name_scope('Avg_grads'):
-            if len(grads_list) > 1:
-                grad_list = tf.concat(axis=0, values=grads_list)
-                avg_grad = tf.reduce_mean(grad_list, 0)
-                average_grads.append((avg_grad, v))
-            else:
-                average_grads.append((grads_list[0], v))
+    with tf.name_scope(None):
+        with tf.name_scope(phase_set_dev + 'grad_avg'):
+            for v, grads_list in grad_dict.iteritems():
+                if len(grads_list) > 1:
+                    grad_list = tf.concat(axis=0, values=grads_list)
+                    avg_grad = tf.reduce_mean(grad_list, 0)
+                    average_grads.append((avg_grad, v))
+                else:
+                    average_grads.append((grads_list[0], v))
     return average_grads
 
 

@@ -359,23 +359,23 @@ class Experiment(object):
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
-                    summary_text = []
-                    for (key_header,
-                         list_value) in cfg.hyperparams_summaries.iteritems():
+                    with tf.name_scope('hyperparams_summaries'):
+                        summary_text = []
+                        for (k, vals) in cfg.hyperparams_summaries.iteritems():
 
-                        header_list = []
-                        text_list = []
-                        for v in list_value:
-                            header_list.append('**' + v + '**')
-                            text_list.append(str(getattr(cfg, v)))
-                        header_tensor = tf.constant(header_list)
-                        text_tensor = tf.constant(text_list)
+                            header_list = []
+                            text_list = []
+                            for v in vals:
+                                header_list.append('**' + v + '**')
+                                text_list.append(str(getattr(cfg, v)))
+                            header_tensor = tf.constant(header_list)
+                            text_tensor = tf.constant(text_list)
 
-                        summary_text.append(tf.summary.text(
-                            key_header,
-                            tf.reshape(tf.concat([header_tensor, text_tensor],
-                                                 axis=0), [2, -1])))
-                    self.summary_text_op = tf.summary.merge(summary_text)
+                            summary = tf.summary.text(k, tf.reshape(tf.concat(
+                                [header_tensor, text_tensor], axis=0),
+                                [2, -1]))
+                            summary_text.append(summary)
+                        self.summary_text_op = tf.summary.merge(summary_text)
 
     def get_loss_extra_params(self):
         """Add extra parameters to the loss function
@@ -484,7 +484,8 @@ class Experiment(object):
             # The variable scopes are needed to reuse the variables among
             # the various graphs
             with tf.name_scope(phase_set_dev), tf.device(dev):
-                with tf.variable_scope('model', reuse=reuse_variables):
+                with tf.variable_scope('model',
+                                       reuse=reuse_variables) as model_scope:
                     # Model preactivation, activation (softmax) and prediction
                     # NOTE Will be then stacked in stacked_model_outs
                     model_out = self.build_model(dev_placeholders, is_training)
@@ -516,10 +517,10 @@ class Experiment(object):
                 recursive_dict_stack(loss_out, stacked_loss_outs)
 
                 # Add '_stats' suffix to the name scope
-                scope_str = phase_set_dev + '_stats'
+                scope_str = phase_set_dev + '_aggregated_stats'
                 with tf.name_scope(None):
                     with tf.name_scope(scope_str) as dev_stats_scope:
-                        tf.summary.scalar('Loss', loss_out['loss'], these_s)
+                        tf.summary.scalar('loss', loss_out['loss'], these_s)
 
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
@@ -528,12 +529,14 @@ class Experiment(object):
                     model_out = self.dev_model_out_post(model_out,
                                                         dev_placeholders,
                                                         dev_stats_scope,
-                                                        phase_set_dev,
+                                                        phase_set_dev + '.',
                                                         these_s)
                 # Append this device's model outs to those of prev devices
                 recursive_dict_stack(model_out, stacked_model_outs)
 
                 if is_training:
+                    # Compute gradients, add noise to the gradient and
+                    # create the op to apply it if needed.
                     grad_op = optimizer.minimize(
                         loss_out=loss_out,
                         var_list=self.get_grad_descent_var_list(),
@@ -542,7 +545,7 @@ class Experiment(object):
                         colocate_gradients_with_ops=True,
                         name=None,
                         grad_loss=None,
-                        phase_set_dev=phase_set_dev,
+                        phase_set_dev=phase_set_dev + '.',
                         summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
                     # of the list updates the gradients of the devices *up to*
@@ -551,7 +554,7 @@ class Experiment(object):
 
                 self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
                                          is_training, dev_stats_scope,
-                                         phase_set_dev, these_s)
+                                         phase_set_dev + '.', these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -602,8 +605,10 @@ class Experiment(object):
 
         # Compute the mean loss over the first num_devs devices. This
         # will also be used to update the loss summaries
-        avg_loss = tf.reduce_mean(stacked_loss_outs['loss'])
-        self.avg_loss[is_training][which_set] = avg_loss
+        with tf.name_scope(phase_set):
+            avg_loss = tf.reduce_mean(stacked_loss_outs['loss'],
+                                      name='Avg_loss')
+            self.avg_loss[is_training][which_set] = avg_loss
 
         #############
         # SUMMARIES #
@@ -612,7 +617,7 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_devs at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(phase_set + 'avg_losses/tot_loss', avg_loss,
+        tf.summary.scalar(phase_set + 'aggregated_stats/avg_loss', avg_loss,
                           summaries)
 
         if is_training:
@@ -623,12 +628,13 @@ class Experiment(object):
             # computed for validation as well
             for (key, loss) in stacked_loss_outs['components'].iteritems():
                 avg_comp_loss = tf.reduce_mean(loss)
-                tf.summary.scalar(phase_set + 'avg_losses/comp_%s' % key,
-                                  avg_comp_loss, summaries)
+                tf.summary.scalar(phase_set + 'aggregated_stats/' +
+                                  'avg_loss_comp_%s' % key, avg_comp_loss,
+                                  summaries)
 
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
-                var_name = var.op.name
+                var_name = var.op.name.replace('model/', '')
                 scope_str, var_name = squash_maybe(phase_set, var_name)
                 scope_str += '_%s_%s'  # metric, var
                 scope_str = phase_set + '_%s_'  # metric
@@ -805,7 +811,7 @@ class Experiment(object):
     def epoch_begin(self):
         self.epoch_id = self.gstep_val // self.train.nbatches
 
-        summary_val = tf.Summary.Value(tag='T.control_flow/Epoch',
+        summary_val = tf.Summary.Value(tag='T.control_flow/epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
         self.sv.summary_computed(self.sess, summary,
