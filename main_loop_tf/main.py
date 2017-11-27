@@ -140,7 +140,7 @@ class Experiment(object):
             save_path = tmp_path
         else:
             if cfg.restore_model.lower() not in ['', 'true']:
-                # Use the specified restore path
+                # A specific restore path has been provided
                 restore_path = cfg.checkpoints_basedir
                 if cfg.restore_suite != '':
                     restore_path = os.path.join(restore_path,
@@ -709,11 +709,12 @@ class Experiment(object):
                 pre_train_saver = tf.train.Saver(name='Restorer')
 
                 def load_pretrain(sess):
-                    try:
+                    if os.path.exists(os.path.join(self.cfg.restore_path,
+                                                   'checkpoint')):
                         # TODO add option to restore best rather than last?
                         pre_train_saver.restore(sess,
                                                 self.cfg.restore_path)
-                    except:
+                    else:
                         tf.logging.debug('Cannot restore model:\n{}'.format(
                                              self.cfg.restore_path))
 
