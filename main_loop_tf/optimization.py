@@ -85,7 +85,7 @@ class DistributedOptimizer(object):
         self.dev_comp_losses = {}  # per_loss_comp, per device
         self.dev_avg_losses = []  # per device
         self.dev_avg_comp_losses = {}  # per loss comp, per device
-        self.__dev_grads = []  # per device
+        self._dev_grads = {}   # per variable, per device
         return super(DistributedOptimizer, self).__init__(
             learning_rate=lr, **cfg.optimizer_params)
 
@@ -246,11 +246,12 @@ class DistributedOptimizer(object):
 
         # Gradient descent
         # ----------------
-        # Save gradients for each device, to be averaged out
-        self.__dev_grads.append(grads_and_vars)
+        # Save the grads of each variable for this device, to be averaged out
+        for g, v in grads_and_vars:
+            self._dev_grads.setdefault(v, []).append(g)
 
         # Average the gradients over the devices processed so far
-        grads_and_vars = average_gradients(self.__dev_grads)
+        grads_and_vars = average_gradients(self._dev_grads)
         grad_op = self.apply_gradients(grads_and_vars,
                                        global_step=self.global_step,
                                        name=name)
@@ -267,7 +268,37 @@ class DistributedOptimizer(object):
         return grad_op
 
 
-def average_gradients(tower_grads):
+def average_gradients(grad_dict):
+    """Calculate the mean gradient for the devices processed so far
+
+    Note
+    ----
+    This function provides a synchronization point across all towers.
+
+    Parameters
+    ----------
+    grad_dict: Dict of lists of gradients (per device).
+        A dictionary with variables as keys and a list of gradients per
+        device as values.
+
+    Return
+    ------
+    List of pairs of (gradient, variable) where the gradient has been
+    averaged across all towers.
+    """
+    average_grads = []
+    for v, grads_list in grad_dict.iteritems():
+        with tf.name_scope('Avg_grads'):
+            if len(grads_list) > 1:
+                grad_list = tf.concat(axis=0, values=grads_list)
+                avg_grad = tf.reduce_mean(grad_list, 0)
+                average_grads.append((avg_grad, v))
+            else:
+                average_grads.append((grads_list[0], v))
+    return average_grads
+
+
+def average_list_gradients(tower_grads):
     """Calculate the mean gradient for each shared variable across all towers.
 
     Note
