@@ -390,8 +390,8 @@ class Experiment(object):
         Allow to potentially specify which symbolic variables to train on"""
         return None
 
-    def dev_model_out_post(self, model_out, device, dev_placeholders,
-                           dev_set_str, these_s):
+    def dev_model_out_post(self, model_out, dev_placeholders, dev_stats_scope,
+                           phase_set_dev, these_s):
         """Process the model output for visualization
 
         Allow to potentially symbolically postprocess the output of the
@@ -399,7 +399,8 @@ class Experiment(object):
         return model_out
 
     def dev_extra_summaries(self, stacked_model_outs, stacked_loss_outs,
-                            is_training, dev_set_str, these_s):
+                            is_training, dev_stats_scope, phase_set_dev,
+                            these_s):
         """Add user-defined per-device summaries"""
         pass
 
@@ -445,9 +446,9 @@ class Experiment(object):
         per_dev_placeholders = self.placeholders[is_training]
         if is_training:
             grad_ops = []
-            phase_set_str = 'T.'
+            phase_set = 'T.'
         else:
-            phase_set_str = 'V-' + which_set + '.'
+            phase_set = 'V_' + which_set + '.'
 
         if is_training:
             # Create a stateful Optimizer object
@@ -469,7 +470,7 @@ class Experiment(object):
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
-            summaries.append(phase_set_str + device_str)
+            summaries.append(phase_set + device_str)
         these_s = summaries
 
         # Build a graph for each device, each with its input and output
@@ -478,75 +479,70 @@ class Experiment(object):
         for dev_id, (dev, dev_placeholders) in enumerate(
                 zip(cfg.devices, per_dev_placeholders)):
             device_str = 'dev' + str(dev_id)
-            dev_set_str = phase_set_str + device_str
-            # The name scope helps organize the graph in tensorboard
-            # The variable scope is needed to reuse the variables among
+            phase_set_dev = phase_set + device_str
+            # NOTE The name scopes help organize the graph in tensorboard
+            # The variable scopes are needed to reuse the variables among
             # the various graphs
-            with tf.name_scope(dev_set_str), \
-                    tf.variable_scope('dev_graph', reuse=reuse_variables), \
-                    tf.device(dev):
-                reuse_variables = True
+            with tf.name_scope(phase_set_dev), tf.device(dev):
+                with tf.variable_scope('model', reuse=reuse_variables):
+                    # Model preactivation, activation (softmax) and prediction
+                    # NOTE Will be then stacked in stacked_model_outs
+                    model_out = self.build_model(dev_placeholders, is_training)
+                    assert isinstance(model_out, dict), """
+                        Your model should return a dictionary"""
+                    assert 'out_preact' in model_out, """Your model
+                        function should return a dictionary with attribute
+                        'out_preact'!"""
+                    assert 'out_act' in model_out, """Your model function
+                        should return a dictionary with attribute 'out_act'!"""
+                    assert 'pred' in model_out, """Your model function should
+                        return a dictionary with at least attribute 'pred'!"""
 
-                # Model preactivation, activation (softmax) and prediction
-                model_out = self.build_model(dev_placeholders, is_training)
-                assert isinstance(model_out, dict), """
-                    Your model should return a dictionary"""
-                assert 'out_preact' in model_out, """Your model
-                    function should return a dictionary with attribute
-                    'out_preact'!"""
-                assert 'out_act' in model_out, """Your model function
-                    should return a dictionary with attribute 'out_act'!"""
-                assert 'pred' in model_out, """Your model function should
-                    return a dictionary with at least attribute 'pred'!"""
-
-                # Loss
-                loss_params = self.get_loss_extra_params()
-                loss_outs = self.build_loss(dev_placeholders, model_out,
-                                            is_training=is_training,
-                                            **loss_params)
-                assert loss_outs is not None and isinstance(loss_outs, dict), (
+                with tf.variable_scope('loss', reuse=reuse_variables):
+                    reuse_variables = True  # Reuse from now on
+                    loss_params = self.get_loss_extra_params()
+                    loss_out = self.build_loss(dev_placeholders, model_out,
+                                               is_training=is_training,
+                                               **loss_params)
+                assert loss_out is not None and isinstance(loss_out, dict), (
                     """Your loss should return a dictionary""")
-                assert 'loss' in loss_outs, """Your loss function should
+                assert 'loss' in loss_out, """Your loss function should
                     return a dictionary with attribute 'loss'!"""
-                assert 'components' in loss_outs, """Your loss function should
+                assert 'components' in loss_out, """Your loss function should
                     return a dictionary with attribute 'components'
                     containing the list of terms that composes the total
                     loss!"""
                 # Append this device's loss outs to those of prev devices
-                recursive_dict_stack(loss_outs, stacked_loss_outs)
+                recursive_dict_stack(loss_out, stacked_loss_outs)
 
-                # Append '_stats' to the name scope and remove the
-                # implicit name scope of the variable_scope
-                scope_str = dev_set_str + '_stats'
+                # Add '_stats' suffix to the name scope
+                scope_str = phase_set_dev + '_stats'
                 with tf.name_scope(None):
-                    with tf.name_scope(scope_str) as dev_set_scope:
-                        tf.summary.scalar('Loss', loss_outs['loss'], these_s)
+                    with tf.name_scope(scope_str) as dev_stats_scope:
+                        tf.summary.scalar('Loss', loss_out['loss'], these_s)
 
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
                 # computed
-                model_out = self.dev_model_out_post(model_out, device_str,
-                                                    dev_placeholders,
-                                                    dev_set_scope, dev_set_str,
-                                                    these_s)
+                with tf.variable_scope(model_scope):
+                    model_out = self.dev_model_out_post(model_out,
+                                                        dev_placeholders,
+                                                        dev_stats_scope,
+                                                        phase_set_dev,
+                                                        these_s)
                 # Append this device's model outs to those of prev devices
                 recursive_dict_stack(model_out, stacked_model_outs)
 
-                # Add '_stats' to the name scope
-                # To avoid a nested name scope we remove the previous name
-                # scopes (the explicit one from the name_scope and the implicit
                 if is_training:
-                    # Compute gradients, add noise to the gradient and
-                    # create the op to apply it if needed.
                     grad_op = optimizer.minimize(
-                        loss_outs=loss_outs,
+                        loss_out=loss_out,
                         var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
                         aggregation_method=None,
                         colocate_gradients_with_ops=True,
                         name=None,
                         grad_loss=None,
-                        dev_set_str=dev_set_str,
+                        phase_set_dev=phase_set_dev,
                         summaries=these_s)
                     # Create a *list* of gradient update ops. The t-th element
                     # of the list updates the gradients of the devices *up to*
@@ -554,8 +550,8 @@ class Experiment(object):
                     grad_ops.append(grad_op)
 
                 self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
-                                         is_training, dev_set_scope,
-                                         dev_set_str, these_s)
+                                         is_training, dev_stats_scope,
+                                         phase_set_dev, these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -581,15 +577,15 @@ class Experiment(object):
         # the first `num_devs`, i.e., dynamically select at runtime
         # which devices' outputs to consider
         recursive_truncate_dict(stacked_model_outs, self.sym_num_batches,
-                                parent_k=phase_set_str + '/outs',
+                                parent_k=phase_set + '/outs',
                                 exact_len=cfg.num_devs)
         recursive_truncate_dict(stacked_loss_outs, self.sym_num_devs,
-                                parent_k=phase_set_str + '/losses',
+                                parent_k=phase_set + '/losses',
                                 exact_len=cfg.num_devs)
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
-        tf.summary.scalar(phase_set_str + 'control_flow/batch_size',
+        tf.summary.scalar(phase_set + 'control_flow/batch_size',
                           tf.shape(stacked_model_outs['pred'])[0], summaries)
 
         # We are trying to be flexible with the placeholders, so we
@@ -616,7 +612,7 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_devs at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(phase_set_str + 'avg_losses/tot_loss', avg_loss,
+        tf.summary.scalar(phase_set + 'avg_losses/tot_loss', avg_loss,
                           summaries)
 
         if is_training:
@@ -627,15 +623,15 @@ class Experiment(object):
             # computed for validation as well
             for (key, loss) in stacked_loss_outs['components'].iteritems():
                 avg_comp_loss = tf.reduce_mean(loss)
-                tf.summary.scalar(phase_set_str + 'avg_losses/comp_%s' % key,
+                tf.summary.scalar(phase_set + 'avg_losses/comp_%s' % key,
                                   avg_comp_loss, summaries)
 
             # Add the histograms for trainable variables
             for var in tf.trainable_variables():
                 var_name = var.op.name
-                scope_str, var_name = squash_maybe(dev_set_str, var_name)
+                scope_str, var_name = squash_maybe(phase_set, var_name)
                 scope_str += '_%s_%s'  # metric, var
-                scope_str = dev_set_str + '_%s_'  # metric
+                scope_str = phase_set + '_%s_'  # metric
                 scope_str, var_name = squash_maybe(scope_str, var_name)
                 scope_str += '_%s'  # var name
                 tf.summary.histogram(scope_str % ('Trainable_vars_activations',

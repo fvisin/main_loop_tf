@@ -164,7 +164,7 @@ class DistributedOptimizer(object):
 
         return grad_noise_scale
 
-    def __add_summaries(self, grads_and_vars, grad_noise_scale, dev_set_str,
+    def __add_summaries(self, grads_and_vars, grad_noise_scale, phase_set_dev,
                         summaries=[]):
         if summaries == []:
             return
@@ -173,7 +173,7 @@ class DistributedOptimizer(object):
             # Add summary for the noise on the gradient
             # -----------------------------------------
             if grad_noise_scale is not None:
-                tf.summary.scalar(dev_set_str + ".Grad_noise",
+                tf.summary.scalar(phase_set_dev + ".Grad_noise",
                                   grad_noise_scale, summaries)
 
             # Add histograms for variables, grads and grad norms
@@ -184,8 +184,8 @@ class DistributedOptimizer(object):
 
                 if grad is not None:
                     # Remove the implicit name_scope of the variable scope
-                    var_name = var.op.name.replace('dev_graph/', '')
-                    sum_str = dev_set_str + '.%s'  # metric
+                    var_name = var.op.name.replace('model/', '')
+                    sum_str = phase_set_dev + '.%s'  # metric
                     sum_str, var_name = squash_maybe(sum_str, var_name)
                     sum_str += '/%s'  # var name
                     # Write the summary
@@ -194,9 +194,9 @@ class DistributedOptimizer(object):
                     tf.summary.histogram(sum_str % ('Grad_hist', var_name),
                                          grad, summaries)
 
-    def minimize(self, loss_outs, var_list=None, gate_gradients=None,
+    def minimize(self, loss_out, var_list=None, gate_gradients=None,
                  aggregation_method=None, colocate_gradients_with_ops=False,
-                 name=None, grad_loss=None, dev_set_str='', summaries=None,
+                 name=None, grad_loss=None, phase_set_dev='', summaries=None,
                  loss=None):
         """Minimize over multiple devices with grad noise
 
@@ -215,13 +215,13 @@ class DistributedOptimizer(object):
             raise ValueError('This Optimizer expects a dictionary of '
                              'losses rather than a single loss. Do not '
                              'use it as a normal tf optimizer but rather '
-                             'rely on loss_outs')
+                             'rely on loss_out')
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
         # This device's gradients
         grads_and_vars = self.compute_gradients(
-            loss_outs['loss'], var_list=var_list,
+            loss_out['loss'], var_list=var_list,
             gate_gradients=gate_gradients,
             aggregation_method=aggregation_method,
             colocate_gradients_with_ops=colocate_gradients_with_ops,
@@ -241,7 +241,7 @@ class DistributedOptimizer(object):
             grads_and_vars)
 
         # Create some summaries
-        self.__add_summaries(grads_and_vars, grad_noise_scale, dev_set_str,
+        self.__add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
                              summaries)
 
         # Gradient descent
