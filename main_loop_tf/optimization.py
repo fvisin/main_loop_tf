@@ -298,12 +298,9 @@ def average_gradients(grad_dict, phase_set_dev):
     with tf.name_scope(None):
         with tf.name_scope(phase_set_dev + 'grad_avg'):
             for v, grads_list in grad_dict.iteritems():
-                if len(grads_list) > 1:
-                    grad_list = tf.concat(axis=0, values=grads_list)
-                    avg_grad = tf.reduce_mean(grad_list, 0)
-                    average_grads.append((avg_grad, v))
-                else:
-                    average_grads.append((grads_list[0], v))
+                grad_list = tf.stack(axis=0, values=grads_list)
+                avg_grad = tf.reduce_mean(grad_list, 0)
+                average_grads.append((avg_grad, v))
     return average_grads
 
 
