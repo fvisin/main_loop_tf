@@ -317,7 +317,7 @@ class Experiment(object):
             self.global_step = tf.Variable(0, trainable=False,
                                            name='global_step', dtype='int32')
             self.sym_num_devs = tf.placeholder(np.int32, shape=None,
-                                               name='num_active_devs')
+                                               name='num_devs')
             self.sym_num_batches = tf.placeholder(np.int32, shape=None,
                                                   name='num_batches')
             self.sym_prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
@@ -405,7 +405,7 @@ class Experiment(object):
         pass
 
     def extra_summaries(self, stacked_model_outs, stacked_loss_outs,
-                        is_training, these_s):
+                        is_training, stats_scope, these_s):
         """Add user-defined global summaries"""
         pass
 
@@ -605,9 +605,9 @@ class Experiment(object):
 
         # Compute the mean loss over the first num_devs devices. This
         # will also be used to update the loss summaries
-        with tf.name_scope(phase_set):
+        with tf.name_scope(phase_set + 'aggregated_stats') as stats_scope:
             avg_loss = tf.reduce_mean(stacked_loss_outs['loss'],
-                                      name='Avg_loss')
+                                      name='avg_loss')
             self.avg_loss[is_training][which_set] = avg_loss
 
         #############
@@ -617,8 +617,8 @@ class Experiment(object):
         # The number of devices will be dynamically selected by the
         # numerical value assigned to num_devs at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(phase_set + 'aggregated_stats/avg_loss', avg_loss,
-                          summaries)
+        with tf.name_scope(stats_scope):
+            tf.summary.scalar('avg_loss', avg_loss, summaries)
 
         if is_training:
             # Write the summary of the mean per-component loss over the first
@@ -626,26 +626,22 @@ class Experiment(object):
             # run-time). We do not want to clutter the summaries with these
             # information for validation, but keep in mind that this could be
             # computed for validation as well
-            for (key, loss) in stacked_loss_outs['components'].iteritems():
-                avg_comp_loss = tf.reduce_mean(loss)
-                tf.summary.scalar(phase_set + 'aggregated_stats/' +
-                                  'avg_loss_comp_%s' % key, avg_comp_loss,
-                                  summaries)
+            with tf.name_scope(stats_scope):
+                for (key, loss) in stacked_loss_outs['components'].iteritems():
+                    avg_comp_loss = tf.reduce_mean(loss)
+                    tf.summary.scalar('avg_loss_comp_%s' % key, avg_comp_loss,
+                                      summaries)
 
-            # Add the histograms for trainable variables
-            for var in tf.trainable_variables():
-                var_name = var.op.name.replace('model/', '')
-                scope_str, var_name = squash_maybe(phase_set, var_name)
-                scope_str += '_%s_%s'  # metric, var
-                scope_str = phase_set + '_%s_'  # metric
-                scope_str, var_name = squash_maybe(scope_str, var_name)
-                scope_str += '_%s'  # var name
-                tf.summary.histogram(scope_str % ('Trainable_vars_activations',
-                                                  var_name),
-                                     var, summaries)
+                # Add the histograms for trainable variables
+                for var in tf.trainable_variables():
+                    var_name = var.op.name.replace('model/', '')
+                    scope_str, var_name = squash_maybe('Train_var_act',
+                                                       var_name)
+                    tf.summary.histogram(scope_str + '_' + var_name, var,
+                                         summaries)
 
         self.extra_summaries(stacked_model_outs, stacked_loss_outs,
-                             is_training, these_s)
+                             is_training, stats_scope, these_s)
 
         # Create a list of summary ops that update the summary collections that
         # we used at graph creation time. Thanks to the way we decremented the

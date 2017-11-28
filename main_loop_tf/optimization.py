@@ -224,16 +224,13 @@ class DistributedOptimizer(object):
         if gate_gradients is None:
             gate_gradients = self.GATE_OP  # access parent class attrib
 
-        # Add suffix to name_scope (rather than nesting # scopes)
-        with tf.name_scope(None):
-            with tf.name_scope(phase_set_dev + 'grad_computation'):
-                # This device's gradients
-                grads_and_vars = self.compute_gradients(
-                    loss_out['loss'], var_list=var_list,
-                    gate_gradients=gate_gradients,
-                    aggregation_method=aggregation_method,
-                    colocate_gradients_with_ops=colocate_gradients_with_ops,
-                    grad_loss=grad_loss)
+        # This device's gradients
+        grads_and_vars = self.compute_gradients(
+            loss_out['loss'], var_list=var_list,
+            gate_gradients=gate_gradients,
+            aggregation_method=aggregation_method,
+            colocate_gradients_with_ops=colocate_gradients_with_ops,
+            grad_loss=grad_loss)
 
         # Check if no gradient
         vars_with_grad = [v for g, v in grads_and_vars if g is not None]
@@ -244,9 +241,10 @@ class DistributedOptimizer(object):
                 "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
                                      loss))
 
-        # Add noise and multipliers to gradient
+        # Add suffix to name_scope (rather than nesting # scopes)
         with tf.name_scope(None):
             with tf.name_scope(phase_set_dev + 'grad_processing'):
+                # Add noise and multipliers to gradient
                 grads_and_vars, grad_noise_scale = self.__process_gradients(
                     grads_and_vars)
 
@@ -262,11 +260,9 @@ class DistributedOptimizer(object):
 
         # Average the gradients over the devices processed so far
         grads_and_vars = average_gradients(self._dev_grads, phase_set_dev)
-        with tf.name_scope(None):
-            with tf.name_scope(phase_set_dev + 'grad_application'):
-                grad_op = self.apply_gradients(grads_and_vars,
-                                               global_step=self.global_step,
-                                               name=name)
+        grad_op = self.apply_gradients(grads_and_vars,
+                                       global_step=self.global_step,
+                                       name=name)
 
         # TODO: Averaged gradients visualisation
         # Add the histograms of the gradients

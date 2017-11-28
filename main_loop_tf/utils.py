@@ -296,7 +296,7 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
         A string to be prepended to the key of the dict in the name of the op
     exact_len: int (optional)
         The number of elements that each list should have. If provided,
-        the length of lists will be checked.
+        the length of the lists will be checked.
     """
     for k, v in a_dict.iteritems():
         if isinstance(v, dict):
