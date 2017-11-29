@@ -73,7 +73,42 @@ class ExampleExperiment(Experiment):
 
     def validate_fn(self, graph_out, which_set):
         """A validation function to evaluate the model should be defined."""
+        # Do one step of training to setup things
+        self.experiment_begin()
+        self.epoch_begin()
+        self.batch_begin()
+        self.batch_do()
+        self.batch_end()
+        self.epoch_end()
+
+        # Prepare validation
+        sym_pred = graph_out['model_outs']['pred']
+        m = self._minibatch
+        p = self.placeholders
+
+        feed_dict = {}
+        feed_dict[p[False][0]['data']] = m['data']
+        feed_dict[p[False][0]['labels']] = m['labels'].flatten()
+        feed_dict[self.sym_num_devs] = 1
+        feed_dict[self.sym_num_batches] = len(m['data'])
+        feed_dict[self.sym_prev_err] = self.loss_value
+        self._feed_dict = feed_dict
+        val_dict = {'pred': sym_pred}
+        fetch_dict = self.sess.run(val_dict, feed_dict=feed_dict)
+        from PIL import Image
+        import matplotlib as mpl
+        import matplotlib.pyplot as plt
+        cmap = mpl.colors.ListedColormap(self.train.cmap)
+        plt.imsave('camvid.png', fetch_dict['pred'][0], cmap=cmap,
+                   vmin=0, vmax=12)
+
         return 0
+
+    def batch_begin(self):
+        self._t_data_load = 0
+        if not hasattr(self, '_minibatch'):
+            self._minibatch = self.train.next()
+            self._t_data_load = 10
 
 
 if __name__ == '__main__':
@@ -82,6 +117,7 @@ if __name__ == '__main__':
     # You can also add fixed values like this
     argv = sys.argv
     argv += ['--dataset', 'camvid']
+    argv += ['--val_every_epochs', '10']
 
     exp = ExampleExperiment(argv)
     if exp.cfg.do_validation_only:
