@@ -126,7 +126,8 @@ class Experiment(object):
         save_path = os.path.join(checkpoints_path, model_name)
         cfg.model_name = model_name
 
-        if cfg.restore_model.lower() == 'false':
+        # Save path
+        if cfg.restore_model.lower() not in ['', 'true']:  # false or custom
             # If the model should not be restored from a checkpoint,
             # and the save path exists, make the save path unique by
             # adding an incremental suffix
@@ -139,20 +140,20 @@ class Experiment(object):
                 else:
                     tmp_path = save_path + '_' + str(incr_num)
             save_path = tmp_path
+        # Restore path
+        if cfg.restore_model.lower() not in ['', 'true', 'false']:
+            # A specific restore path has been provided
+            restore_path = cfg.checkpoints_basedir
+            if cfg.restore_suite != '':
+                restore_path = os.path.join(restore_path,
+                                            cfg.restore_suite)
+            restore_path = os.path.join(restore_path, cfg.restore_model)
+        elif cfg.restore_model.lower() == 'false':
+            # Disable restore
+            restore_path = None
         else:
-            if cfg.restore_model.lower() not in ['', 'true']:
-                # A specific restore path has been provided
-                restore_path = cfg.checkpoints_basedir
-                if cfg.restore_suite != '':
-                    restore_path = os.path.join(restore_path,
-                                                cfg.restore_suite)
-                restore_path = os.path.join(restore_path, cfg.restore_model)
-            elif cfg.restore_model.lower() == 'false':
-                # Disable restore
-                restore_path = None
-            else:
-                # Restore path == save path
-                restore_path = os.path.join(save_path)
+            # Restore path == save path
+            restore_path = os.path.join(save_path)
         cfg.save_path = save_path
         cfg.restore_path = restore_path
         if not os.path.exists(save_path):
