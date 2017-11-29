@@ -71,7 +71,7 @@ class ExampleExperiment(Experiment):
         # itself
         return {'loss': loss, 'components': {'main_loss': loss}}
 
-    def validate(self):
+    def validate_fn(self, graph_out, which_set):
         """A validation function to evaluate the model should be defined."""
         return 0
 
