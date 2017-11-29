@@ -16,8 +16,6 @@ from tensorflow.python.training.learning_rate_decay import (exponential_decay,
                                                             polynomial_decay,
                                                             natural_exp_decay,
                                                             inverse_time_decay)
-from tensorflow.python.training.training import Optimizer
-
 from utils import squash_maybe
 
 smooth = 1.
@@ -25,255 +23,163 @@ smooth = 1.
 
 def get_optimizer(optimizer):
     try:
-        BaseClass = getattr(training, optimizer + 'Optimizer')
+        return getattr(training, optimizer + 'Optimizer')
     except AttributeError:
-        BaseClass = getattr(training, optimizer.capitalize() + 'Optimizer')
-    return type("DistributedOptimizer",
-                (DistributedOptimizer, BaseClass), {})
+        return getattr(training, optimizer.capitalize() + 'Optimizer')
 
 
-class DistributedOptimizer(object):
-    """This class will be specialized by get_optimizer"""
-    def __init__(self, cfg, global_step):
-        self.cfg = cfg
-        self.initial_lr = cfg.lr
-        self.lr_decay = cfg.lr_decay
-        self.global_step = global_step
+def apply_lr_decay(cfg, global_step):
+    # Learning rate schedule
+    if cfg.lr_decay is None:
+        lr = cfg.lr
+    elif cfg.lr_decay == 'exp':
+        lr = exponential_decay(cfg.lr,
+                               global_step,
+                               cfg.decay_steps,
+                               cfg.decay_rate,
+                               staircase=cfg.staircase)
+    elif cfg.lr_decay == 'piecewise':
+        lr = piecewise_constant(global_step,
+                                cfg.lr_boundaries,
+                                cfg.lr_values)
+    elif cfg.lr_decay == 'polynomial':
+        lr = polynomial_decay(cfg.lr,
+                              global_step,
+                              cfg.decay_steps,
+                              end_learning_rate=cfg.end_lr,
+                              power=cfg.power,
+                              cycle=cfg.staircase)
 
-        # Learning rate schedule
-        if cfg.lr_decay is None:
-            lr = self.initial_lr
-        elif cfg.lr_decay == 'exp':
-            lr = exponential_decay(cfg.lr,
-                                   global_step,
-                                   cfg.decay_steps,
-                                   cfg.decay_rate,
-                                   staircase=cfg.staircase)
-        elif cfg.lr_decay == 'piecewise':
-            lr = piecewise_constant(global_step,
-                                    cfg.lr_boundaries,
-                                    cfg.lr_values)
-        elif cfg.lr_decay == 'polynomial':
-            lr = polynomial_decay(cfg.lr,
-                                  global_step,
-                                  cfg.decay_steps,
-                                  end_learning_rate=cfg.end_lr,
-                                  power=cfg.power,
-                                  cycle=cfg.staircase)
+    elif cfg.lr_decay == 'natural_exp':
+        lr = natural_exp_decay(cfg.lr,
+                               global_step,
+                               cfg.decay_steps,
+                               cfg.decay_rate,
+                               staircase=cfg.staircase)
+    elif cfg.lr_decay == 'inverse_time':
+        lr = inverse_time_decay(cfg.lr,
+                                global_step,
+                                cfg.decay_steps,
+                                cfg.decay_rate,
+                                staircase=cfg.staircase)
 
-        elif cfg.lr_decay == 'natural_exp':
-            lr = natural_exp_decay(cfg.lr,
-                                   global_step,
-                                   cfg.decay_steps,
-                                   cfg.decay_rate,
-                                   staircase=cfg.staircase)
-        elif cfg.lr_decay == 'inverse_time':
-            lr = inverse_time_decay(cfg.lr,
-                                    global_step,
-                                    cfg.decay_steps,
-                                    cfg.decay_rate,
-                                    staircase=cfg.staircase)
+    elif cfg.lr_decay == 'STN':
+        epoch = tf.cast(global_step / cfg.decay_steps, tf.int32)
+        lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
+    else:
+        raise NotImplementedError()
+    return lr
 
-        elif cfg.lr_decay == 'STN':
-            epoch = tf.cast(global_step / cfg.decay_steps, tf.int32)
-            lr = cfg.lr * tf.pow(0.5, tf.cast(epoch / 50, cfg._FLOATX))
-        else:
-            raise NotImplementedError()
-        self.lr = lr
 
-        # Here will be stored lists with one value per device
-        self.dev_comp_losses = {}  # per_loss_comp, per device
-        self.dev_avg_losses = []  # per device
-        self.dev_avg_comp_losses = {}  # per loss comp, per device
-        self._dev_grads = {}   # per variable, per device
-        return super(DistributedOptimizer, self).__init__(
-            learning_rate=lr, **cfg.optimizer_params)
+def process_gradients(cfg, global_step, prev_err, grads_and_vars):
+    """Add noise and multipliers to gradient
 
-    def __process_gradients(self, gradients):
-        """Add noise and multipliers to gradient
+    Parameters
+    ----------
+    grads_and_vars: list
+        The list of gradients to be modified.
+    """
+    grad_noise_scale = _get_grad_noise_scale(cfg, global_step, prev_err)
 
-        Parameters
-        ----------
-        gradients: list
-            The list of gradients to be modified.
-        """
-        grad_noise_scale = self.__get_grad_noise_scale(gradients)
+    if grad_noise_scale is not None:
+        grads_and_vars = _add_scaled_noise_to_gradients(
+            grads_and_vars, grad_noise_scale)
 
-        if grad_noise_scale is not None:
-            gradients = _add_scaled_noise_to_gradients(
-                gradients, grad_noise_scale)
-
-        # Optionally multiply some gradients
-        if self.cfg.grad_multiplier is not None:
-            gradients = _multiply_gradients(
-                gradients, self.cfg.gradient_multiplier)
-            if not gradients:
-                raise ValueError(
-                    'Empty list of (gradient,var) pairs encountered. '
-                    'This is most likely caused by an improper value '
-                    'of cfg.gradient_multipliers.')
-
-        # Optionally clip gradients by global norm
-        if isinstance(self.cfg.max_grad_norm, float):
-            gradients = _clip_gradients_by_norm(
-                gradients, self.cfg.max_grad_norm)
-        elif callable(self.cfg.max_grad_norm):
-            gradients = self.cfg.max_grad_norm(gradients)
-        elif self.cfg.max_grad_norm is not None:
+    # Optionally multiply some gradients
+    if cfg.grad_multiplier is not None:
+        grads_and_vars = _multiply_gradients(
+            grads_and_vars, cfg.gradient_multiplier)
+        if not grads_and_vars:
             raise ValueError(
-                "Unknown type %s for cfg.max_grad_norm" %
-                type(self.cfg.max_grad_norm))
+                'Empty list of (gradient,var) pairs encountered. '
+                'This is most likely caused by an improper value '
+                'of cfg.gradient_multipliers.')
 
-        return gradients, grad_noise_scale
+    # Optionally clip gradients by global norm
+    if isinstance(cfg.max_grad_norm, float):
+        grads_and_vars = _clip_gradients_by_norm(
+            grads_and_vars, cfg.max_grad_norm)
+    elif callable(cfg.max_grad_norm):
+        grads_and_vars = cfg.max_grad_norm(grads_and_vars)
+    elif cfg.max_grad_norm is not None:
+        raise ValueError(
+            "Unknown type %s for cfg.max_grad_norm" %
+            type(cfg.max_grad_norm))
+    return grads_and_vars, grad_noise_scale
 
-    def __get_grad_noise_scale(self, gradients):
-        if self.cfg.grad_noise_decay is None:
-            grad_noise_scale = self.cfg.grad_noise_scale
-        elif self.cfg.grad_noise_decay == 'annealing':
-            """
-            Adds annealed gaussian noise to the gradients at
-            every time step, by decaying the variance at each
-            time step
-            g_t <- g_t + N(0, sigma_t^2)
-            sigma_t^2 = eta / (1 + t)^gamma
 
-            with eta selected from {0.01, 0.3, 1.0) and
+def _get_grad_noise_scale(cfg, global_step, prev_err):
+    if cfg.grad_noise_decay is None:
+        grad_noise_scale = cfg.grad_noise_scale
+    elif cfg.grad_noise_decay == 'annealing':
+        """
+        Adds annealed gaussian noise to the gradients at
+        every time step, by decaying the variance at each
+        time step
+        g_t <- g_t + N(0, sigma_t^2)
+        sigma_t^2 = eta / (1 + t)^gamma
+
+        with eta selected from {0.01, 0.3, 1.0) and
+        gamma = 0.55
+        See: "Adding gradient noise improves learning
+        for very deep networks",
+        http://arxiv.org/pdf/1511.06807v1.pdf
+        """
+        eta = cfg.grad_noise_scale ** 0.5
+        gamma = 0.55 / 2
+        grad_noise_scale = eta * tf.pow(tf.cast(
+            global_step + 1, cfg._FLOATX), -gamma)
+    elif cfg.grad_noise_decay == 'neural_gpu':
+        if prev_err is None:
+            grad_noise_scale = cfg.grad_noise_scale
+        else:
+            eta = cfg.grad_noise_scale
             gamma = 0.55
-            See: "Adding gradient noise improves learning
-            for very deep networks",
-            http://arxiv.org/pdf/1511.06807v1.pdf
-            """
-            eta = self.cfg.grad_noise_scale ** 0.5
-            gamma = 0.55 / 2
-            grad_noise_scale = eta * tf.pow(tf.cast(
-                self.global_step + 1, self.cfg._FLOATX), -gamma)
-        elif self.cfg.grad_noise_decay == 'neural_gpu':
-            if self.prev_err is None:
-                grad_noise_scale = self.cfg.grad_noise_scale
-            else:
-                eta = self.cfg.grad_noise_scale
-                gamma = 0.55
-                grad_noise_scale = eta * tf.sqrt(
-                    self.prev_err * tf.pow(tf.cast(
-                        self.global_step + 1, self.cfg._FLOATX), -gamma))
-        else:
-            # Raise ValueError
-            raise NotImplementedError('Unknown value of '
-                                      'cfg.grad_noise_decay: %s' %
-                                      self.cfg.grad_noise_decay)
+            grad_noise_scale = eta * tf.sqrt(
+                prev_err * tf.pow(tf.cast(
+                    global_step + 1, cfg._FLOATX), -gamma))
+    else:
+        # Raise ValueError
+        raise NotImplementedError('Unknown value of '
+                                  'cfg.grad_noise_decay: %s' %
+                                  cfg.grad_noise_decay)
+    return grad_noise_scale
 
-        return grad_noise_scale
 
-    def __add_summaries(self, grads_and_vars, grad_noise_scale, phase_set_dev,
-                        summaries=[]):
-        if summaries == []:
-            return
+def add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
+                  summaries=[]):
+    if summaries == []:
+        return
 
-        # Add summary for the noise on the gradient
-        # -----------------------------------------
-        if grad_noise_scale is not None:
-            tf.summary.scalar(phase_set_dev + "grad_noise", grad_noise_scale,
-                              summaries)
+    # Add summary for the noise on the gradient
+    # -----------------------------------------
+    if grad_noise_scale is not None:
+        tf.summary.scalar(phase_set_dev + "grad_noise", grad_noise_scale,
+                          summaries)
 
-        # Add histograms for variables, grads and grad norms
-        # --------------------------------------------------
-        with tf.name_scope(None):
-            with tf.name_scope(phase_set_dev + 'grad_norms') as norm_scope:
-                with tf.name_scope(phase_set_dev + 'grad_hists') as hist_scope:
-                    for grad, var in grads_and_vars:
-                        if isinstance(grad, tf.IndexedSlices):
-                            grad = grad.values
+    # Add histograms for variables, grads and grad norms
+    # --------------------------------------------------
+    with tf.name_scope(None):
+        with tf.name_scope(phase_set_dev + 'grad_norms') as norm_scope:
+            with tf.name_scope(phase_set_dev + 'grad_hists') as hist_scope:
+                for grad, var in grads_and_vars:
+                    if isinstance(grad, tf.IndexedSlices):
+                        grad = grad.values
 
-                        if grad is not None:
-                            # Remove the implicit name_scope of the variable
-                            # scope
-                            var_name = var.op.name.replace('model/', '')
-                            _, var_name = squash_maybe('', var_name)
-                            # Write the summary
-                            with tf.name_scope(norm_scope):
-                                tf.summary.scalar(var_name,
-                                                  tf.global_norm([grad]),
-                                                  summaries)
-                            with tf.name_scope(hist_scope):
-                                tf.summary.histogram(var_name,
-                                                     grad,
-                                                     summaries)
-
-    def minimize(self, loss_out, var_list=None, gate_gradients=None,
-                 aggregation_method=None, colocate_gradients_with_ops=False,
-                 name=None, grad_loss=None, phase_set_dev='', summaries=None,
-                 loss=None):
-        """Minimize over multiple devices with grad noise
-
-        Extend Optimizer.minimize() in several ways:
-            * Add noise and multipliers
-            * Add various gradient summaries
-            * Be stateful and keep trace of previously computed
-              gradients
-            * Add a control dependency on update ops before computing
-              the gradient
-            * Average gradient over the devices processed so far.
-            * It also does not have global_step as an argument, as it's
-              in the state of the optimizer already.
-        """
-        if loss is not None:
-            raise ValueError('This Optimizer expects a dictionary of '
-                             'losses rather than a single loss. Do not '
-                             'use it as a normal tf optimizer but rather '
-                             'rely on loss_out')
-        if gate_gradients is None:
-            gate_gradients = self.GATE_OP  # access parent class attrib
-
-        # This device's gradients
-        grads_and_vars = self.compute_gradients(
-            loss_out['loss'], var_list=var_list,
-            gate_gradients=gate_gradients,
-            aggregation_method=aggregation_method,
-            colocate_gradients_with_ops=colocate_gradients_with_ops,
-            grad_loss=grad_loss)
-
-        # Check if no gradient
-        vars_with_grad = [v for g, v in grads_and_vars if g is not None]
-        if not vars_with_grad:
-            raise ValueError(
-                "No gradients provided for any variable, check your graph "
-                "for ops that do not support gradients, between variables "
-                "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
-                                     loss))
-
-        # Add suffix to name_scope (rather than nesting # scopes)
-        with tf.name_scope(None):
-            with tf.name_scope(phase_set_dev + 'grad_processing'):
-                # Add noise and multipliers to gradient
-                grads_and_vars, grad_noise_scale = self.__process_gradients(
-                    grads_and_vars)
-
-        # Create some summaries
-        self.__add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
-                             summaries)
-
-        # Gradient descent
-        # ----------------
-        # Save the grads of each variable for this device, to be averaged out
-        for g, v in grads_and_vars:
-            self._dev_grads.setdefault(v, []).append(g)
-
-        # Average the gradients over the devices processed so far
-        grads_and_vars = average_gradients(self._dev_grads, phase_set_dev)
-        grad_op = self.apply_gradients(grads_and_vars,
-                                       global_step=self.global_step,
-                                       name=name)
-
-        # TODO: Averaged gradients visualisation
-        # Add the histograms of the gradients
-        # with tf.name_scope('grad_summaries'):
-        #     for grad, var in grads_and_vars:
-        #         if grad is not None:
-        #             summaries['training'].append(
-        #                 tf.summary.histogram(
-        #                   var.op.name + '/gradients', grad))
-
-        return grad_op
+                    if grad is not None:
+                        # Remove the implicit name_scope of the variable
+                        # scope
+                        var_name = var.op.name.replace('model/', '')
+                        _, var_name = squash_maybe('', var_name)
+                        # Write the summary
+                        with tf.name_scope(norm_scope):
+                            tf.summary.scalar(var_name,
+                                              tf.global_norm([grad]),
+                                              summaries)
+                        with tf.name_scope(hist_scope):
+                            tf.summary.histogram(var_name,
+                                                 grad,
+                                                 summaries)
 
 
 def average_gradients(grad_dict, phase_set_dev):

@@ -17,7 +17,8 @@ from tensorflow.python.training.supervisor import Supervisor
 from tqdm import tqdm
 
 import gflags
-from optimization import get_optimizer
+from optimization import (apply_lr_decay, add_summaries, average_gradients,
+                          get_optimizer, process_gradients)
 from utils import (recursive_dict_stack, recursive_truncate_dict,
                    save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler)
 
@@ -451,17 +452,16 @@ class Experiment(object):
             phase_set = 'V_' + which_set + '.'
 
         if is_training:
-            # Create a stateful Optimizer object
+            lr = apply_lr_decay(self.cfg, self.global_step)
             if self.UserOptimizer is None:
-                optimizer = get_optimizer(cfg.optimizer)(
-                    cfg=cfg, global_step=self.global_step)
+                optimizer = get_optimizer(cfg.optimizer)(lr)
             else:
-                optimizer = self.UserOptimizer(
-                    cfg=cfg, global_step=self.global_step)
+                optimizer = self.UserOptimizer(lr)
             if hasattr(self, 'optimizer'):
                 raise ValueError('Training on multiple sets is not '
                                  'supported.')
             self.optimizer = optimizer
+            self.dev_grads = {}
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
@@ -537,7 +537,7 @@ class Experiment(object):
                 if is_training:
                     # Compute gradients, add noise to the gradient and
                     # create the op to apply it if needed.
-                    grad_op = optimizer.minimize(
+                    grad_op = self.minimize(
                         loss_out=loss_out,
                         var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
@@ -988,3 +988,80 @@ class Experiment(object):
         # move_if_exist(tmp_path + save_name + ".svg",
         #               'models/' + save_name + '.svg')
         # validate = True  # Print the best model's test error
+
+    def minimize(self, loss_out, var_list=None, gate_gradients=None,
+                 aggregation_method=None, colocate_gradients_with_ops=False,
+                 name=None, grad_loss=None, phase_set_dev='', summaries=None,
+                 loss=None):
+        """Minimize over multiple devices with grad noise
+
+        Extend Optimizer.minimize() in several ways:
+            * Add noise and multipliers
+            * Add various gradient summaries
+            * Be stateful and keep trace of previously computed
+              gradients
+            * Add a control dependency on update ops before computing
+              the gradient
+            * Average gradient over the devices processed so far.
+            * It also does not have global_step as an argument, as it's
+              in the state of the optimizer already.
+        """
+        if loss is not None:
+            raise ValueError('This Optimizer expects a dictionary of '
+                             'losses rather than a single loss. Do not '
+                             'use it as a normal tf optimizer but rather '
+                             'rely on loss_out')
+        if gate_gradients is None:
+            gate_gradients = self.optimizer.GATE_OP
+
+        # This device's gradients
+        grads_and_vars = self.optimizer.compute_gradients(
+            loss_out['loss'], var_list=var_list,
+            gate_gradients=gate_gradients,
+            aggregation_method=aggregation_method,
+            colocate_gradients_with_ops=colocate_gradients_with_ops,
+            grad_loss=grad_loss)
+
+        # Check if no gradient
+        vars_with_grad = [v for g, v in grads_and_vars if g is not None]
+        if not vars_with_grad:
+            raise ValueError(
+                "No gradients provided for any variable, check your graph "
+                "for ops that do not support gradients, between variables "
+                "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
+                                     loss))
+
+        # Add suffix to name_scope (rather than nesting # scopes)
+        with tf.name_scope(None):
+            with tf.name_scope(phase_set_dev + 'grad_processing'):
+                # Add noise and multipliers to gradient
+                grads_and_vars, grad_noise_scale = process_gradients(
+                    self.cfg, self.global_step, self.sym_prev_err,
+                    grads_and_vars)
+
+        # Create some summaries
+        add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
+                      summaries)
+
+        # Gradient descent
+        # ----------------
+        # Save the grads of each variable for this device, to be averaged out
+        for g, v in grads_and_vars:
+            self.dev_grads.setdefault(v, []).append(g)
+
+        # Average the gradients over the devices processed so far
+        grads_and_vars = average_gradients(self.dev_grads, phase_set_dev)
+        grad_op = self.optimizer.apply_gradients(grads_and_vars,
+                                                 global_step=self.global_step,
+                                                 name=name)
+
+        # TODO: Averaged gradients visualisation
+        # Add the histograms of the gradients
+        # with tf.name_scope('grad_summaries'):
+        #     for grad, var in grads_and_vars:
+        #         if grad is not None:
+        #             summaries['training'].append(
+        #                 tf.summary.histogram(
+        #                   var.op.name + '/gradients', grad))
+
+        return grad_op
