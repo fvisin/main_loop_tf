@@ -938,7 +938,8 @@ class Experiment(object):
             # Did we improve *validation* metric?
             if self.history_scores == [] or valid_score >= self.best_score:
                 self.best_score = valid_score
-                tf.logging.info('## New best model found! ##')
+                tf.logging.info('## New best model found! {} ##'.format(
+                    self.best_score))
                 t_save = time()
                 # Save best model as a separate checkpoint
                 self.saver.save(self.sess, self.cfg.save_path + '_best.ckpt',
@@ -948,6 +949,9 @@ class Experiment(object):
 
                 self.patience_counter = 0
                 self.estop = False
+            else:
+                tf.logging.info('## Model score: {} - Best score {} ##'.format(
+                    valid_score, self.best_score))
             # Start skipping again
             self.val_skip = max(1, self.cfg.val_every_epochs) - 1
         else:
