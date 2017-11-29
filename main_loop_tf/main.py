@@ -132,7 +132,7 @@ class Experiment(object):
             # adding an incremental suffix
             incr_num = 0
             tmp_path = save_path
-            while(os.path.exists(save_path)):
+            while(os.path.exists(tmp_path)):
                 incr_num += 1
                 if incr_num == 1:
                     tmp_path += '_' + str(incr_num)
