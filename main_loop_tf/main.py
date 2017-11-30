@@ -868,14 +868,14 @@ class Experiment(object):
         self._feed_dict = feed_dict
 
         # Use the op for the number of devices the current batch can feed
-        num_devs = this_n_splits - 1
+        which_op = this_n_splits - 1
         train_dict = {
             'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][num_devs]}
+            'train_op': self.train_graph_outs['grad_ops'][which_op]}
         train_summary_dict = {
             'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][num_devs],
-            'summary_op': self.train_graph_outs['summary_ops'][num_devs]}
+            'train_op': self.train_graph_outs['grad_ops'][which_op],
+            'summary_op': self.train_graph_outs['summary_ops'][which_op]}
 
         # Compute (summaries and) loss
         if self.gstep_val % self.cfg.train_summary_freq == 0:
