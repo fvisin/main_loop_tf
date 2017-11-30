@@ -991,7 +991,7 @@ class Experiment(object):
         # validate = True  # Print the best model's test error
 
     def minimize(self, loss_out, var_list=None, gate_gradients=None,
-                 aggregation_method=None, colocate_gradients_with_ops=False,
+                 aggregation_method=None, colocate_gradients_with_ops=True,
                  name=None, grad_loss=None, phase_set_dev='', summaries=None,
                  loss=None):
         """Minimize over multiple devices with grad noise
@@ -1006,6 +1006,7 @@ class Experiment(object):
             * Average gradient over the devices processed so far.
             * It also does not have global_step as an argument, as it's
               in the state of the optimizer already.
+            * Sets colocate_gradients_with_ops to True by default.
         """
         if loss is not None:
             raise ValueError('This Optimizer expects a dictionary of '

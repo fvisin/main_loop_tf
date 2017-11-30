@@ -139,7 +139,6 @@ def _get_grad_noise_scale(cfg, global_step, prev_err):
                 prev_err * tf.pow(tf.cast(
                     global_step + 1, cfg._FLOATX), -gamma))
     else:
-        # Raise ValueError
         raise NotImplementedError('Unknown value of '
                                   'cfg.grad_noise_decay: %s' %
                                   cfg.grad_noise_decay)
