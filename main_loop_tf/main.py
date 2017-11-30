@@ -75,6 +75,7 @@ class Experiment(object):
         self.process_cfg_flags()
 
         # Init variables
+        self.dev_grads = {}
         self.val_graph_outs = {}
         self.avg_loss = {True: {}, False: {}}
 
@@ -341,6 +342,13 @@ class Experiment(object):
             self.placeholders = {True: train_placeholders,
                                  False: val_placeholders}
 
+            # Optimizer
+            lr = apply_lr_decay(self.cfg, self.global_step)
+            Optimizer = (self.UserOptimizer if self.UserOptimizer else
+                         get_optimizer(cfg.optimizer))
+            self.optimizer = Optimizer(learning_rate=lr,
+                                       **cfg.optimizer_params)
+
             # Model compilation
             # -----------------
             # Model parameters on the FIRST device specified in cfg.devices
@@ -451,18 +459,6 @@ class Experiment(object):
             phase_set = 'T.'
         else:
             phase_set = 'V_' + which_set + '.'
-
-        if is_training:
-            lr = apply_lr_decay(self.cfg, self.global_step)
-            if self.UserOptimizer is None:
-                optimizer = get_optimizer(cfg.optimizer)(lr)
-            else:
-                optimizer = self.UserOptimizer(lr)
-            if hasattr(self, 'optimizer'):
-                raise ValueError('Training on multiple sets is not '
-                                 'supported.')
-            self.optimizer = optimizer
-            self.dev_grads = {}
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
