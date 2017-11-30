@@ -1054,8 +1054,8 @@ class Experiment(object):
             self.dev_grads.setdefault(v, []).append(g)
 
         # Average the gradients over the devices processed so far
-        grads_and_vars = average_gradients(self.dev_grads, phase_set_dev)
-        grad_op = self.optimizer.apply_gradients(grads_and_vars,
+        avg_grads_and_vars = average_gradients(self.dev_grads, phase_set_dev)
+        grad_op = self.optimizer.apply_gradients(avg_grads_and_vars,
                                                  global_step=self.global_step,
                                                  name=name)
 
