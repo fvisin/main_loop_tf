@@ -576,17 +576,19 @@ class Experiment(object):
         # Convert the lists of tensors to concatenated tensors and keep
         # the first `num_devs`, i.e., dynamically select at runtime
         # which devices' outputs to consider
-        recursive_truncate_dict(stacked_model_outs, self.sym_num_batches,
-                                parent_k=phase_set + '/outs',
-                                exact_len=cfg.num_devs)
-        recursive_truncate_dict(stacked_loss_outs, self.sym_num_devs,
-                                parent_k=phase_set + '/losses',
-                                exact_len=cfg.num_devs)
+        curr_model_out = recursive_truncate_dict(stacked_model_outs,
+                                                 self.sym_num_batches,
+                                                 parent_k=phase_set + '/outs',
+                                                 exact_len=cfg.num_devs)
+        curr_loss_out = recursive_truncate_dict(stacked_loss_outs,
+                                                self.sym_num_devs,
+                                                parent_k=phase_set + '/losses',
+                                                exact_len=cfg.num_devs)
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
         tf.summary.scalar(phase_set + 'control_flow/batch_size',
-                          tf.shape(stacked_model_outs['pred'])[0], summaries)
+                          tf.shape(curr_model_out['pred'])[0], summaries)
 
         # We are trying to be flexible with the placeholders, so we
         # cannot use it at the moment. I'll keep it here for reference
@@ -603,7 +605,7 @@ class Experiment(object):
         # Compute the mean loss over the first num_devs devices. This
         # will also be used to update the loss summaries
         with tf.name_scope(phase_set + 'aggregated_stats') as stats_scope:
-            avg_loss = tf.reduce_mean(stacked_loss_outs['loss'],
+            avg_loss = tf.reduce_mean(curr_loss_out['loss'],
                                       name='avg_loss')
             self.avg_loss[is_training][which_set] = avg_loss
 
@@ -624,7 +626,7 @@ class Experiment(object):
             # information for validation, but keep in mind that this could be
             # computed for validation as well
             with tf.name_scope(stats_scope):
-                for (key, loss) in stacked_loss_outs['components'].iteritems():
+                for (key, loss) in curr_loss_out['components'].iteritems():
                     avg_comp_loss = tf.reduce_mean(loss)
                     tf.summary.scalar('avg_loss_comp_%s' % key, avg_comp_loss,
                                       summaries)
@@ -637,7 +639,7 @@ class Experiment(object):
                     tf.summary.histogram(scope_str + '_' + var_name, var,
                                          summaries)
 
-        self.extra_summaries(stacked_model_outs, stacked_loss_outs,
+        self.extra_summaries(curr_model_out, curr_loss_out,
                              is_training, stats_scope, these_s)
 
         # Create a list of summary ops that update the summary collections that
@@ -652,7 +654,7 @@ class Experiment(object):
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
         graph_out = {
-            'model_outs': stacked_model_outs,
+            'model_outs': curr_model_out,
             'summary_ops': summary_ops,
             }
         if is_training:
@@ -660,7 +662,7 @@ class Experiment(object):
 
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
-        self.extra_graph_out(graph_out, stacked_model_outs, stacked_loss_outs,
+        self.extra_graph_out(graph_out, curr_model_out, curr_loss_out,
                              is_training)
 
         return graph_out

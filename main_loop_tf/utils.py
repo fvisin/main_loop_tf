@@ -298,10 +298,12 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
         The number of elements that each list should have. If provided,
         the length of the lists will be checked.
     """
+    ret_dict = {}
     for k, v in a_dict.iteritems():
         if isinstance(v, dict):
-            k_list = [parent_k, k] if parent_k else [k]
-            recursive_truncate_dict(v, sym_max_len, '_'.join(k_list))
+            k_list = '_'.join([parent_k, str(k)]) if parent_k else k
+            ret_dict[k] = recursive_truncate_dict(v, sym_max_len, k_list,
+                                                  exact_len=exact_len)
         else:
             if not isinstance(v, list):
                 raise ValueError('The input should be a dictionary of lists')
@@ -309,10 +311,11 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
                 assert len(v) == exact_len, 'Key {} len: {}'.format(k, len(v))
             # No need to concat if it's just one value
             if len(v) == 1:
-                a_dict[k] = v[0]
+                ret_dict[k] = v
             else:
                 try:
-                    tmp = tf.concat(v, axis=0, name='concat_%s' % k)
+                    tmp = tf.concat(v, axis=0, name='concat_%s' % str(k))
                 except ValueError:
-                    tmp = tf.stack(v, axis=0, name='stack_%s' % k)
-                a_dict[k] = tmp[:sym_max_len]
+                    tmp = tf.stack(v, axis=0, name='stack_%s' % str(k))
+                ret_dict[k] = tmp[:sym_max_len]
+    return ret_dict
