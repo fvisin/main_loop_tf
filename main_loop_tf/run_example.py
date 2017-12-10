@@ -5,11 +5,22 @@ and model/loss and to show the most basic usage of this framework.
 
 This code is NOT meant to be an example of how to properly tackle the
 semantic segmentation problem of Camvid, nor of how to build a neural
-network in general. It's only meant to show the basic API of this framework.
+network in general. It's only meant to show the basic API of this
+framework.
 """
+try:
+    from itertools import izip_longest as zip_longest
+except:
+    from itertools import zip_longest
 from main_loop_tf import Experiment
+from main_loop_tf.utils import split_in_chunks
 import tensorflow as tf
 from tensorflow.contrib import slim
+import numpy as np
+
+
+tf.set_random_seed(8112017)
+np.random.seed(8112017)
 
 
 class ExampleExperiment(Experiment):
@@ -26,11 +37,15 @@ class ExampleExperiment(Experiment):
         cfg = gflags.cfg
         ret = {}
         conv = slim.conv2d(inputs['data'],
-                           num_outputs=50,
+                           num_outputs=150,
                            kernel_size=(1, 1),
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=250,
+                           num_outputs=350,
+                           kernel_size=(1, 1),
+                           stride=1)
+        conv = slim.conv2d(conv,
+                           num_outputs=150,
                            kernel_size=(1, 1),
                            stride=1)
         conv = slim.conv2d(conv,
@@ -72,40 +87,75 @@ class ExampleExperiment(Experiment):
         return {'loss': loss, 'components': {'main_loss': loss}}
 
     def validate_fn(self, graph_out, which_set):
-        """A validation function to evaluate the model should be defined."""
-        # Do one step of training to setup things
-        self.experiment_begin()
-        self.epoch_begin()
-        self.batch_begin()
-        self.batch_do()
-        self.batch_end()
-        self.epoch_end()
+        cfg = self.cfg
 
-        # Prepare validation
-        sym_pred = graph_out['model_outs']['pred']
-        m = self._minibatch
-        p = self.placeholders
+        if hasattr(self, '_minibatch'):
+            minibatch = self._minibatch
+            dataset = self.train
+        else:
+            print('getting a new minibatch - no random seed!!')
+            dataset = self.Dataset(
+                which_set='train',
+                return_list=False,
+                **self.cfg.dataset_params)
+            minibatch = dataset.next()
+        x_batch = minibatch['data']
 
+        # Is this batch shorter than batch_size?
+        # Check if this batch will not be processed by all the devices.
+        # When the sequence is shorter than seq_length or the number of
+        # batches is smaller than batch_size, the batch will be smaller
+        # than usual. When this happens we might not be able to feed
+        # all the CPUs/GPUs altogether. In that case here we compute
+        # the number of GPUs that we can use for the current batch
+        # Spread the batch over the lowest number of GPUs
+        this_n_splits = len(x_batch) // cfg.batch_size
+        if len(x_batch) % cfg.batch_size != 0:
+            this_n_splits += 1
+
+        # Get the per-device inputs
+        minibatch_chunks = split_in_chunks(minibatch, this_n_splits,
+                                           flatten_keys=['labels'])
+
+        # Associate each placeholder (of each device) with its input data. Note
+        # that the data is split in chunk, one per device. If this_n_splits is
+        # smaller than the number of devices, the placeholders of the "extra"
+        # devices are filled with the data of the first chunk. This is
+        # necessary to feed the graph with the expected number of inputs, but
+        # note that the extra outputs and loss will be ignored (see comment
+        # where placeholders are created)
         feed_dict = {}
-        feed_dict[p[False][0]['data']] = m['data']
-        feed_dict[p[False][0]['labels']] = m['labels'].flatten()
-        feed_dict[self.sym_num_devs] = 1
-        feed_dict[self.sym_num_batches] = len(m['data'])
-        feed_dict[self.sym_prev_err] = self.loss_value
+        for p_dict, batch_dict in zip_longest(self.placeholders[False],
+                                              minibatch_chunks,
+                                              fillvalue=minibatch_chunks[0]):
+            for p_name, p_obj in p_dict.iteritems():
+                feed_dict[p_obj] = batch_dict[p_name]
+
+        # Extend the user-defined placeholders with those needed by the
+        # main loop
+        feed_dict[self.sym_num_devs] = this_n_splits
+        feed_dict[self.sym_num_batches] = len(x_batch)
         self._feed_dict = feed_dict
+
+        # Use the op for the number of devices the current batch can feed
+        sym_pred = graph_out['model_outs']['pred']
         val_dict = {'pred': sym_pred}
+
+        # Save one sample on disk
         fetch_dict = self.sess.run(val_dict, feed_dict=feed_dict)
-        from PIL import Image
         import matplotlib as mpl
         import matplotlib.pyplot as plt
-        cmap = mpl.colors.ListedColormap(self.train.cmap)
-        plt.imsave('camvid.png', fetch_dict['pred'][0], cmap=cmap,
-                   vmin=0, vmax=12)
-
+        cmap = mpl.colors.ListedColormap(dataset.cmap)
+        fname = '/home/francesco/exp/reconvnets_tf/checkpoints/camvid'
+        if hasattr(self, 'epoch_id'):
+            fname += str(self.epoch_id)
+        fname += '.png'
+        plt.imsave(fname, fetch_dict['pred'][0], cmap=cmap, vmin=0, vmax=12)
         return 0
 
     def batch_begin(self):
         self._t_data_load = 0
+        # Overfit on one image!
         if not hasattr(self, '_minibatch'):
             self._minibatch = self.train.next()
             self._t_data_load = 10
@@ -117,7 +167,9 @@ if __name__ == '__main__':
     # You can also add fixed values like this
     argv = sys.argv
     argv += ['--dataset', 'camvid']
-    argv += ['--val_every_epochs', '10']
+    argv += ['--max_epochs', '50']
+    argv += ['--val_every_epochs', '1']
+    argv += ['--devices', '/gpu:0,/gpu:1']
 
     exp = ExampleExperiment(argv)
     if exp.cfg.do_validation_only:
