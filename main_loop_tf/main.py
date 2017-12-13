@@ -75,6 +75,7 @@ class Experiment(object):
         self.process_cfg_flags()
 
         # Init variables
+        self._graph_built = False
         self.cum_grads_and_vars = {}
         self.val_graph_outs = {}
         self.avg_loss = {True: {}, False: {}}
@@ -300,6 +301,9 @@ class Experiment(object):
         return train_placeholders, val_placeholders
 
     def __build_graph(self):
+        if self._graph_built:
+            raise RuntimeError('You cannot build the graph twice.')
+        self._graph_built = True
         cfg = self.cfg
 
         # ============ Train/validation
