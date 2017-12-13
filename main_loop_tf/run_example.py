@@ -12,11 +12,12 @@ try:
     from itertools import izip_longest as zip_longest
 except:
     from itertools import zip_longest
+import numpy as np
+
 from main_loop_tf import Experiment
 from main_loop_tf.utils import split_in_chunks
 import tensorflow as tf
 from tensorflow.contrib import slim
-import numpy as np
 
 
 tf.set_random_seed(8112017)
@@ -37,15 +38,27 @@ class ExampleExperiment(Experiment):
         cfg = gflags.cfg
         ret = {}
         conv = slim.conv2d(inputs['data'],
-                           num_outputs=150,
+                           num_outputs=300,
                            kernel_size=(1, 1),
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=350,
+                           num_outputs=300,
                            kernel_size=(1, 1),
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=150,
+                           num_outputs=300,
+                           kernel_size=(1, 1),
+                           stride=1)
+        conv = slim.conv2d(conv,
+                           num_outputs=300,
+                           kernel_size=(1, 1),
+                           stride=1)
+        conv = slim.conv2d(conv,
+                           num_outputs=300,
+                           kernel_size=(1, 1),
+                           stride=1)
+        conv = slim.conv2d(conv,
+                           num_outputs=300,
                            kernel_size=(1, 1),
                            stride=1)
         conv = slim.conv2d(conv,
@@ -146,7 +159,7 @@ class ExampleExperiment(Experiment):
         import matplotlib as mpl
         import matplotlib.pyplot as plt
         cmap = mpl.colors.ListedColormap(dataset.cmap)
-        fname = '/home/francesco/exp/reconvnets_tf/checkpoints/camvid'
+        fname = '/home/francesco/exp/main_loop_tf/main_loop_tf/checkpoints/camvid'
         if hasattr(self, 'epoch_id'):
             fname += str(self.epoch_id)
         fname += '.png'
@@ -157,8 +170,16 @@ class ExampleExperiment(Experiment):
         self._t_data_load = 0
         # Overfit on one image!
         if not hasattr(self, '_minibatch'):
+            import matplotlib as mpl
+            import matplotlib.pyplot as plt
             self._minibatch = self.train.next()
             self._t_data_load = 10
+            cmap = mpl.colors.ListedColormap(self.train.cmap)
+            fname = '/home/francesco/exp/main_loop_tf/main_loop_tf/'
+            fname += 'checkpoints/camvid_GT.png'
+            plt.imsave(fname, self._minibatch['labels'][0], cmap=cmap,
+                       vmin=0, vmax=12)
+            return 0
 
 
 if __name__ == '__main__':
@@ -169,7 +190,8 @@ if __name__ == '__main__':
     argv += ['--dataset', 'camvid']
     argv += ['--max_epochs', '50']
     argv += ['--val_every_epochs', '1']
-    argv += ['--devices', '/gpu:0,/gpu:1']
+    # argv += ['--devices', '/gpu:0,/gpu:1']
+    argv += ['--devices', '/gpu:0']
 
     exp = ExampleExperiment(argv)
     if exp.cfg.do_validation_only:
