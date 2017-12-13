@@ -75,7 +75,7 @@ class Experiment(object):
         self.process_cfg_flags()
 
         # Init variables
-        self.dev_grads = {}
+        self.cum_grads_and_vars = {}
         self.val_graph_outs = {}
         self.avg_loss = {True: {}, False: {}}
 
@@ -1049,12 +1049,14 @@ class Experiment(object):
 
         # Gradient descent
         # ----------------
-        # Save the grads of each variable for this device, to be averaged out
+        # Expand the list of grads (one per device) of each variable
         for g, v in grads_and_vars:
-            self.dev_grads.setdefault(v, []).append(g)
+            # Append the grads of the current device
+            self.cum_grads_and_vars.setdefault(v, []).append(g)
 
         # Average the gradients over the devices processed so far
-        avg_grads_and_vars = average_gradients(self.dev_grads, phase_set_dev)
+        avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
+                                               phase_set_dev)
         grad_op = self.optimizer.apply_gradients(avg_grads_and_vars,
                                                  global_step=self.global_step,
                                                  name=name)
