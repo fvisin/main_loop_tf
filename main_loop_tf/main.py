@@ -945,7 +945,8 @@ class Experiment(object):
                     self.best_score))
                 t_save = time()
                 # Save best model as a separate checkpoint
-                self.saver.save(self.sess, self.cfg.save_path + '_best.ckpt',
+                self.saver.save(self.sess,
+                                os.path.join(self.cfg.save_path, 'best.ckpt'),
                                 global_step=self.global_step)
                 t_save = time() - t_save
                 tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
