@@ -309,9 +309,9 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
                 raise ValueError('The input should be a dictionary of lists')
             if exact_len:
                 assert len(v) == exact_len, 'Key {} len: {}'.format(k, len(v))
-            # No need to concat if it's just one value
             if len(v) == 1:
-                ret_dict[k] = v
+                # No need to concat if it's just one value
+                ret_dict[k] = v[0]
             else:
                 try:
                     tmp = tf.concat(v, axis=0, name='concat_%s' % str(k))
