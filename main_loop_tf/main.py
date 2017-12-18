@@ -673,6 +673,11 @@ class Experiment(object):
 
     def run(self):
         with self.__init_sess__() as self.sess:
+            if self.cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
+                self.sess.add_tensor_filter("has_inf_or_nan",
+                                            tf_debug.has_inf_or_nan)
             if self.cfg.hyperparams_summaries is not None:
                 # write Hyper parameters text summaries
                 summary_str = self.sess.run(self.summary_text_op)
@@ -683,6 +688,11 @@ class Experiment(object):
 
     def validate(self):
         with self.__init_sess__() as self.sess:
+            if self.cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
+                self.sess.add_tensor_filter("has_inf_or_nan",
+                                            tf_debug.has_inf_or_nan)
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
                 metrics_val = {}
@@ -737,11 +747,6 @@ class Experiment(object):
 
             tf_config = tf.ConfigProto(allow_soft_placement=True)
             sess_gen = sv.managed_session(cfg.supervisor_master, tf_config)
-            if self.cfg.debug:
-                from tensorflow.python import debug as tf_debug
-                sess_gen = tf_debug.LocalCLIDebugWrapperSession(sess_gen)
-                sess_gen.add_tensor_filter("has_inf_or_nan",
-                                           tf_debug.has_inf_or_nan)
             return sess_gen
 
     def __main_loop(self):
