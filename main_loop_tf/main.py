@@ -771,6 +771,16 @@ class Experiment(object):
         self.experiment_end()
         return self.return_val
 
+    def get_train_dicts(self, which_op):
+        train_dict = {
+            'avg_loss': self.avg_loss[True]['train'],
+            'train_op': self.train_graph_outs['grad_ops'][which_op]}
+        train_summary_dict = {
+            'avg_loss': self.avg_loss[True]['train'],
+            'train_op': self.train_graph_outs['grad_ops'][which_op],
+            'summary_op': self.train_graph_outs['summary_ops'][which_op]}
+        return train_dict, train_summary_dict
+
     # ###########
     # Callbacks #
     # ###########
@@ -873,13 +883,8 @@ class Experiment(object):
 
         # Use the op for the number of devices the current batch can feed
         which_op = this_n_splits - 1
-        train_dict = {
-            'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][which_op]}
-        train_summary_dict = {
-            'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][which_op],
-            'summary_op': self.train_graph_outs['summary_ops'][which_op]}
+
+        train_dict, train_summary_dict = self.get_train_dicts(which_op)
 
         # Compute (summaries and) loss
         if self.gstep_val % self.cfg.train_summary_freq == 0:
