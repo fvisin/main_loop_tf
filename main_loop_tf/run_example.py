@@ -38,28 +38,34 @@ class ExampleExperiment(Experiment):
         cfg = gflags.cfg
         ret = {}
         conv = slim.conv2d(inputs['data'],
-                           num_outputs=300,
-                           kernel_size=(1, 1),
+                           num_outputs=64,
+                           kernel_size=(5, 5),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=300,
-                           kernel_size=(1, 1),
+                           num_outputs=128,
+                           kernel_size=(5, 5),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=300,
-                           kernel_size=(1, 1),
+                           num_outputs=256,
+                           kernel_size=(5, 5),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=300,
-                           kernel_size=(1, 1),
+                           num_outputs=256,
+                           kernel_size=(5, 5),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=300,
-                           kernel_size=(1, 1),
+                           num_outputs=256,
+                           kernel_size=(5, 5),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
-                           num_outputs=300,
+                           num_outputs=256,
                            kernel_size=(1, 1),
+                           padding='SAME',
                            stride=1)
         conv = slim.conv2d(conv,
                            # We might want to be smarter than this and
@@ -67,6 +73,7 @@ class ExampleExperiment(Experiment):
                            # let's ignore it.
                            num_outputs=cfg.nclasses_w_void,
                            kernel_size=(1, 1),
+                           padding='SAME',
                            stride=1,
                            activation_fn=None,
                            normalizer_fn=None)
@@ -190,6 +197,7 @@ if __name__ == '__main__':
     argv += ['--dataset', 'camvid']
     argv += ['--max_epochs', '50']
     argv += ['--val_every_epochs', '1']
+    argv += ['--use_threads', 'False']
     # argv += ['--devices', '/gpu:0,/gpu:1']
     argv += ['--devices', '/gpu:0']
 
