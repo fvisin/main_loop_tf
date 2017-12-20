@@ -9,7 +9,6 @@ from tensorflow.python.ops.metrics_impl import _streaming_confusion_matrix
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
-from tensorflow.python.ops import variable_scope
 from tensorflow.python.training import training
 from tensorflow.python.training.learning_rate_decay import (exponential_decay,
                                                             piecewise_constant,
@@ -181,7 +180,7 @@ def add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
                                                  summaries)
 
 
-def average_gradients(grad_dict, phase_set_dev):
+def average_gradients(grad_dict, phase_set_dev, up_to_dev=None):
     """Calculate the mean gradient for the devices processed so far
 
     Note
@@ -193,6 +192,10 @@ def average_gradients(grad_dict, phase_set_dev):
     grad_dict: Dict of lists of gradients (per device).
         A dictionary with variables as keys and a list of gradients per
         device as values.
+    phase_set_dev: string
+        A name scope
+    up_to_dev: int
+        Up to which device to compute the average on
 
     Return
     ------
@@ -210,6 +213,8 @@ def average_gradients(grad_dict, phase_set_dev):
                 else:
                     sname = 'pre_grad_avg_stack'
                     rname = 'grad_avg'
+                if up_to_dev is not None:
+                    grads_list = grads_list[:up_to_dev + 1]
                 grad_list = tf.stack(axis=0, values=grads_list, name=sname)
                 avg_grad = tf.reduce_mean(grad_list, 0, name=rname)
                 average_grads.append((avg_grad, v))
@@ -328,7 +333,7 @@ def mean_iou(labels,
         or if either `metrics_collections` or `updates_collections` are not a
         list or tuple.
     """
-    with variable_scope.variable_scope(
+    with tf.variable_scope(
           name, 'mean_iou', (predictions, labels, weights)):
         # Check if shape is compatible.
         predictions.get_shape().assert_is_compatible_with(labels.get_shape())

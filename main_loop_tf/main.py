@@ -460,11 +460,7 @@ class Experiment(object):
         reuse_variables = not is_training
 
         per_dev_placeholders = self.placeholders[is_training]
-        if is_training:
-            grad_ops = []
-            phase_set = 'T.'
-        else:
-            phase_set = 'V_' + which_set + '.'
+        phase_set = 'T.' if is_training else 'V_' + which_set + '.'
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
@@ -540,7 +536,7 @@ class Experiment(object):
                 if is_training:
                     # Compute gradients, add noise to the gradient and
                     # create the op to apply it if needed.
-                    grad_op = self.minimize(
+                    grads_and_vars = self.compute_and_process_grads(
                         loss_out=loss_out,
                         var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
@@ -550,11 +546,15 @@ class Experiment(object):
                         grad_loss=None,
                         phase_set_dev=phase_set_dev + '.',
                         summaries=these_s)
-                    # Create a *list* of gradient update ops. The t-th element
-                    # of the list updates the gradients of the devices *up to*
-                    # the t-th device
-                    grad_ops.append(grad_op)
 
+                    # Gradient descent
+                    # ----------------
+                    # Expand the list of grads (one per device) of each var
+                    for g, v in grads_and_vars:
+                        # Append the grads of the current device
+                        self.cum_grads_and_vars.setdefault(v, []).append(g)
+
+            # with tf.name_scope(phase_set_dev_scope):
                 self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
                                          is_training, dev_stats_scope,
                                          phase_set_dev + '.', these_s)
@@ -576,6 +576,34 @@ class Experiment(object):
             #   1        X       X       X
             #  ...
             these_s = these_s[1:]
+
+        # Average the gradients on CPU and do SGD
+        if is_training:
+            grad_ops = []
+            for dev_id in range(len(cfg.devices)):
+                # Average the gradients over the devices processed so far
+                avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
+                                                       phase_set_dev,
+                                                       up_to_dev=dev_id)
+                device_str = 'dev' + str(dev_id)
+                phase_set_dev = phase_set + device_str
+                grad_op = self.optimizer.apply_gradients(
+                    avg_grads_and_vars, global_step=self.global_step,
+                    name=phase_set_dev)  # TODO ha senso?
+
+                # TODO: Averaged gradients visualisation
+                # Add the histograms of the gradients
+                # with tf.name_scope('grad_summaries'):
+                #     for grad, var in grads_and_vars:
+                #         if grad is not None:
+                #             summaries['training'].append(
+                #                 tf.summary.histogram(
+                #                   var.op.name + '/gradients', grad))
+
+                # Create a *list* of gradient update ops. The t-th element of
+                # the list updates the gradients of the devices *up to* the
+                # t-th device
+                grad_ops.append(grad_op)
 
         # Merge the towers on CPU
         # -----------------------
@@ -1009,10 +1037,11 @@ class Experiment(object):
         #               'models/' + save_name + '.svg')
         # validate = True  # Print the best model's test error
 
-    def minimize(self, loss_out, var_list=None, gate_gradients=None,
-                 aggregation_method=None, colocate_gradients_with_ops=True,
-                 name=None, grad_loss=None, phase_set_dev='', summaries=None,
-                 loss=None):
+    def compute_and_process_grads(self, loss_out, var_list=None,
+                                  gate_gradients=None, aggregation_method=None,
+                                  colocate_gradients_with_ops=True, name=None,
+                                  grad_loss=None, phase_set_dev='',
+                                  summaries=None, loss=None):
         """Minimize over multiple devices with grad noise
 
         Extend Optimizer.minimize() in several ways:
@@ -1052,7 +1081,7 @@ class Experiment(object):
                 "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
                                      loss))
 
-        # Add suffix to name_scope (rather than nesting # scopes)
+        # Add suffix to name_scope (rather than nesting name scopes)
         with tf.name_scope(None):
             with tf.name_scope(phase_set_dev + 'grad_processing'):
                 # Add noise and multipliers to gradient
@@ -1064,27 +1093,4 @@ class Experiment(object):
         add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
                       summaries)
 
-        # Gradient descent
-        # ----------------
-        # Expand the list of grads (one per device) of each variable
-        for g, v in grads_and_vars:
-            # Append the grads of the current device
-            self.cum_grads_and_vars.setdefault(v, []).append(g)
-
-        # Average the gradients over the devices processed so far
-        avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
-                                               phase_set_dev)
-        grad_op = self.optimizer.apply_gradients(avg_grads_and_vars,
-                                                 global_step=self.global_step,
-                                                 name=name)
-
-        # TODO: Averaged gradients visualisation
-        # Add the histograms of the gradients
-        # with tf.name_scope('grad_summaries'):
-        #     for grad, var in grads_and_vars:
-        #         if grad is not None:
-        #             summaries['training'].append(
-        #                 tf.summary.histogram(
-        #                   var.op.name + '/gradients', grad))
-
-        return grad_op
+        return grads_and_vars
