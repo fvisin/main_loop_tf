@@ -321,8 +321,10 @@ class Experiment(object):
         tf.logging.info("Building the model ...")
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self.global_step = tf.Variable(0, trainable=False,
-                                           name='global_step', dtype='int32')
+            self.global_step = tf.get_variable(
+                'global_step', [],
+                initializer=tf.constant_initializer(0),
+                trainable=False, dtype='int32')
             self.sym_num_devs = tf.placeholder(np.int32, shape=None,
                                                name='num_devs')
             self.sym_num_batches = tf.placeholder(np.int32, shape=None,
