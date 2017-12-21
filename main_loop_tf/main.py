@@ -580,16 +580,25 @@ class Experiment(object):
         # Average the gradients on CPU and do SGD
         if is_training:
             grad_ops = []
-            for dev_id in range(len(cfg.devices)):
+            update_ops = []
+            for dev_id, dev in enumerate(cfg.devices):
+                # Recover device name_space
+                dev_scope = 'T.dev' + str(dev_id)
+                update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
+                                                scope=dev_scope)
+
                 # Average the gradients over the devices processed so far
                 avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
                                                        phase_set_dev,
                                                        up_to_dev=dev_id)
-                device_str = 'dev' + str(dev_id)
-                phase_set_dev = phase_set + device_str
-                grad_op = self.optimizer.apply_gradients(
-                    avg_grads_and_vars, global_step=self.global_step,
-                    name=phase_set_dev)  # TODO ha senso?
+
+                # Impose graph dependency so that update operations are
+                # computed even if they're are not explicit in the outputs os
+                # session.run
+                with tf.control_dependencies(update_ops):
+                    grad_op = self.optimizer.apply_gradients(
+                        avg_grads_and_vars, global_step=self.global_step,
+                        name=phase_set_dev)  # TODO ha senso?
 
                 # TODO: Averaged gradients visualisation
                 # Add the histograms of the gradients
