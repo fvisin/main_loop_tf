@@ -107,6 +107,65 @@ def process_gradients(cfg, global_step, prev_err, grads_and_vars):
     return grads_and_vars, grad_noise_scale
 
 
+def compute_and_process_grads(self, loss_out, var_list=None,
+                              gate_gradients=None, aggregation_method=None,
+                              colocate_gradients_with_ops=True, name=None,
+                              grad_loss=None, phase_set_dev='',
+                              summaries=None, loss=None):
+    """Minimize over multiple devices with grad noise
+
+    Extend Optimizer.minimize() in several ways:
+        * Add noise and multipliers
+        * Add various gradient summaries
+        * Be stateful and keep trace of previously computed
+          gradients
+        * Add a control dependency on update ops before computing
+          the gradient
+        * Average gradient over the devices processed so far.
+        * It also does not have global_step as an argument, as it's
+          in the state of the optimizer already.
+        * Sets colocate_gradients_with_ops to True by default.
+    """
+    if loss is not None:
+        raise ValueError('This Optimizer expects a dictionary of '
+                         'losses rather than a single loss. Do not '
+                         'use it as a normal tf optimizer but rather '
+                         'rely on loss_out')
+    if gate_gradients is None:
+        gate_gradients = self.optimizer.GATE_OP
+
+    # This device's gradients
+    grads_and_vars = self.optimizer.compute_gradients(
+        loss_out['loss'], var_list=var_list,
+        gate_gradients=gate_gradients,
+        aggregation_method=aggregation_method,
+        colocate_gradients_with_ops=colocate_gradients_with_ops,
+        grad_loss=grad_loss)
+
+    # Check if no gradient
+    vars_with_grad = [v for g, v in grads_and_vars if g is not None]
+    if not vars_with_grad:
+        raise ValueError(
+            "No gradients provided for any variable, check your graph "
+            "for ops that do not support gradients, between variables "
+            "%s and loss %s." % ([str(v) for _, v in grads_and_vars],
+                                 loss))
+
+    # Add suffix to name_scope (rather than nesting name scopes)
+    with tf.name_scope(None):
+        with tf.name_scope(phase_set_dev + 'grad_processing'):
+            # Add noise and multipliers to gradient
+            grads_and_vars, grad_noise_scale = process_gradients(
+                self.cfg, self.global_step, self.sym_prev_err,
+                grads_and_vars)
+
+    # Create some summaries
+    add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
+                  summaries)
+
+    return grads_and_vars
+
+
 def _get_grad_noise_scale(cfg, global_step, prev_err):
     if cfg.grad_noise_decay is None:
         grad_noise_scale = cfg.grad_noise_scale
