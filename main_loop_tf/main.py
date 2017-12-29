@@ -163,6 +163,10 @@ class Experiment(object):
 
         # ============ A bunch of derived params
         cfg._FLOATX = 'float32'
+        # Infer devices from CUDA_VISIBLE_DEVICES if not specified
+        if cfg.devices is None:
+            cfg.devices = ['/gpu:%s' % d for d in
+                           os.environ['CUDA_VISIBLE_DEVICES'].split(',')]
         cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
         cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
         cfg.num_devs = cfg.num_gpus + cfg.num_cpus
