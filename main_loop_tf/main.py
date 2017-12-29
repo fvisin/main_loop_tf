@@ -482,7 +482,8 @@ class Experiment(object):
             # NOTE The name scopes help organize the graph in tensorboard
             # The variable scopes are needed to reuse the variables among
             # the various graphs
-            with tf.name_scope(phase_set_dev), tf.device(dev):
+            with tf.name_scope(phase_set_dev) as phase_set_dev_scope, \
+                    tf.device(dev):
                 with tf.variable_scope('model',
                                        reuse=reuse_variables) as model_scope:
                     # Model preactivation, activation (softmax) and prediction
@@ -554,7 +555,7 @@ class Experiment(object):
                         # Append the grads of the current device
                         self.cum_grads_and_vars.setdefault(v, []).append(g)
 
-            # with tf.name_scope(phase_set_dev_scope):
+            with tf.name_scope(phase_set_dev_scope):
                 self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
                                          is_training, dev_stats_scope,
                                          phase_set_dev + '.', these_s)
@@ -583,13 +584,13 @@ class Experiment(object):
             update_ops = []
             for dev_id, dev in enumerate(cfg.devices):
                 # Recover device name_space
-                dev_scope = 'T.dev' + str(dev_id)
+                phase_set_dev = 'T.dev' + str(dev_id)
                 update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
-                                                scope=dev_scope)
+                                                scope=phase_set_dev)
 
                 # Average the gradients over the devices processed so far
                 avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
-                                                       phase_set_dev,
+                                                       phase_set_dev + '.',
                                                        up_to_dev=dev_id)
 
                 # Impose graph dependency so that update operations are
@@ -600,14 +601,13 @@ class Experiment(object):
                         avg_grads_and_vars, global_step=self.global_step,
                         name=phase_set_dev)  # TODO ha senso?
 
-                # TODO: Averaged gradients visualisation
                 # Add the histograms of the gradients
-                # with tf.name_scope('grad_summaries'):
-                #     for grad, var in grads_and_vars:
-                #         if grad is not None:
-                #             summaries['training'].append(
-                #                 tf.summary.histogram(
-                #                   var.op.name + '/gradients', grad))
+                scope_str = phase_set_dev + '_aggregated_stats'
+                with tf.name_scope('avg_grad_summaries'):
+                    for grad, var in avg_grads_and_vars:
+                        if grad is not None:
+                            tf.summary.histogram(var.op.name + '.gradients',
+                                                 grad, summaries)
 
                 # Create a *list* of gradient update ops. The t-th element of
                 # the list updates the gradients of the devices *up to* the
