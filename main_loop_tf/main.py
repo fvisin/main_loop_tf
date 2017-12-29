@@ -45,7 +45,6 @@ except:
     gtk = None
 
 # Set tensorflow random seed
-tf.set_random_seed(8112017)
 np.random.seed(8112017)
 
 FLAGS = gflags.FLAGS
@@ -314,6 +313,7 @@ def __run(build_model, build_loss, model_file, run_file):
     tf.logging.info("Building the model ...")
     # with graph:
     with tf.Graph().as_default() as graph:
+        tf.set_random_seed(8112017)
         cfg.global_step = tf.Variable(0, trainable=False, name='global_step',
                                       dtype='int32')
 
