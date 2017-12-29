@@ -1046,15 +1046,5 @@ class Experiment(object):
         #               'models/' + save_name + '.svg')
         # validate = True  # Print the best model's test error
 
-    def compute_and_process_grads(self, loss_out, var_list=None,
-                                  gate_gradients=None, aggregation_method=None,
-                                  colocate_gradients_with_ops=True, name=None,
-                                  grad_loss=None, phase_set_dev='',
-                                  summaries=None, loss=None):
-        return compute_and_process_grads(self, loss_out, var_list=None,
-                                         gate_gradients=None,
-                                         aggregation_method=None,
-                                         colocate_gradients_with_ops=True,
-                                         name=None, grad_loss=None,
-                                         phase_set_dev='', summaries=None,
-                                         loss=None)
+    # Inherit the method defined in optimization.py
+    compute_and_process_grads = compute_and_process_grads
