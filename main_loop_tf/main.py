@@ -436,7 +436,7 @@ class Experiment(object):
         Allow the user to define some extra metric into the graph. This
         should be returned via the graph_out dictionary and/or
         modifications to self"""
-        pass
+        return graph_out
 
     def __build_device_graph(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
@@ -709,8 +709,8 @@ class Experiment(object):
 
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
-        self.extra_graph_out(graph_out, curr_model_out, curr_loss_out,
-                             is_training)
+        graph_out = self.extra_graph_out(graph_out, curr_model_out,
+                                         curr_loss_out, is_training)
 
         return graph_out
 
