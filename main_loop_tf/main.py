@@ -885,6 +885,33 @@ class Experiment(object):
         self._minibatch = self.train.next()
         self._t_data_load = time() - iter_start
 
+    def get_feed_dict(self, n_splits):
+        # Get the per-device inputs
+        minibatch_chunks = split_in_chunks(self._minibatch, n_splits,
+                                           flatten_keys=['labels'])
+
+        # Associate each placeholder (of each device) with its input data. Note
+        # that the data is split in chunk, one per device. If this_n_splits is
+        # smaller than the number of devices, the placeholders of the "extra"
+        # devices are filled with the data of the first chunk. This is
+        # necessary to feed the graph with the expected number of inputs, but
+        # note that the extra outputs and loss will be ignored (see comment
+        # where placeholders are created)
+        feed_dict = {}
+        for p_dict, batch_dict in zip_longest(self.placeholders[True],
+                                              minibatch_chunks,
+                                              fillvalue=minibatch_chunks[0]):
+            for p_name, p_obj in p_dict.iteritems():
+                feed_dict[p_obj] = batch_dict[p_name]
+
+        self._minibatch_chunks = minibatch_chunks
+        # Extend the user-defined placeholders with those needed by the
+        # main loop
+        feed_dict[self.sym_num_devs] = n_splits
+        feed_dict[self.sym_num_batches] = len(self._minibatch['data'])
+        feed_dict[self.sym_prev_err] = self.loss_value
+        return feed_dict
+
     def batch_do(self):
         cfg = self.cfg
 
@@ -904,30 +931,7 @@ class Experiment(object):
         if len(x_batch) % cfg.batch_size != 0:
             this_n_splits += 1
 
-        # Get the per-device inputs
-        minibatch_chunks = split_in_chunks(self._minibatch, this_n_splits,
-                                           flatten_keys=['labels'])
-
-        # Associate each placeholder (of each device) with its input data. Note
-        # that the data is split in chunk, one per device. If this_n_splits is
-        # smaller than the number of devices, the placeholders of the "extra"
-        # devices are filled with the data of the first chunk. This is
-        # necessary to feed the graph with the expected number of inputs, but
-        # note that the extra outputs and loss will be ignored (see comment
-        # where placeholders are created)
-        feed_dict = {}
-        for p_dict, batch_dict in zip_longest(self.placeholders[True],
-                                              minibatch_chunks,
-                                              fillvalue=minibatch_chunks[0]):
-            for p_name, p_obj in p_dict.iteritems():
-                feed_dict[p_obj] = batch_dict[p_name]
-
-        # Extend the user-defined placeholders with those needed by the
-        # main loop
-        feed_dict[self.sym_num_devs] = this_n_splits
-        feed_dict[self.sym_num_batches] = len(x_batch)
-        feed_dict[self.sym_prev_err] = self.loss_value
-        self._feed_dict = feed_dict
+        self._feed_dict = self.get_feed_dict(this_n_splits)
 
         # Use the op for the number of devices the current batch can feed
         which_op = this_n_splits - 1
@@ -937,11 +941,11 @@ class Experiment(object):
         # Compute (summaries and) loss
         if self.gstep_val % self.cfg.train_summary_freq == 0:
             fetch_dict = self.sess.run(train_summary_dict,
-                                       feed_dict=feed_dict)
+                                       feed_dict=self._feed_dict)
             self.sv.summary_computed(self.sess,
                                      fetch_dict['summary_op'])
         else:
-            fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
+            fetch_dict = self.sess.run(train_dict, feed_dict=self._feed_dict)
         self._fetch_dict = fetch_dict
 
         # Update self.loss_value, used to decide the amount of gradient
