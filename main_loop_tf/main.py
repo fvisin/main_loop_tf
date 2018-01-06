@@ -592,9 +592,10 @@ class Experiment(object):
                 update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
                                                 scope=phase_set_dev)
 
+                scope = 'T.grads/uptodev' + str(dev_id)
                 # Average the gradients over the devices processed so far
                 avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
-                                                       phase_set_dev + '.',
+                                                       scope + '.',
                                                        up_to_dev=dev_id)
 
                 # Impose graph dependency so that update operations are
@@ -603,20 +604,18 @@ class Experiment(object):
                 with tf.control_dependencies(update_ops):
                     grad_op = self.optimizer.apply_gradients(
                         avg_grads_and_vars, global_step=self.global_step,
-                        name=phase_set_dev)  # TODO ha senso?
-
-                # Add the histograms of the gradients
-                scope_str = phase_set_dev + '_aggregated_stats'
-                with tf.name_scope('avg_grad_summaries'):
-                    for grad, var in avg_grads_and_vars:
-                        if grad is not None:
-                            tf.summary.histogram(var.op.name + '.gradients',
-                                                 grad, summaries)
+                        name=scope)  # TODO ha senso? Probabilmente no
 
                 # Create a *list* of gradient update ops. The t-th element of
                 # the list updates the gradients of the devices *up to* the
                 # t-th device
                 grad_ops.append(grad_op)
+
+            # Add the histograms of the gradients (all of them)
+            for grad, var in avg_grads_and_vars:
+                if grad is not None:
+                    tf.summary.histogram(var.op.name + '.grads',
+                                         grad, summaries)
 
         # Merge the towers on CPU
         # -----------------------
