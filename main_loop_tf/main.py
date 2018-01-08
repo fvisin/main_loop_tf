@@ -5,6 +5,7 @@ try:
     from itertools import izip_longest as zip_longest
 except:
     from itertools import zip_longest
+import json
 import logging
 import os
 import sys
@@ -20,7 +21,8 @@ import gflags
 from optimization import (apply_lr_decay, average_gradients,
                           compute_and_process_grads, get_optimizer)
 from utils import (recursive_dict_stack, recursive_truncate_dict,
-                   save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler)
+                   save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler,
+                   uniquify_path)
 
 # config module load all flags from source files
 import config  # noqa
@@ -133,15 +135,7 @@ class Experiment(object):
             # If the model should not be restored from a checkpoint,
             # and the save path exists, make the save path unique by
             # adding an incremental suffix
-            incr_num = 0
-            tmp_path = save_path
-            while(os.path.exists(tmp_path)):
-                incr_num += 1
-                if incr_num == 1:
-                    tmp_path += '_' + str(incr_num)
-                else:
-                    tmp_path = save_path + '_' + str(incr_num)
-            save_path = tmp_path
+            save_path = uniquify_path(save_path)
         # Restore path
         if cfg.restore_model.lower() not in ['', 'true', 'false']:
             # A specific restore path has been provided
@@ -160,6 +154,14 @@ class Experiment(object):
         cfg.restore_path = restore_path
         if not os.path.exists(save_path):
             os.makedirs(save_path)
+
+        # Dump parameters and commit hash/diff to save path
+        # Do not overwrite by default
+        param_path = os.path.join(save_path, 'params_and_hashes')
+        param_path = uniquify_path(param_path, 'txt')
+        with open(param_path, 'w') as f:
+            f.write(json.dumps(param_dict, sort_keys=True, indent=4,
+                               separators=(',', ': ')))
 
         # ============ A bunch of derived params
         cfg._FLOATX = 'float32'

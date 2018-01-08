@@ -319,3 +319,23 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
                     tmp = tf.stack(v, axis=0, name='stack_%s' % str(k))
                 ret_dict[k] = tmp[:sym_max_len]
     return ret_dict
+
+
+def uniquify_path(path, extension=''):
+    """Adds a suffix to the path until it's unique
+
+    Parameters
+    ----------
+        path: string
+            The path to be uniquified.
+        extension: string, optional
+            The extension of the file to be uniquified.
+    """
+    if extension != '':
+        extension = '.' + extension
+    incr_num = 0
+    unique_path = path
+    while(os.path.exists(unique_path + extension)):
+        incr_num += 1
+        unique_path = path + '_' + str(incr_num) + extension
+    return unique_path + extension
