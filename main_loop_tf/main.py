@@ -351,8 +351,8 @@ class Experiment(object):
             # the batch_size might change dynamically, so we rather
             # replicate the input at runtime.
             train_placeholders, val_placeholders = self.get_placeholders()
-            self.placeholders = {True: train_placeholders,
-                                 False: val_placeholders}
+            self._per_dev_placeholders = {True: train_placeholders,
+                                          False: val_placeholders}
 
             # Optimizer
             lr = apply_lr_decay(self.cfg, self.global_step)
@@ -432,12 +432,25 @@ class Experiment(object):
         pass
 
     def extra_graph_out(self, graph_out, stacked_model_outs, stacked_loss_outs,
-                        is_training):
+                        is_training, merge_scope):
         """Add user-defined metrics to the graph
 
         Allow the user to define some extra metric into the graph. This
         should be returned via the graph_out dictionary and/or
         modifications to self"""
+        # Concat and truncate the _per_dev_placeholders to recover the
+        # tensors that correspond to the part of the placeholders that
+        # are actually used at run-time. When all the devices are in use
+        # this corresponds to concatenating each _per_dev_placeholder
+        # into an aggregated placeholder. These are the placeholders
+        # that the user should use to e.g., compute performance metrics
+        # against the labels.
+        with tf.name_scope(merge_scope):
+            stacked_placeholders = {}
+            for p in self._per_dev_placeholders[is_training]:
+                recursive_dict_stack(p, stacked_placeholders)
+            self.placeholders = recursive_truncate_dict(stacked_placeholders,
+                                                        self.sym_num_devs)
         return graph_out
 
     def __build_device_graph(self, which_set, is_training):
@@ -465,7 +478,7 @@ class Experiment(object):
         cfg = self.cfg
         reuse_variables = not is_training
 
-        per_dev_placeholders = self.placeholders[is_training]
+        per_dev_placeholders = self._per_dev_placeholders[is_training]
         phase_set = 'T.' if is_training else 'V_' + which_set + '.'
 
         # Create "towers" with the model outputs/loss keys and a value
@@ -624,7 +637,7 @@ class Experiment(object):
         # Convert the lists of tensors to concatenated tensors and keep
         # the first `num_devs`, i.e., dynamically select at runtime
         # which devices' outputs to consider
-        with tf.name_scope(phase_set + 'merge_devs'):
+        with tf.name_scope(phase_set + 'merge_devs') as merge_scope:
             ps = phase_set
             curr_model_out = recursive_truncate_dict(stacked_model_outs,
                                                      self.sym_num_batches,
@@ -637,8 +650,9 @@ class Experiment(object):
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
+        self.sym_batch_size = tf.shape(curr_model_out['pred'])[0]
         tf.summary.scalar(phase_set + 'control_flow/batch_size',
-                          tf.shape(curr_model_out['pred'])[0], summaries)
+                          self.sym_batch_size, summaries)
 
         # We are trying to be flexible with the placeholders, so we
         # cannot use it at the moment. I'll keep it here for reference
@@ -713,7 +727,8 @@ class Experiment(object):
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
         graph_out = self.extra_graph_out(graph_out, curr_model_out,
-                                         curr_loss_out, is_training)
+                                         curr_loss_out, is_training,
+                                         merge_scope)
 
         return graph_out
 
@@ -901,7 +916,7 @@ class Experiment(object):
         # note that the extra outputs and loss will be ignored (see comment
         # where placeholders are created)
         feed_dict = {}
-        for p_dict, batch_dict in zip_longest(self.placeholders[True],
+        for p_dict, batch_dict in zip_longest(self._per_dev_placeholders[True],
                                               minibatch_chunks,
                                               fillvalue=minibatch_chunks[0]):
             for p_name, p_obj in p_dict.iteritems():
