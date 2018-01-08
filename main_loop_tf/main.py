@@ -622,14 +622,16 @@ class Experiment(object):
         # Convert the lists of tensors to concatenated tensors and keep
         # the first `num_devs`, i.e., dynamically select at runtime
         # which devices' outputs to consider
-        curr_model_out = recursive_truncate_dict(stacked_model_outs,
-                                                 self.sym_num_batches,
-                                                 parent_k=phase_set + '/outs',
-                                                 exact_len=cfg.num_devs)
-        curr_loss_out = recursive_truncate_dict(stacked_loss_outs,
-                                                self.sym_num_devs,
-                                                parent_k=phase_set + '/losses',
-                                                exact_len=cfg.num_devs)
+        with tf.name_scope(phase_set + 'merge_devs'):
+            ps = phase_set
+            curr_model_out = recursive_truncate_dict(stacked_model_outs,
+                                                     self.sym_num_batches,
+                                                     parent_k=ps + '/outs',
+                                                     exact_len=cfg.num_devs)
+            curr_loss_out = recursive_truncate_dict(stacked_loss_outs,
+                                                    self.sym_num_devs,
+                                                    parent_k=ps + '/losses',
+                                                    exact_len=cfg.num_devs)
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
