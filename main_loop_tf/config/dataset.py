@@ -31,6 +31,9 @@ gflags.DEFINE_bool('use_threads', True, 'Whether to use parallel threads to '
                    'load the dataset')
 gflags.DEFINE_integer('nthreads', 3, 'The number of threads ot use, if '
                       'use_threads is True', lower_bound=0)
+gflags.DEFINE_integer('data_queues_size', 30, 'The size of the data '
+                      'loading queue. Consider increasing this if you suspect '
+                      'starvation.', lower_bound=1)
 gflags.DEFINE_bool('remove_mean', False, 'If True each image or frame '
                    'will be divided by the dataset mean, if any.')
 gflags.DEFINE_bool('divide_by_std', False, 'If True each image or '

@@ -96,11 +96,12 @@ class Experiment(object):
         # ============ Hash, (gsheet) and checkpoints
         # Exclude non JSONable and not interesting objects
         exclude_list = ['checkpoints_basedir', 'checkpoints_to_keep',
-                        'dataset', 'debug', 'debug_of', 'devices',
-                        'do_validation_only', 'suite_name', 'group_summaries',
-                        'help', 'hyperparams_summaries', 'max_epochs',
-                        'min_epochs', 'model_name', 'model_suffix', 'nthreads',
-                        'patience', 'restore_model', 'restore_suite',
+                        'data_queues_size', 'dataset', 'debug', 'debug_of',
+                        'devices', 'do_validation_only', 'suite_name',
+                        'group_summaries', 'help', 'hyperparams_summaries',
+                        'max_epochs', 'min_epochs', 'model_name',
+                        'model_suffix', 'nthreads', 'patience',
+                        'restore_model', 'restore_suite',
                         'save_gif_frames_on_disk', 'save_gif_on_disk',
                         'save_raw_predictions_on_disk',
                         'show_heatmaps_summaries', 'show_samples_summaries',
@@ -208,6 +209,7 @@ class Experiment(object):
 
         dataset_params['use_threads'] = cfg.use_threads
         dataset_params['nthreads'] = cfg.nthreads
+        dataset_params['queues_size'] = cfg.data_queues_size
         dataset_params['remove_per_img_mean'] = cfg.remove_per_img_mean
         dataset_params['divide_by_per_img_std'] = cfg.divide_by_per_img_std
         dataset_params['remove_mean'] = cfg.remove_mean
@@ -902,6 +904,11 @@ class Experiment(object):
         iter_start = time()
         self._minibatch = self.train.next()
         self._t_data_load = time() - iter_start
+        if self._t_data_load > 1:
+            tf.logging.info('Data preprocess and loading took {}'
+                            's. Consider increasing the '
+                            'data_queues_size parameter.'.format(
+                                self._t_data_load))
 
     def get_feed_dict(self, n_splits):
         # Get the per-device inputs
