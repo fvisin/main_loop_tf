@@ -14,10 +14,14 @@ from time import time
 import dataset_loaders
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.training.supervisor import Supervisor
+from tensorflow.python.training.training import CheckpointSaverHook
+from tensorflow.python.training.monitored_session import (MonitoredSession,
+                                                          ChiefSessionCreator)
+from tensorflow.python.training.summary_io import SummaryWriterCache
 from tqdm import tqdm
 
 import gflags
+from hooks import EarlyStopHook
 from optimization import (apply_lr_decay, average_gradients,
                           compute_and_process_grads, get_optimizer)
 from utils import (recursive_dict_stack, recursive_truncate_dict,
@@ -96,6 +100,7 @@ class Experiment(object):
         # ============ Hash, (gsheet) and checkpoints
         # Exclude non JSONable and not interesting objects
         exclude_list = ['checkpoints_basedir', 'checkpoints_to_keep',
+                        'checkpoints_save_secs', 'checkpoints_save_steps',
                         'data_queues_size', 'dataset', 'debug', 'debug_of',
                         'devices', 'do_validation_only', 'suite_name',
                         'group_summaries', 'help', 'hyperparams_summaries',
@@ -271,9 +276,6 @@ class Experiment(object):
         valid_temp.finish()
         del(train_temp, valid_temp)
 
-        self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
-                         max(1, cfg.val_every_epochs) - 1)
-
         self.cfg = cfg
 
     def get_placeholders(self):
@@ -353,8 +355,8 @@ class Experiment(object):
             # the batch_size might change dynamically, so we rather
             # replicate the input at runtime.
             train_placeholders, val_placeholders = self.get_placeholders()
-            self._per_dev_placeholders = {True: train_placeholders,
-                                          False: val_placeholders}
+            self.per_dev_placeholders = {True: train_placeholders,
+                                         False: val_placeholders}
 
             # Optimizer
             lr = apply_lr_decay(self.cfg, self.global_step)
@@ -440,16 +442,16 @@ class Experiment(object):
         Allow the user to define some extra metric into the graph. This
         should be returned via the graph_out dictionary and/or
         modifications to self"""
-        # Concat and truncate the _per_dev_placeholders to recover the
+        # Concat and truncate the per_dev_placeholders to recover the
         # tensors that correspond to the part of the placeholders that
         # are actually used at run-time. When all the devices are in use
-        # this corresponds to concatenating each _per_dev_placeholder
+        # this corresponds to concatenating each per_dev_placeholder
         # into an aggregated placeholder. These are the placeholders
         # that the user should use to e.g., compute performance metrics
         # against the labels.
         with tf.name_scope(merge_scope):
             stacked_placeholders = {}
-            for p in self._per_dev_placeholders[is_training]:
+            for p in self.per_dev_placeholders[is_training]:
                 recursive_dict_stack(p, stacked_placeholders)
             self.placeholders = recursive_truncate_dict(stacked_placeholders,
                                                         self.sym_num_devs)
@@ -480,7 +482,7 @@ class Experiment(object):
         cfg = self.cfg
         reuse_variables = not is_training
 
-        per_dev_placeholders = self._per_dev_placeholders[is_training]
+        per_dev_placeholders = self.per_dev_placeholders[is_training]
         phase_set = 'T.' if is_training else 'V_' + which_set + '.'
 
         # Create "towers" with the model outputs/loss keys and a value
@@ -735,22 +737,18 @@ class Experiment(object):
         return graph_out
 
     def run(self):
-        with self.__init_sess__() as self.sess:
+        with self._init_sess() as self.sess:
             if self.cfg.debug:
                 from tensorflow.python import debug as tf_debug
                 self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
                 self.sess.add_tensor_filter("has_inf_or_nan",
                                             tf_debug.has_inf_or_nan)
-            if self.cfg.hyperparams_summaries is not None:
-                # write Hyper parameters text summaries
-                summary_str = self.sess.run(self.summary_text_op)
-                self.sv.summary_computed(self.sess, summary_str)
 
             # Start training loop
-            return self.__main_loop()
+            return self._main_loop()
 
     def validate(self):
-        with self.__init_sess__() as self.sess:
+        with self._init_sess() as self.sess:
             if self.cfg.debug:
                 from tensorflow.python import debug as tf_debug
                 self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
@@ -766,57 +764,59 @@ class Experiment(object):
                 return metrics_val
             else:
                 raise ValueError('No validation function defined! You '
-                                 'should implement __validate_fn')
+                                 'should implement validate_fn')
 
-    def __init_sess__(self):
+    def get_hooks(self):
+        # For more hooks see
+        # https://www.tensorflow.org/api_guides/python/train#Training_Hooks
         cfg = self.cfg
+
+        # Checkpoint saver hook
+        save_secs = self.cfg.checkpoints_save_secs or None
+        save_steps = self.cfg.checkpoints_save_steps or None
+        saver = tf.train.Saver(
+            name='Saver',
+            save_relative_paths=True,
+            max_to_keep=cfg.checkpoints_to_keep)
+        saver_hook = CheckpointSaverHook(self.cfg.save_path,
+                                         saver=saver,
+                                         save_secs=save_secs,
+                                         save_steps=save_steps,
+                                         checkpoint_basename='model.ckpt')
+
+        # Max epochs and early stopping
+        early_stop_hook = EarlyStopHook(self)
+        return [saver_hook, early_stop_hook]
+
+    def _init_sess(self):
         with self.graph.as_default():
-            # Group global and local init into one op. Could be split into
-            # two different ops and passed to `init_op` and `local_init_op`
-            init_op = tf.group(tf.global_variables_initializer(),
-                               tf.local_variables_initializer())
+            # Initialize variables
+            init_op = tf.global_variables_initializer()
+            tf.add_to_collection(tf.GraphKeys.INIT_OP, init_op)
+            local_init_op = tf.local_variables_initializer()
+            tf.add_to_collection(tf.GraphKeys.LOCAL_INIT_OP, local_init_op)
 
-            load_pretrain = None
-            if self.cfg.restore_path:
-                pre_train_saver = tf.train.Saver(name='Restorer')
-
-                def load_pretrain(sess):
-                    if os.path.exists(os.path.join(self.cfg.restore_path,
-                                                   'checkpoint')):
-                        # TODO add option to restore best rather than last?
-                        pre_train_saver.restore(sess,
-                                                self.cfg.restore_path)
-                    else:
-                        tf.logging.debug('Cannot restore model:\n{}'.format(
-                                             self.cfg.restore_path))
-
-            self.saver = tf.train.Saver(
-                name='Saver',
-                save_relative_paths=True,
-                max_to_keep=cfg.checkpoints_to_keep)
-
-            sv = Supervisor(
-                graph=self.graph,
-                init_op=init_op,
-                init_fn=load_pretrain,
-                summary_op=None,
-                global_step=self.global_step,
-                logdir=self.cfg.save_path,
-                saver=self.saver,
-                # session_manager
-                # summary_writer
-                save_model_secs=300)
-            self.sv = sv
-
+            # Retrieve summary writer and create MonitoredSession
+            # https://github.com/tensorflow/tensorflow/issues/11350
+            # https://github.com/tensorflow/tensorflow/blob/
+            #   a7e225350abeed719f634ef71cd9d908424877b2/tensorflow/python/
+            #   training/basic_session_run_hooks.py#L337
+            self.summary_writer = SummaryWriterCache.get(self.cfg.save_path)
             tf_config = tf.ConfigProto(allow_soft_placement=True)
-            sess_gen = sv.managed_session(cfg.supervisor_master, tf_config)
+            sess_creator = ChiefSessionCreator(
+                config=tf_config,
+                checkpoint_dir=self.cfg.restore_path)
+            self._hooks = self.get_hooks()
+            sess_gen = MonitoredSession(session_creator=sess_creator,
+                                        hooks=self._hooks)
+
             return sess_gen
 
-    def __main_loop(self):
+    def _main_loop(self):
 
         self.experiment_begin()
 
-        while not self.sv.should_stop():
+        while not self.sess.should_stop():
             self.epoch_begin()
 
             for batch_id in range(self.train.nbatches):
@@ -826,18 +826,8 @@ class Experiment(object):
 
             self.epoch_end()
 
-            # Verify epochs' loop exit conditions
-            if self.estop:
-                tf.logging.info('Early Stop!')
-                self.sv.request_stop()
-                break
-            if self.last_epoch:
-                tf.logging.info('Last epoch!')
-                self.sv.request_stop()
-                break
-
         self.experiment_end()
-        return self.return_val
+        return self.return_value
 
     def get_train_dicts(self, which_op):
         train_dict = {
@@ -871,29 +861,26 @@ class Experiment(object):
             return_list=False,
             **self.cfg.dataset_params)
 
-        # Setup loop parameters
-        self.patience_counter = 0
-        self.estop = False
-        self.last_epoch = False
-        self.history_scores = []
-        # TODO add a config to select if we want to minimize or maximise
-        # the metric
-        self.best_score = 0
-
         # Start the training loop
         self.start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
-        self.gstep_val = self.global_step.eval(self.sess)
+        self.global_step_val = self.global_step.eval(self.sess)
+
+        # If it's the first run, log the hyperparameters in TB
+        if (self.cfg.hyperparams_summaries is not None and
+                self.global_step_val == 0):
+            # write Hyper parameters text summaries
+            summary = self.sess.run(self.summary_text_op)
+            self.summary_writer.add_summary(summary, 0)
 
     def epoch_begin(self):
-        self.epoch_id = self.gstep_val // self.train.nbatches
+        self.epoch_id = self.global_step_val // self.train.nbatches
 
         summary_val = tf.Summary.Value(tag='T.control_flow/epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
-        self.sv.summary_computed(self.sess, summary,
-                                 global_step=self.epoch_id)
+        self.summary_writer.add_summary(summary, self.epoch_id)
         self.pbar = tqdm(total=self.train.nbatches,
                          bar_format='{n_fmt}/{total_fmt}{desc}'
                                     '{percentage:3.0f}%|{bar}| '
@@ -923,7 +910,7 @@ class Experiment(object):
         # note that the extra outputs and loss will be ignored (see comment
         # where placeholders are created)
         feed_dict = {}
-        for p_dict, batch_dict in zip_longest(self._per_dev_placeholders[True],
+        for p_dict, batch_dict in zip_longest(self.per_dev_placeholders[True],
                                               minibatch_chunks,
                                               fillvalue=minibatch_chunks[0]):
             for p_name, p_obj in p_dict.iteritems():
@@ -964,11 +951,12 @@ class Experiment(object):
         train_dict, train_summary_dict = self.get_train_dicts(which_op)
 
         # Compute (summaries and) loss
-        if self.gstep_val % self.cfg.train_summary_freq == 0:
+        # TODO make this a hook
+        if self.global_step_val % self.cfg.train_summary_freq == 0:
             fetch_dict = self.sess.run(train_summary_dict,
                                        feed_dict=self._feed_dict)
-            self.sv.summary_computed(self.sess,
-                                     fetch_dict['summary_op'])
+            self.summary_writer.add_summary(fetch_dict['summary_op'],
+                                            self.global_step_val)
         else:
             fetch_dict = self.sess.run(train_dict, feed_dict=self._feed_dict)
         self._fetch_dict = fetch_dict
@@ -979,105 +967,25 @@ class Experiment(object):
         self.loss_value = None if loss < self.cfg.thresh_loss else loss
 
     def batch_end(self):
-        self.pbar.set_description('({:3d}) Ep {:d}'.format(self.gstep_val + 1,
-                                                           self.epoch_id + 1))
+        self.pbar.set_description('({:3d}) Ep {:d}'.format(
+            self.global_step_val + 1, self.epoch_id + 1))
         avg_loss = self._fetch_dict['avg_loss']
         self.pbar.set_postfix({'D': '{:.2f}s'.format(self._t_data_load),
                                'loss': '{:.3f}'.format(avg_loss)})
         self.pbar.update(1)
-
-        # Update step counter
-        self.gstep_val = self.global_step.eval(self.sess)
+        self.global_step_val += 1
 
     def epoch_end(self):
         self.pbar.close()
-        # TODO Add val_every_iter?
-        # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
-
-        # Did we reach a break condition?
-        if self.sv.should_stop() or self.epoch_id == self.cfg.max_epochs - 1:
-            self.last_epoch = True
-
-        # Early stop if patience is over
-        self.patience_counter += 1
-        if (self.epoch_id >= self.cfg.min_epochs and
-                self.patience_counter >= self.cfg.patience):
-            self.estop = True
-
-        # Should we run validation?
-        metrics_val = {}
-        validate_fn = getattr(self, "validate_fn", None)
-        # Validate if last epoch, early stop or valid_every iterations passed
-        if callable(validate_fn) and (
-             self.last_epoch or self.estop or not self.val_skip):
-
-            for s in self.cfg.val_on_sets:
-                metrics_val[s] = validate_fn(
-                    self.val_graph_outs[s],
-                    which_set=s)
-
-            valid_score = metrics_val.get('valid')
-            # TODO improve history_scores
-            self.history_scores.append([valid_score])
-
-            # Did we improve *validation* metric?
-            if self.history_scores == [] or valid_score >= self.best_score:
-                self.best_score = valid_score
-                tf.logging.info('## New best model found! {} ##'.format(
-                    self.best_score))
-                t_save = time()
-                # Save best model as a separate checkpoint
-                self.saver.save(self.sess,
-                                os.path.join(self.cfg.save_path, 'best.ckpt'),
-                                global_step=self.global_step)
-                t_save = time() - t_save
-                tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
-
-                self.patience_counter = 0
-                self.estop = False
-            else:
-                tf.logging.info('## Model score: {} - Best score {} ##'.format(
-                    valid_score, self.best_score))
-            # Start skipping again
-            self.val_skip = max(1, self.cfg.val_every_epochs) - 1
-        else:
-            # We skipped validation, decrease the counter
-            self.val_skip -= 1
-        self.metrics_val = metrics_val
+        for hook in self._hooks:
+            if getattr(hook, '__name__', '') == 'EarlyStopHook':
+                hook.val_skip -= 1
 
     def experiment_end(self):
-        best = self.best_score
-        tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
-
         end = time()
         m, s = divmod(end - self.start, 60)
         h, m = divmod(m, 60)
         tf.logging.info("Total time elapsed: %d:%02d:%02d" % (h, m, s))
-
-        self.return_val = best
-        # # Move complete models and stuff to shared fs
-        # tf.logging.info('\n\nEND OF TRAINING!!\n\n')
-
-        # def move_if_exist(filename, dest):
-        #     if not os.path.exists(os.path.dirname(dest)):
-        #         os.makedirs(os.path.dirname(dest))
-        #     try:
-        #         shutil.move(filename, dest)
-        #     except IOError:
-        #         tf.logging.error('Move error: {} does not exist.'.format(
-        #             filename))
-
-        # move_if_exist(tmp_path + save_name + "_best.w",
-        #               'models/' + save_name + '_best.w')
-        # move_if_exist(tmp_path + save_name + "_best_loss.w",
-        #               'models/' + save_name + '_best_loss.w')
-        # move_if_exist(tmp_path + save_name + "_latest.w",
-        #               'models/' + save_name + '_latest.w')
-        # move_if_exist(tmp_path + save_name + ".npy",
-        #               'models/' + save_name + '.npy')
-        # move_if_exist(tmp_path + save_name + ".svg",
-        #               'models/' + save_name + '.svg')
-        # validate = True  # Print the best model's test error
 
     # Inherit the method defined in optimization.py
     compute_and_process_grads = compute_and_process_grads

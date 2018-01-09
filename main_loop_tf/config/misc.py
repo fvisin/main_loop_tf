@@ -2,10 +2,12 @@ import gflags
 
 
 # Checkpoints
-gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
-                     'Supervisor')
 gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
                       'to keep', lower_bound=0)
+gflags.DEFINE_integer('checkpoints_save_secs', 0, 'Save every N secs',
+                      lower_bound=0)
+gflags.DEFINE_integer('checkpoints_save_steps', 100, 'Save every N steps',
+                      lower_bound=0)
 gflags.DEFINE_string('checkpoints_basedir', 'checkpoints', 'The base path '
                      'where the model checkpoints are stored')
 gflags.DEFINE_string('suite_name', '', 'Optional. The name of the set of '
