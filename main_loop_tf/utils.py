@@ -322,7 +322,7 @@ def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
 
 
 def uniquify_path(path, extension=''):
-    """Adds a suffix to the path until it's unique
+    """Adds an incremental suffix to the path until it's unique
 
     Parameters
     ----------
@@ -330,12 +330,22 @@ def uniquify_path(path, extension=''):
             The path to be uniquified.
         extension: string, optional
             The extension of the file to be uniquified.
+
+    Returns
+    -------
+        last_existing_path: string
+            The existing path with the highest incremental suffix.
+        unique_path: string
+            A unique path generated adding an incremental suffix to the
+            input path if necessary.
     """
     if extension != '':
         extension = '.' + extension
     incr_num = 0
-    unique_path = path
-    while(os.path.exists(unique_path + extension)):
+    unique_path = path + extension
+    last_existing_path = path + extension
+    while(os.path.exists(unique_path)):
         incr_num += 1
+        last_existing_path = unique_path
         unique_path = path + '_' + str(incr_num) + extension
-    return unique_path + extension
+    return last_existing_path, unique_path

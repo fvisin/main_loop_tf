@@ -116,14 +116,15 @@ class Experiment(object):
                         'val_summary_freq', 'summary_per_subset']
         if hasattr(self, 'extra_exclude_list'):
             exclude_list.extend(self.extra_exclude_list)
-        param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
-                      if k not in exclude_list}
+        cfg_dump_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
+                         if k not in exclude_list}
         h = hashlib.md5()
-        h.update(str(param_dict))
+        h.update(str(cfg_dump_dict))
         cfg.hash = h.hexdigest()
-        save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
-                                                     'dataset_loaders',
-                                                     'main_loop_tf'])
+        save_repos_hash(cfg_dump_dict, cfg.model_name, ['tensorflow',
+                                                        'dataset_loaders',
+                                                        'main_loop_tf'])
+        self._cfg_dump_dict = cfg_dump_dict
 
         checkpoints_path = cfg.checkpoints_basedir
         if cfg.suite_name != '':
@@ -141,7 +142,7 @@ class Experiment(object):
             # If the model should not be restored from a checkpoint,
             # and the save path exists, make the save path unique by
             # adding an incremental suffix
-            save_path = uniquify_path(save_path)
+            _, save_path = uniquify_path(save_path)
         # Restore path
         if cfg.restore_model.lower() not in ['', 'true', 'false']:
             # A specific restore path has been provided
@@ -161,13 +162,9 @@ class Experiment(object):
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
-        # Dump parameters and commit hash/diff to save path
-        # Do not overwrite by default
-        param_path = os.path.join(save_path, 'params_and_hashes')
-        param_path = uniquify_path(param_path, 'txt')
-        with open(param_path, 'w') as f:
-            f.write(json.dumps(param_dict, sort_keys=True, indent=4,
-                               separators=(',', ': ')))
+        cfg_dump_path = os.path.join(save_path, 'params_and_hashes')
+        cfg_load_path, cfg_dump_path = uniquify_path(cfg_dump_path, 'txt')
+        self.cfg_load_path, self.cfg_dump_path = cfg_load_path, cfg_dump_path
 
         # ============ A bunch of derived params
         cfg._FLOATX = 'float32'
@@ -871,6 +868,14 @@ class Experiment(object):
             which_set='train',
             return_list=False,
             **self.cfg.dataset_params)
+
+        # Dump parameters and commit hash/diff to save path
+        # Do not overwrite by default
+        self._cfg_dump_dict['train_nbatches'] = self.train.nbatches
+        self._cfg_dump_dict['train_nsamples'] = self.train.nsamples
+        with open(self.cfg_dump_path, 'w') as f:
+            f.write(json.dumps(self._cfg_dump_dict, sort_keys=True, indent=4,
+                               separators=(',', ': ')))
 
         # Start the training loop
         self.start = time()
