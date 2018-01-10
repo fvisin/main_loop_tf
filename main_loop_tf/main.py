@@ -972,10 +972,9 @@ class Experiment(object):
             fetch_dict = self.sess.run(train_dict, feed_dict=self._feed_dict)
         self._fetch_dict = fetch_dict
 
-        # Update self.loss_value, used to decide the amount of gradient
-        # noise. Do not add noise if the loss is lower than a threshold
-        loss = fetch_dict['avg_loss']
-        self.loss_value = None if loss < self.cfg.thresh_loss else loss
+        # Update self.loss_value, potentially used to decide the amount
+        # of gradient noise in `process_gradients` via sym_prev_err.
+        self.loss_value = fetch_dict['avg_loss']
 
     def batch_end(self):
         self.pbar.set_description('({:3d}) Ep {:d}'.format(

@@ -188,7 +188,7 @@ def _get_grad_noise_scale(cfg, global_step, prev_err):
         grad_noise_scale = eta * tf.pow(tf.cast(
             global_step + 1, cfg._FLOATX), -gamma)
     elif cfg.grad_noise_decay == 'neural_gpu':
-        if prev_err is None:
+        if prev_err < cfg.thresh_loss:
             grad_noise_scale = cfg.grad_noise_scale
         else:
             eta = cfg.grad_noise_scale
