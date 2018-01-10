@@ -326,7 +326,7 @@ class Experiment(object):
         #     pass
 
         tf.logging.info("Building the model ...")
-        self.graph = tf.Graph()
+        self.graph = tf.get_default_graph()
         with self.graph.as_default():
             self.global_step = tf.get_variable(
                 'global_step', [],
