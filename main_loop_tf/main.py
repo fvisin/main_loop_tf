@@ -744,6 +744,11 @@ class Experiment(object):
                 self.sess.add_tensor_filter("has_inf_or_nan",
                                             tf_debug.has_inf_or_nan)
 
+            uninit_vars = self.sess.run(self._uninit_vars)
+            if len(uninit_vars) > 0:
+                raise RuntimeError('Uninitialized variables: {}'.format(
+                    uninit_vars))
+
             # Start training loop
             return self._main_loop()
 
@@ -754,6 +759,11 @@ class Experiment(object):
                 self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
                 self.sess.add_tensor_filter("has_inf_or_nan",
                                             tf_debug.has_inf_or_nan)
+            uninit_vars = self.sess.run(self._uninit_vars)
+            if len(uninit_vars) > 0:
+                raise RuntimeError('Uninitialized variables: {}'.format(
+                    uninit_vars))
+
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
                 metrics_val = {}
@@ -795,6 +805,7 @@ class Experiment(object):
             tf.add_to_collection(tf.GraphKeys.INIT_OP, init_op)
             local_init_op = tf.local_variables_initializer()
             tf.add_to_collection(tf.GraphKeys.LOCAL_INIT_OP, local_init_op)
+            self._uninit_vars = tf.report_uninitialized_variables()
 
             # Retrieve summary writer and create MonitoredSession
             # https://github.com/tensorflow/tensorflow/issues/11350
