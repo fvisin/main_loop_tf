@@ -32,8 +32,6 @@ gflags.DEFINE_string('restore_model', 'True', 'It can be the name of the '
 gflags.DEFINE_list('devices', None, 'A list of devices to use. If None '
                    'it will be inferred from the CUDA_VISIBLE_DEVICES '
                    'environment variable')
-gflags.DEFINE_bool('debug_of', False,
-                   'Show rgb and optical flow of each batch in a window ')
 
 # Other flags we might want to define (see also config/flow.py):
 # See https://www.tensorflow.org/versions/r0.10/tutorials/monitors/

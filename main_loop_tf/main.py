@@ -101,19 +101,14 @@ class Experiment(object):
         # Exclude non JSONable and not interesting objects
         exclude_list = ['checkpoints_basedir', 'checkpoints_to_keep',
                         'checkpoints_save_secs', 'checkpoints_save_steps',
-                        'data_queues_size', 'dataset', 'debug', 'debug_of',
-                        'devices', 'do_validation_only', 'suite_name',
+                        'data_queues_size', 'dataset', 'debug', 'devices',
                         'group_summaries', 'help', 'hyperparams_summaries',
                         'max_epochs', 'min_epochs', 'model_name',
                         'model_suffix', 'nthreads', 'patience',
-                        'restore_model', 'restore_suite',
-                        'save_gif_frames_on_disk', 'save_gif_on_disk',
-                        'save_raw_predictions_on_disk',
-                        'show_heatmaps_summaries', 'show_samples_summaries',
-                        'supervisor_master', 'thresh_loss',
-                        'train_summary_freq', 'use_threads',
+                        'restore_model', 'restore_suite', 'suite_name',
+                        'thresh_loss', 'train_summary_freq', 'use_threads',
                         'val_every_epochs', 'val_on_sets', 'val_skip_first',
-                        'val_summary_freq', 'summary_per_subset']
+                        'validate']
         if hasattr(self, 'extra_exclude_list'):
             exclude_list.extend(self.extra_exclude_list)
         cfg_dump_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
