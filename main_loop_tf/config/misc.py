@@ -32,6 +32,8 @@ gflags.DEFINE_string('restore_model', 'True', 'It can be the name of the '
 gflags.DEFINE_list('devices', None, 'A list of devices to use. If None '
                    'it will be inferred from the CUDA_VISIBLE_DEVICES '
                    'environment variable')
+gflags.DEFINE_integer('random_seed', 8112017, 'Fixed random seed for '
+                      'both tensorflow and numpy')
 
 # Other flags we might want to define (see also config/flow.py):
 # See https://www.tensorflow.org/versions/r0.10/tutorials/monitors/

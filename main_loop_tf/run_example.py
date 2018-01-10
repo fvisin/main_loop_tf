@@ -20,10 +20,6 @@ import tensorflow as tf
 from tensorflow.contrib import slim
 
 
-tf.set_random_seed(8112017)
-np.random.seed(8112017)
-
-
 class ExampleExperiment(Experiment):
     """An example implementation of the Experiment abstract class"""
 

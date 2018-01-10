@@ -323,6 +323,10 @@ class Experiment(object):
         tf.logging.info("Building the model ...")
         self.graph = tf.get_default_graph()
         with self.graph.as_default():
+            # Plant the seeds, let them grow...
+            tf.set_random_seed(cfg.random_seed)
+            np.random.seed(cfg.random_seed)
+
             self.global_step = tf.get_variable(
                 'global_step', [],
                 initializer=tf.constant_initializer(0),
