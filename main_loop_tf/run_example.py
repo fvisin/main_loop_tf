@@ -141,7 +141,7 @@ class ExampleExperiment(Experiment):
         # note that the extra outputs and loss will be ignored (see comment
         # where placeholders are created)
         feed_dict = {}
-        for p_dict, batch_dict in zip_longest(self.placeholders[False],
+        for p_dict, batch_dict in zip_longest(self.per_dev_placeholders[False],
                                               minibatch_chunks,
                                               fillvalue=minibatch_chunks[0]):
             for p_name, p_obj in p_dict.iteritems():
@@ -162,7 +162,8 @@ class ExampleExperiment(Experiment):
         import matplotlib as mpl
         import matplotlib.pyplot as plt
         cmap = mpl.colors.ListedColormap(dataset.cmap)
-        fname = '/home/francesco/exp/main_loop_tf/main_loop_tf/checkpoints/camvid'
+        fname = '/home/francesco/exp/main_loop_tf/main_loop_tf/checkpoints/'
+        fname += 'camvid'
         if hasattr(self, 'epoch_id'):
             fname += str(self.epoch_id)
         fname += '.png'
@@ -193,12 +194,12 @@ if __name__ == '__main__':
     argv += ['--dataset', 'camvid']
     argv += ['--max_epochs', '50']
     argv += ['--val_every_epochs', '1']
-    argv += ['--use_threads', 'False']
+    argv += ['--nouse_threads']
     # argv += ['--devices', '/gpu:0,/gpu:1']
-    argv += ['--devices', '/gpu:0']
+    argv += ['--devices', '/cpu:0']
 
     exp = ExampleExperiment(argv)
-    if exp.cfg.do_validation_only:
+    if exp.cfg.validate:
         exp.validate()
     else:
         exp.run()
