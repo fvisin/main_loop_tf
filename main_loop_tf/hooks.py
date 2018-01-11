@@ -1,5 +1,5 @@
 import os
-import time
+from time import time
 
 import tensorflow as tf
 from tensorflow.python.training.training import SessionRunHook
@@ -16,6 +16,10 @@ class EarlyStopHook(SessionRunHook):
         self.metrics_history = {}
         self.validate_fn = getattr(experiment, "validate_fn", None)
         self._disable = False
+        self.saver = tf.train.Saver(
+            name='BestSaver',
+            save_relative_paths=True,
+            max_to_keep=self.cfg.checkpoints_to_keep)
 
     def after_run(self, run_context, run_values):
         last_epoch = False
@@ -60,10 +64,9 @@ class EarlyStopHook(SessionRunHook):
                     valid_score))
                 t_save = time()
                 # Save best model as a separate checkpoint
-                self.exp.saver.save(self.exp.sess,
-                                    os.path.join(self.cfg.save_path,
-                                                 'best.ckpt'),
-                                    global_step=self.exp.global_step)
+                self.saver.save(run_context.session,
+                                os.path.join(self.cfg.save_path, 'best.ckpt'),
+                                global_step=self.exp.global_step)
                 t_save = time() - t_save
                 tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
 
