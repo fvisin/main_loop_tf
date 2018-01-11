@@ -6,7 +6,7 @@ gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
                       'to keep', lower_bound=0)
 gflags.DEFINE_integer('checkpoints_save_secs', 0, 'Save every N secs',
                       lower_bound=0)
-gflags.DEFINE_integer('checkpoints_save_steps', 100, 'Save every N steps',
+gflags.DEFINE_integer('checkpoints_save_steps', 500, 'Save every N steps',
                       lower_bound=0)
 gflags.DEFINE_string('checkpoints_basedir', 'checkpoints', 'The base path '
                      'where the model checkpoints are stored')
