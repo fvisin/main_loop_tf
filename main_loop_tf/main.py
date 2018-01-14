@@ -32,8 +32,6 @@ from utils import (recursive_dict_stack, recursive_truncate_dict,
 import config  # noqa
 
 FLAGS = gflags.FLAGS
-gflags.DEFINE_bool('help', False, 'If True, shows this message')
-gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 
 
 class Experiment(object):
