@@ -10,9 +10,6 @@ from main_loop_tf import gflags_ext
 gflags.DEFINE_string('optimizer', 'adam', 'The optimizer')
 gflags_ext.DEFINE_multidict('optimizer_params', {},
                             'The params for the optimizer')
-gflags.DEFINE_bool('stateful_validation', False, 'If True the state of '
-                   'the RNNs will be kept to process the next batch (if '
-                   'consecutive)')
 # gflags.DEFINE_integer('BN_mode', 2, 'The batch normalization mode')
 gflags.DEFINE_float('lr', 1e-4, 'Initial Learning Rate')
 gflags.DEFINE_string('lr_decay', None, 'LR Decay schedule')
@@ -39,6 +36,9 @@ gflags.DEFINE_float('power', None,
                     'Defaults to linear, 1.0. Usually 0.5')
 gflags.DEFINE_float('end_lr', None, 'The minimal end Learning Rate')
 
+# Specific params for Neural GPU
+gflags.DEFINE_string("thresh_loss", 0.7,
+                     "Do not add noise if loss is less than threshold")
 
 # ============ Regularization and gradients
 # Regularization parameters
@@ -51,8 +51,6 @@ gflags.DEFINE_float('weight_decay', 0, 'The weight decay')
 gflags.DEFINE_float("max_grad_norm", None, "Clip gradients to this norm.")
 gflags.DEFINE_float("grad_noise_scale", None,
                     "Gradient noise scale {0.01, 0.3, 1.0} ")
-gflags.DEFINE_string("thresh_loss", 0.7,
-                     "Do not add noise if loss is less than threshold")
 gflags.DEFINE_string("grad_noise_decay", None,
                      "Gradient Noise Decay Schedule [neural_gpu]")
 gflags.DEFINE_float("grad_multiplier", None, "Gradient Multipliers")

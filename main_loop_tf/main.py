@@ -5,6 +5,7 @@ try:
     from itertools import izip_longest as zip_longest
 except:
     from itertools import zip_longest
+import json
 import logging
 import os
 import sys
@@ -13,23 +14,24 @@ from time import time
 import dataset_loaders
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.training.supervisor import Supervisor
+from tensorflow.python.training.training import CheckpointSaverHook
+from tensorflow.python.training.monitored_session import (MonitoredSession,
+                                                          ChiefSessionCreator)
+from tensorflow.python.training.summary_io import SummaryWriterCache
 from tqdm import tqdm
 
 import gflags
-from optimization import get_optimizer
-from utils import save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler
+from hooks import EarlyStopHook
+from optimization import (apply_lr_decay, average_gradients,
+                          compute_and_process_grads, get_optimizer)
+from utils import (recursive_dict_stack, recursive_truncate_dict,
+                   save_repos_hash, split_in_chunks, squash_maybe, TqdmHandler,
+                   uniquify_path)
 
 # config module load all flags from source files
 import config  # noqa
 
 FLAGS = gflags.FLAGS
-gflags.DEFINE_bool('help', False, 'If True, shows this message')
-gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
-gflags.DEFINE_string('model_name', 'my_model', 'The name of the model, '
-                     'for the checkpoint file')
-gflags.DEFINE_string('supervisor_master', '', 'The "master" string for the '
-                     'Supervisor')
 
 
 class Experiment(object):
@@ -77,6 +79,8 @@ class Experiment(object):
         self.process_cfg_flags()
 
         # Init variables
+        self._graph_built = False
+        self.cum_grads_and_vars = {}
         self.val_graph_outs = {}
         self.avg_loss = {True: {}, False: {}}
 
@@ -93,65 +97,80 @@ class Experiment(object):
 
         # ============ Hash, (gsheet) and checkpoints
         # Exclude non JSONable and not interesting objects
-        exclude_list = ['checkpoints_dir', 'checkpoints_to_keep', 'dataset',
-                        'debug', 'debug_of', 'devices', 'do_validation_only',
+        exclude_list = ['checkpoints_basedir', 'checkpoints_to_keep',
+                        'checkpoints_save_secs', 'checkpoints_save_steps',
+                        'data_queues_size', 'dataset', 'debug', 'devices',
                         'group_summaries', 'help', 'hyperparams_summaries',
-                        'max_epochs', 'min_epochs', 'model_name', 'nthreads',
-                        'patience', 'restore_model',
-                        'save_gif_frames_on_disk', 'save_gif_on_disk',
-                        'save_raw_predictions_on_disk',
-                        'show_heatmaps_summaries', 'show_samples_summaries',
-                        'supervisor_master', 'thresh_loss',
-                        'train_summary_freq', 'use_threads',
+                        'max_epochs', 'min_epochs', 'model_name',
+                        'model_suffix', 'nthreads', 'patience',
+                        'restore_model', 'restore_suite', 'suite_name',
+                        'thresh_loss', 'train_summary_freq', 'use_threads',
                         'val_every_epochs', 'val_on_sets', 'val_skip_first',
-                        'val_summary_freq', 'summary_per_subset']
+                        'validate']
         if hasattr(self, 'extra_exclude_list'):
             exclude_list.extend(self.extra_exclude_list)
-        param_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
-                      if k not in exclude_list}
+        cfg_dump_dict = {k: deepcopy(v) for (k, v) in cfg.__dict__.iteritems()
+                         if k not in exclude_list}
         h = hashlib.md5()
-        h.update(str(param_dict))
+        h.update(str(cfg_dump_dict))
         cfg.hash = h.hexdigest()
-        save_repos_hash(param_dict, cfg.model_name, ['tensorflow',
-                                                     'dataset_loaders',
-                                                     'main_loop_tf'])
+        save_repos_hash(cfg_dump_dict, cfg.model_name, ['tensorflow',
+                                                        'dataset_loaders',
+                                                        'main_loop_tf'])
+        self._cfg_dump_dict = cfg_dump_dict
 
-        if cfg.restore_model is None or cfg.restore_model == 'False':
+        checkpoints_path = cfg.checkpoints_basedir
+        if cfg.suite_name != '':
+            checkpoints_path = os.path.join(checkpoints_path, cfg.suite_name)
+        cfg.checkpoints_path = checkpoints_path
+
+        model_name = cfg.model_name if cfg.model_name != '' else cfg.hash
+        if cfg.model_suffix != '':
+            model_name += '_' + cfg.model_suffix
+        save_path = os.path.join(checkpoints_path, model_name)
+        cfg.model_name = model_name
+
+        # Save path
+        if cfg.restore_model.lower() not in ['', 'true']:  # false or custom
             # If the model should not be restored from a checkpoint,
-            # change the checkpoints directory by adding an incremental
-            # suffix
-            cfg.checkpoints_basedir = cfg.checkpoints_dir
-            cfg.checkpoints_dir = os.path.join(cfg.checkpoints_basedir,
-                                               cfg.model_name, cfg.hash)
-            incr_num = 0
-            logdir = cfg.checkpoints_dir
-            while(os.path.exists(logdir)):
-                incr_num += 1
-                if incr_num == 1:
-                    logdir += '_' + str(incr_num)
-                else:
-                    logdir = cfg.checkpoints_dir + '_' + str(incr_num)
-            cfg.checkpoints_dir = logdir
-            del(logdir)
+            # and the save path exists, make the save path unique by
+            # adding an incremental suffix
+            _, save_path = uniquify_path(save_path)
+        # Restore path
+        if cfg.restore_model.lower() not in ['', 'true', 'false']:
+            # A specific restore path has been provided
+            restore_path = cfg.checkpoints_basedir
+            if cfg.restore_suite != '':
+                restore_path = os.path.join(restore_path,
+                                            cfg.restore_suite)
+            restore_path = os.path.join(restore_path, cfg.restore_model)
+        elif cfg.restore_model.lower() == 'false':
+            # Disable restore
+            restore_path = None
         else:
-            restore_checkpoints_dir = os.path.join(cfg.checkpoints_dir,
-                                                   cfg.model_name,
-                                                   cfg.restore_model)
-            # If you want to reload a specific  hash
-            if os.path.exists(restore_checkpoints_dir):
-                cfg.checkpoints_dir = restore_checkpoints_dir
-            else:  # If you just want to reload the default hash
-                cfg.checkpoints_dir = os.path.join(
-                    cfg.checkpoints_dir, cfg.model_name, cfg.hash)
+            # Restore path == save path
+            restore_path = os.path.join(save_path)
+        cfg.save_path = save_path
+        cfg.restore_path = restore_path
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
 
-        cfg.train_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'train')
-        cfg.val_checkpoints_dir = os.path.join(cfg.checkpoints_dir, 'valid')
+        cfg_dump_path = os.path.join(save_path, 'params_and_hashes')
+        cfg_load_path, cfg_dump_path = uniquify_path(cfg_dump_path, 'txt')
+        self.cfg_load_path, self.cfg_dump_path = cfg_load_path, cfg_dump_path
 
         # ============ A bunch of derived params
         cfg._FLOATX = 'float32'
+        # Infer devices from CUDA_VISIBLE_DEVICES if not specified
+        if cfg.devices is None:
+            cvd = os.environ['CUDA_VISIBLE_DEVICES']
+            if cvd == '':
+                cfg.devices = ['/cpu:0']
+            else:
+                cfg.devices = ['/gpu:%s' % d for d in cvd.split(',')]
         cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
         cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
-        cfg.num_splits = cfg.num_gpus + cfg.num_cpus
+        cfg.num_devs = cfg.num_gpus + cfg.num_cpus
 
         # ============ Dataset init
         try:
@@ -163,7 +182,7 @@ class Experiment(object):
         self.Dataset = Dataset
         # Add dataset extra parameters specific for the dataset
         dataset_params = cfg.train_extra_params
-        dataset_params['batch_size'] = cfg.batch_size * cfg.num_splits
+        dataset_params['batch_size'] = cfg.batch_size * cfg.num_devs
         data_augm_kwargs = dataset_params['data_augm_kwargs'] = {}
         if cfg.crop_mode == 'smart':
             data_augm_kwargs['crop_mode'] = cfg.crop_mode
@@ -188,6 +207,7 @@ class Experiment(object):
 
         dataset_params['use_threads'] = cfg.use_threads
         dataset_params['nthreads'] = cfg.nthreads
+        dataset_params['queues_size'] = cfg.data_queues_size
         dataset_params['remove_per_img_mean'] = cfg.remove_per_img_mean
         dataset_params['divide_by_per_img_std'] = cfg.divide_by_per_img_std
         dataset_params['remove_mean'] = cfg.remove_mean
@@ -195,7 +215,7 @@ class Experiment(object):
         cfg.dataset_params = dataset_params
         cfg.valid_params = deepcopy(cfg.dataset_params)
         cfg.valid_params.update({
-            'batch_size': cfg.val_batch_size * cfg.num_splits,
+            'batch_size': cfg.val_batch_size * cfg.num_devs,
             'seq_per_subset': 0,
             'overlap': cfg.val_overlap,
             'shuffle_at_each_epoch': (cfg.val_overlap is not None and
@@ -249,9 +269,6 @@ class Experiment(object):
         valid_temp.finish()
         del(train_temp, valid_temp)
 
-        self.val_skip = (cfg.val_skip_first if cfg.val_skip_first else
-                         max(1, cfg.val_every_epochs) - 1)
-
         self.cfg = cfg
 
     def get_placeholders(self):
@@ -269,7 +286,7 @@ class Experiment(object):
         train_placeholders = []
         val_placeholders = []
         # Iterate over the devices
-        for i, _ in enumerate(range(cfg.num_splits)):
+        for i, _ in enumerate(range(cfg.num_devs)):
             train_ins = tf.placeholder(dtype=cfg._FLOATX,
                                        shape=cfg.input_shape,
                                        name='train_inputs_per_gpu_%i' % i)
@@ -287,6 +304,9 @@ class Experiment(object):
         return train_placeholders, val_placeholders
 
     def __build_graph(self):
+        if self._graph_built:
+            raise RuntimeError('You cannot build the graph twice.')
+        self._graph_built = True
         cfg = self.cfg
 
         # ============ Train/validation
@@ -302,16 +322,22 @@ class Experiment(object):
         #     pass
 
         tf.logging.info("Building the model ...")
-        self.graph = tf.Graph()
+        self.graph = tf.get_default_graph()
         with self.graph.as_default():
-            self.global_step = tf.Variable(0, trainable=False,
-                                           name='global_step', dtype='int32')
-            self.num_splits = tf.placeholder(np.int32, shape=None,
-                                             name='num_splits')
-            self.num_batches = tf.placeholder(np.int32, shape=None,
-                                              name='num_batches')
-            self.prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
-                                           name='prev_err')
+            # Plant the seeds, let them grow...
+            tf.set_random_seed(cfg.random_seed)
+            np.random.seed(cfg.random_seed)
+
+            self.global_step = tf.get_variable(
+                'global_step', [],
+                initializer=tf.constant_initializer(0),
+                trainable=False, dtype='int32')
+            self.sym_num_devs = tf.placeholder(np.int32, shape=None,
+                                               name='num_devs')
+            self.sym_num_batches = tf.placeholder(np.int32, shape=None,
+                                                  name='num_batches')
+            self.sym_prev_err = tf.placeholder(shape=(), dtype=cfg._FLOATX,
+                                               name='prev_err')
 
             # Create a list of input placeholders for each device.
             # When the batchsize is not big enough to fill all of them we
@@ -326,8 +352,15 @@ class Experiment(object):
             # the batch_size might change dynamically, so we rather
             # replicate the input at runtime.
             train_placeholders, val_placeholders = self.get_placeholders()
-            self.placeholders = {True: train_placeholders,
-                                 False: val_placeholders}
+            self.per_dev_placeholders = {True: train_placeholders,
+                                         False: val_placeholders}
+
+            # Optimizer
+            lr = apply_lr_decay(self.cfg, self.global_step)
+            Optimizer = (self.UserOptimizer if self.UserOptimizer else
+                         get_optimizer(cfg.optimizer))
+            self.optimizer = Optimizer(learning_rate=lr,
+                                       **cfg.optimizer_params)
 
             # Model compilation
             # -----------------
@@ -349,23 +382,23 @@ class Experiment(object):
 
                 # Create the hyperparameters summaries operations
                 if cfg.hyperparams_summaries is not None:
-                    summary_text = []
-                    for (key_header,
-                         list_value) in cfg.hyperparams_summaries.iteritems():
+                    with tf.name_scope('hyperparams_summaries'):
+                        summary_text = []
+                        for (k, vals) in cfg.hyperparams_summaries.iteritems():
 
-                        header_list = []
-                        text_list = []
-                        for v in list_value:
-                            header_list.append('**' + v + '**')
-                            text_list.append(str(getattr(cfg, v)))
-                        header_tensor = tf.constant(header_list)
-                        text_tensor = tf.constant(text_list)
+                            header_list = []
+                            text_list = []
+                            for v in vals:
+                                header_list.append('**' + v + '**')
+                                text_list.append(str(getattr(cfg, v)))
+                            header_tensor = tf.constant(header_list)
+                            text_tensor = tf.constant(text_list)
 
-                        summary_text.append(tf.summary.text(
-                            key_header,
-                            tf.reshape(tf.concat([header_tensor, text_tensor],
-                                                 axis=0), [2, -1])))
-                    self.summary_text_op = tf.summary.merge(summary_text)
+                            summary = tf.summary.text(k, tf.reshape(tf.concat(
+                                [header_tensor, text_tensor], axis=0),
+                                [2, -1]))
+                            summary_text.append(summary)
+                        self.summary_text_op = tf.summary.merge(summary_text)
 
     def get_loss_extra_params(self):
         """Add extra parameters to the loss function
@@ -380,32 +413,46 @@ class Experiment(object):
         Allow to potentially specify which symbolic variables to train on"""
         return None
 
-    def dev_model_out_post(self, model_out, device, dev_placeholders,
-                           dev_set_str, these_s):
+    def dev_model_out_post(self, model_out, dev_placeholders, dev_stats_scope,
+                           phase_set_dev, these_s):
         """Process the model output for visualization
 
         Allow to potentially symbolically postprocess the output of the
         model, e.g., for visualization, once the loss has been defined"""
         return model_out
 
-    def dev_extra_summaries(self, dev_losses, dev_comp_losses, devs_model_outs,
-                            is_training, dev_set_str, these_s):
+    def dev_extra_summaries(self, stacked_model_outs, stacked_loss_outs,
+                            is_training, dev_stats_scope, phase_set_dev,
+                            these_s):
         """Add user-defined per-device summaries"""
         pass
 
-    def extra_summaries(self, merged_model_outs, dev_comp_losses,
-                        devs_model_outs, dev_losses, is_training, summaries):
+    def extra_summaries(self, stacked_model_outs, stacked_loss_outs,
+                        is_training, stats_scope, these_s):
         """Add user-defined global summaries"""
         pass
 
-    def metrics_graph_fn(self, graph_out, merged_model_outs, dev_comp_losses,
-                         devs_model_outs, dev_losses, is_training):
+    def extra_graph_out(self, graph_out, stacked_model_outs, stacked_loss_outs,
+                        is_training, merge_scope):
         """Add user-defined metrics to the graph
 
         Allow the user to define some extra metric into the graph. This
         should be returned via the graph_out dictionary and/or
         modifications to self"""
-        pass
+        # Concat and truncate the per_dev_placeholders to recover the
+        # tensors that correspond to the part of the placeholders that
+        # are actually used at run-time. When all the devices are in use
+        # this corresponds to concatenating each per_dev_placeholder
+        # into an aggregated placeholder. These are the placeholders
+        # that the user should use to e.g., compute performance metrics
+        # against the labels.
+        with tf.name_scope(merge_scope):
+            stacked_placeholders = {}
+            for p in self.per_dev_placeholders[is_training]:
+                recursive_dict_stack(p, stacked_placeholders)
+            self.placeholders = recursive_truncate_dict(stacked_placeholders,
+                                                        self.sym_num_devs)
+        return graph_out
 
     def __build_device_graph(self, which_set, is_training):
         ''' Build the multiGPU graph of computation
@@ -432,126 +479,106 @@ class Experiment(object):
         cfg = self.cfg
         reuse_variables = not is_training
 
-        per_dev_placeholders = self.placeholders[is_training]
-        if is_training:
-            grad_ops = []
-            summaries_str = 'train_summaries_%s'
-        else:
-            summaries_str = 'val_%s_summaries' % which_set + '_%s'
-
-        if is_training:
-            # Create a stateful Optimizer object
-            if self.UserOptimizer is None:
-                optimizer = get_optimizer(cfg.optimizer)(
-                    cfg=cfg, global_step=self.global_step)
-            else:
-                optimizer = self.UserOptimizer(
-                    cfg=cfg, global_step=self.global_step)
-            if hasattr(self, 'optimizer'):
-                raise ValueError('Training on multiple sets is not '
-                                 'supported.')
-            self.optimizer = optimizer
+        per_dev_placeholders = self.per_dev_placeholders[is_training]
+        phase_set = 'T.' if is_training else 'V_' + which_set + '.'
 
         # Create "towers" with the model outputs/loss keys and a value
         # for each device
-        devs_model_outs = {}
-        dev_comp_losses = {}
-        dev_losses = []  # per device
+        stacked_model_outs = {}
+        stacked_loss_outs = {}
         summaries = []
         for device in cfg.devices:
             device_str = device.replace('/', '').replace(':', '').lower()
-            dev_set_str = '{}_{}'.format(device_str, which_set)
-            summaries.append(summaries_str % device_str)
+            summaries.append(phase_set + device_str)
         these_s = summaries
 
         # Build a graph for each device, each with its input and output
         # placeholders. Collect the outputs in "towers"
         # -------------------------------------------------------------
-        for device, dev_placeholders in zip(cfg.devices, per_dev_placeholders):
-            device_str = device.replace('/', '').replace(':', '').lower()
-            dev_set_str = '{}_{}'.format(device_str, which_set)
-            with tf.name_scope(dev_set_str), \
-                    tf.variable_scope(cfg.model_name, reuse=reuse_variables), \
-                    tf.device(device):
-                reuse_variables = True
+        for dev_id, (dev, dev_placeholders) in enumerate(
+                zip(cfg.devices, per_dev_placeholders)):
+            device_str = 'dev' + str(dev_id)
+            phase_set_dev = phase_set + device_str
+            # NOTE The name scopes help organize the graph in tensorboard
+            # The variable scopes are needed to reuse the variables among
+            # the various graphs
+            with tf.name_scope(phase_set_dev) as phase_set_dev_scope, \
+                    tf.device(dev):
+                with tf.variable_scope('model',
+                                       reuse=reuse_variables) as model_scope:
+                    # Model preactivation, activation (softmax) and prediction
+                    # NOTE Will be then stacked in stacked_model_outs
+                    model_out = self.build_model(dev_placeholders, is_training)
+                    assert isinstance(model_out, dict), """
+                        Your model should return a dictionary"""
+                    assert 'out_preact' in model_out, """Your model
+                        function should return a dictionary with attribute
+                        'out_preact'!"""
+                    assert 'out_act' in model_out, """Your model function
+                        should return a dictionary with attribute 'out_act'!"""
+                    assert 'pred' in model_out, """Your model function should
+                        return a dictionary with at least attribute 'pred'!"""
 
-                # Model preactivation, activation (softmax) and prediction
-                model_out = self.build_model(dev_placeholders, is_training)
-                assert isinstance(model_out, dict), """
-                    Your model should return a dictionary"""
-                assert 'out_preact' in model_out, """Your model
-                    function should return a dictionary with attribute
-                    'out_preact'!"""
-                assert 'out_act' in model_out, """Your model function
-                    should return a dictionary with attribute 'out_act'!"""
-                assert 'pred' in model_out, """Your model function should
-                    return a dictionary with at least attribute 'pred'!"""
-
-                # Loss
-                loss_params = self.get_loss_extra_params()
-                loss_outs = self.build_loss(dev_placeholders, model_out,
-                                            is_training=is_training,
-                                            **loss_params)
-                assert loss_outs is not None and isinstance(loss_outs, dict), (
+                with tf.variable_scope('loss', reuse=reuse_variables):
+                    reuse_variables = True  # Reuse from now on
+                    loss_params = self.get_loss_extra_params()
+                    loss_out = self.build_loss(dev_placeholders, model_out,
+                                               is_training=is_training,
+                                               **loss_params)
+                assert loss_out is not None and isinstance(loss_out, dict), (
                     """Your loss should return a dictionary""")
-                assert 'loss' in loss_outs, """Your loss function should
+                assert 'loss' in loss_out, """Your loss function should
                     return a dictionary with attribute 'loss'!"""
-                assert 'components' in loss_outs, """Your loss function should
+                assert 'components' in loss_out, """Your loss function should
                     return a dictionary with attribute 'components'
                     containing the list of terms that composes the total
                     loss!"""
+                # Append this device's loss outs to those of prev devices
+                recursive_dict_stack(loss_out, stacked_loss_outs)
 
-                # Accumulate the loss outputs from each device into a list and
-                # the component of the loss into a dictionary with components
-                # as keys and a list with one value per device as value
-                dev_losses.append(loss_outs['loss'])
-                for k, v in loss_outs['components'].iteritems():
-                    dev_comp_losses.setdefault(k, []).append(v)
+                # Add '_stats' suffix to the name scope
+                scope_str = phase_set_dev + '_aggregated_stats'
+                with tf.name_scope(None):
+                    with tf.name_scope(scope_str) as dev_stats_scope:
+                        tf.summary.scalar('loss', loss_out['loss'], these_s)
 
                 # Allow to potentially postprocess the output of the
                 # model, e.g., for visualization, once the loss has been
                 # computed
-                model_out = self.dev_model_out_post(model_out, device,
-                                                    dev_placeholders,
-                                                    dev_set_str, these_s)
-
-                # Accumulate the loss outputs from each device into a
-                # dictionary with the same keys and a list of values,
-                # one for each device
-                for k, v in model_out.iteritems():
-                    devs_model_outs.setdefault(k, []).append(v)
-
-                # Remove the name_scopes (the one from the variable_scope and
-                # the one from the name_scope) and assign dev_set_str
-                # TODO:
-                # Save a summary with the loss per device
-                scope_str = dev_set_str + '_stats'
-                with tf.name_scope(None):
-                    with tf.name_scope(scope_str) as dev_set_scope:
-                        tf.summary.scalar('Loss', loss_outs['loss'], these_s)
+                with tf.variable_scope(model_scope):
+                    model_out = self.dev_model_out_post(model_out,
+                                                        dev_placeholders,
+                                                        dev_stats_scope,
+                                                        phase_set_dev + '.',
+                                                        these_s)
+                # Append this device's model outs to those of prev devices
+                recursive_dict_stack(model_out, stacked_model_outs)
 
                 if is_training:
                     # Compute gradients, add noise to the gradient and
                     # create the op to apply it if needed.
-                    grad_op = optimizer.minimize(
-                        loss_outs=loss_outs,
+                    grads_and_vars = self.compute_and_process_grads(
+                        loss_out=loss_out,
                         var_list=self.get_grad_descent_var_list(),
                         gate_gradients=None,
                         aggregation_method=None,
                         colocate_gradients_with_ops=True,
                         name=None,
                         grad_loss=None,
-                        device=device,
-                        dev_set_scope=dev_set_scope,
+                        phase_set_dev=phase_set_dev + '.',
                         summaries=these_s)
-                    # Create a *list* of gradient update ops. The t-th element
-                    # of the list updates the gradients of the devices *up to*
-                    # the t-th device
-                    grad_ops.append(grad_op)
 
-                self.dev_extra_summaries(dev_losses, dev_comp_losses,
-                                         devs_model_outs, is_training,
-                                         dev_set_str, these_s)
+                    # Gradient descent
+                    # ----------------
+                    # Expand the list of grads (one per device) of each var
+                    for g, v in grads_and_vars:
+                        # Append the grads of the current device
+                        self.cum_grads_and_vars.setdefault(v, []).append(g)
+
+            with tf.name_scope(phase_set_dev_scope):
+                self.dev_extra_summaries(stacked_model_outs, stacked_loss_outs,
+                                         is_training, dev_stats_scope,
+                                         phase_set_dev + '.', these_s)
 
             # Print regularization
             for v in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES):
@@ -571,16 +598,63 @@ class Experiment(object):
             #  ...
             these_s = these_s[1:]
 
+        # Average the gradients on CPU and do SGD
+        if is_training:
+            grad_ops = []
+            update_ops = []
+            for dev_id, dev in enumerate(cfg.devices):
+                # Recover device name_space
+                phase_set_dev = 'T.dev' + str(dev_id)
+                update_ops += tf.get_collection(tf.GraphKeys.UPDATE_OPS,
+                                                scope=phase_set_dev)
+
+                scope = 'T.grads/uptodev' + str(dev_id)
+                # Average the gradients over the devices processed so far
+                avg_grads_and_vars = average_gradients(self.cum_grads_and_vars,
+                                                       scope + '.',
+                                                       up_to_dev=dev_id)
+
+                # Impose graph dependency so that update operations are
+                # computed even if they're are not explicit in the outputs os
+                # session.run
+                with tf.control_dependencies(update_ops):
+                    grad_op = self.optimizer.apply_gradients(
+                        avg_grads_and_vars, global_step=self.global_step,
+                        name=scope)  # TODO ha senso? Probabilmente no
+
+                # Create a *list* of gradient update ops. The t-th element of
+                # the list updates the gradients of the devices *up to* the
+                # t-th device
+                grad_ops.append(grad_op)
+
+            # Add the histograms of the gradients (all of them)
+            for grad, var in avg_grads_and_vars:
+                if grad is not None:
+                    tf.summary.histogram(var.op.name + '.grads',
+                                         grad, summaries)
+
         # Merge the towers on CPU
         # -----------------------
-        merged_model_outs = {}
-        for k, v in devs_model_outs.iteritems():
-            # Convert from list of tensors to concatenated tensor
-            merged_model_outs[k] = tf.concat(v, axis=0, name='concat_%s' % k)
-            merged_model_outs[k] = merged_model_outs[k][:self.num_batches]
+        # Convert the lists of tensors to concatenated tensors and keep
+        # the first `num_devs`, i.e., dynamically select at runtime
+        # which devices' outputs to consider
+        with tf.name_scope(phase_set + 'merge_devs') as merge_scope:
+            ps = phase_set
+            curr_model_out = recursive_truncate_dict(stacked_model_outs,
+                                                     self.sym_num_batches,
+                                                     parent_k=ps + '/outs',
+                                                     exact_len=cfg.num_devs)
+            curr_loss_out = recursive_truncate_dict(stacked_loss_outs,
+                                                    self.sym_num_devs,
+                                                    parent_k=ps + '/losses',
+                                                    exact_len=cfg.num_devs)
+            self.loss_tensor = curr_loss_out['loss']
 
-        tf.summary.scalar('control_flow/batch_size_' + which_set,
-                          tf.shape(merged_model_outs['pred'])[0], summaries)
+        # Plot the cumulative batch size of the aggregated predictions
+        # for debugging purposes
+        self.sym_batch_size = tf.shape(curr_model_out['pred'])[0]
+        tf.summary.scalar(phase_set + 'control_flow/batch_size',
+                          self.sym_batch_size, summaries)
 
         # We are trying to be flexible with the placeholders, so we
         # cannot use it at the moment. I'll keep it here for reference
@@ -594,51 +668,45 @@ class Experiment(object):
         # labels = labels[:tf.shape(
         #     tf.reshape(merged_model_outs['pred'], [-1]))[0]]
 
-        # Compute the mean loss over the first num_splits devices (which
-        # will be dynamically selected at run-time). This will also be
-        # used to update the loss summaries
-        loss_stack = tf.stack(dev_losses, axis=0, name='concat_losses')
-        avg_loss = tf.reduce_mean(loss_stack[:self.num_splits])
-        self.avg_loss[is_training][which_set] = avg_loss
+        # Compute the mean loss over the first num_devs devices. This
+        # will also be used to update the loss summaries
+        with tf.name_scope(phase_set + 'aggregated_stats') as stats_scope:
+            avg_loss = tf.reduce_mean(curr_loss_out['loss'],
+                                      name='avg_loss')
+            self.avg_loss[is_training][which_set] = avg_loss
 
         #############
         # SUMMARIES #
         #############
         # Visualize the avg loss
         # The number of devices will be dynamically selected by the
-        # numerical value assigned to num_splits at run-time) and used
+        # numerical value assigned to num_devs at run-time) and used
         # to update the loss summaries correctly
-        tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/Total_Loss',
-                          avg_loss, summaries)
+        with tf.name_scope(stats_scope):
+            tf.summary.scalar('avg_loss', avg_loss, summaries)
 
         if is_training:
             # Write the summary of the mean per-component loss over the first
-            # num_splits devices (which will be dynamically selected at
+            # num_devs devices (which will be dynamically selected at
             # run-time). We do not want to clutter the summaries with these
             # information for validation, but keep in mind that this could be
             # computed for validation as well
-            for (key, loss) in dev_comp_losses.iteritems():
-                dev_stack = tf.stack(loss, axis=0,
-                                     name='concat_losses_comp_%s' % key)
-                avg_comp_loss = tf.reduce_mean(dev_stack[:self.num_splits])
-                tf.summary.scalar(dev_set_scope + '_Mean_tower_loss/%s' % key,
-                                  avg_comp_loss, summaries)
+            with tf.name_scope(stats_scope):
+                for (key, loss) in curr_loss_out['components'].iteritems():
+                    avg_comp_loss = tf.reduce_mean(loss)
+                    tf.summary.scalar('avg_loss_comp_%s' % key, avg_comp_loss,
+                                      summaries)
 
-            # Add the histograms for trainable variables
-            for var in tf.trainable_variables():
-                var_name = var.op.name
-                scope_str, var_name = squash_maybe(dev_set_str, var_name)
-                scope_str += '_%s_%s'  # metric, var
-                scope_str = dev_set_str + '_%s_'  # metric
-                scope_str, var_name = squash_maybe(scope_str, var_name)
-                scope_str += '_%s'  # var name
-                tf.summary.histogram(scope_str % ('Trainable_vars_activations',
-                                                  var_name),
-                                     var, summaries)
+                # Add the histograms for trainable variables
+                for var in tf.trainable_variables():
+                    var_name = var.op.name.replace('model/', '')
+                    scope_str, var_name = squash_maybe('Train_var_act',
+                                                       var_name)
+                    tf.summary.histogram(scope_str + '_' + var_name, var,
+                                         summaries)
 
-        self.extra_summaries(merged_model_outs, dev_comp_losses,
-                             devs_model_outs, dev_losses, is_training,
-                             summaries)
+        self.extra_summaries(curr_model_out, curr_loss_out,
+                             is_training, stats_scope, these_s)
 
         # Create a list of summary ops that update the summary collections that
         # we used at graph creation time. Thanks to the way we decremented the
@@ -652,7 +720,7 @@ class Experiment(object):
             summary_ops.append(tf.summary.merge(tf.get_collection_ref(key=s)))
 
         graph_out = {
-            'model_outs': merged_model_outs,
+            'model_outs': curr_model_out,
             'summary_ops': summary_ops,
             }
         if is_training:
@@ -660,23 +728,41 @@ class Experiment(object):
 
         # Allow the user to define custom metrics to be applied and
         # added to graph_out
-        self.metrics_graph_fn(graph_out, merged_model_outs, dev_comp_losses,
-                              devs_model_outs, dev_losses, is_training)
+        graph_out = self.extra_graph_out(graph_out, curr_model_out,
+                                         curr_loss_out, is_training,
+                                         merge_scope)
 
         return graph_out
 
     def run(self):
-        with self.__init_sess__() as self.sess:
-            if self.cfg.hyperparams_summaries is not None:
-                # write Hyper parameters text summaries
-                summary_str = self.sess.run(self.summary_text_op)
-                self.sv.summary_computed(self.sess, summary_str)
+        with self._init_sess() as self.sess:
+            if self.cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
+                self.sess.add_tensor_filter("has_inf_or_nan",
+                                            tf_debug.has_inf_or_nan)
+            else:
+                uninit_vars = self.sess.run(self._uninit_vars)
+                if len(uninit_vars) > 0:
+                    raise RuntimeError('Uninitialized variables: {}'.format(
+                        uninit_vars))
 
             # Start training loop
-            return self.__main_loop()
+            return self._main_loop()
 
     def validate(self):
-        with self.__init_sess__() as self.sess:
+        with self._init_sess() as self.sess:
+            if self.cfg.debug:
+                from tensorflow.python import debug as tf_debug
+                self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
+                self.sess.add_tensor_filter("has_inf_or_nan",
+                                            tf_debug.has_inf_or_nan)
+            else:
+                uninit_vars = self.sess.run(self._uninit_vars)
+                if len(uninit_vars) > 0:
+                    raise RuntimeError('Uninitialized variables: {}'.format(
+                        uninit_vars))
+
             validate_fn = getattr(self, "validate_fn", None)
             if validate_fn is not None:
                 metrics_val = {}
@@ -687,47 +773,66 @@ class Experiment(object):
                 return metrics_val
             else:
                 raise ValueError('No validation function defined! You '
-                                 'should implement __validate_fn')
+                                 'should implement validate_fn')
 
-    def __init_sess__(self):
+    def get_hooks(self):
+        # For more hooks see
+        # https://www.tensorflow.org/api_guides/python/train#Training_Hooks
         cfg = self.cfg
+        hooks = []
+
+        # Checkpoint saver hook
+        save_secs = self.cfg.checkpoints_save_secs or None
+        save_steps = self.cfg.checkpoints_save_steps or None
+        saver = tf.train.Saver(
+            name='Saver',
+            save_relative_paths=True,
+            max_to_keep=cfg.checkpoints_to_keep)
+        saver_hook = CheckpointSaverHook(self.cfg.save_path,
+                                         saver=saver,
+                                         save_secs=save_secs,
+                                         save_steps=save_steps,
+                                         checkpoint_basename='model.ckpt')
+        hooks.append(saver_hook)
+
+        # Max epochs and early stopping
+        early_stop_hook = EarlyStopHook(self)
+        hooks.append(early_stop_hook)
+
+        if self.cfg.nan:
+            hooks.append(tf.train.NanTensorHook(self.loss_tensor))
+        return hooks
+
+    def _init_sess(self):
         with self.graph.as_default():
-            # Group global and local init into one op. Could be split into
-            # two different ops and passed to `init_op` and `local_init_op`
-            init_op = tf.group(tf.global_variables_initializer(),
-                               tf.local_variables_initializer())
+            # Initialize variables
+            init_op = tf.global_variables_initializer()
+            tf.add_to_collection(tf.GraphKeys.INIT_OP, init_op)
+            local_init_op = tf.local_variables_initializer()
+            tf.add_to_collection(tf.GraphKeys.LOCAL_INIT_OP, local_init_op)
+            self._uninit_vars = tf.report_uninitialized_variables()
 
-            self.saver = tf.train.Saver(
-                max_to_keep=cfg.checkpoints_to_keep)
-
-            sv = Supervisor(
-                graph=self.graph,
-                init_op=init_op,
-                summary_op=None,
-                global_step=self.global_step,
-                # TODO add option to restore best rather than last?
-                logdir=cfg.checkpoints_dir,
-                checkpoint_basename=cfg.model_name,
-                saver=self.saver,
-                # session_manager
-                # summary_writer
-                save_model_secs=300)
-            self.sv = sv
-
+            # Retrieve summary writer and create MonitoredSession
+            # https://github.com/tensorflow/tensorflow/issues/11350
+            # https://github.com/tensorflow/tensorflow/blob/
+            #   a7e225350abeed719f634ef71cd9d908424877b2/tensorflow/python/
+            #   training/basic_session_run_hooks.py#L337
+            self.summary_writer = SummaryWriterCache.get(self.cfg.save_path)
             tf_config = tf.ConfigProto(allow_soft_placement=True)
-            sess_gen = sv.managed_session(cfg.supervisor_master, tf_config)
-            if self.cfg.debug:
-                from tensorflow.python import debug as tf_debug
-                sess_gen = tf_debug.LocalCLIDebugWrapperSession(sess_gen)
-                sess_gen.add_tensor_filter("has_inf_or_nan",
-                                           tf_debug.has_inf_or_nan)
+            sess_creator = ChiefSessionCreator(
+                config=tf_config,
+                checkpoint_dir=self.cfg.restore_path)
+            self._hooks = self.get_hooks()
+            sess_gen = MonitoredSession(session_creator=sess_creator,
+                                        hooks=self._hooks)
+
             return sess_gen
 
-    def __main_loop(self):
+    def _main_loop(self):
 
         self.experiment_begin()
 
-        while not self.sv.should_stop():
+        while not self.sess.should_stop():
             self.epoch_begin()
 
             for batch_id in range(self.train.nbatches):
@@ -737,18 +842,18 @@ class Experiment(object):
 
             self.epoch_end()
 
-            # Verify epochs' loop exit conditions
-            if self.estop:
-                tf.logging.info('Early Stop!')
-                self.sv.request_stop()
-                break
-            if self.last_epoch:
-                tf.logging.info('Last epoch!')
-                self.sv.request_stop()
-                break
-
         self.experiment_end()
-        return self.return_val
+        return self.return_value
+
+    def get_train_dicts(self, which_op):
+        train_dict = {
+            'avg_loss': self.avg_loss[True]['train'],
+            'train_op': self.train_graph_outs['grad_ops'][which_op]}
+        train_summary_dict = {
+            'avg_loss': self.avg_loss[True]['train'],
+            'train_op': self.train_graph_outs['grad_ops'][which_op],
+            'summary_op': self.train_graph_outs['summary_ops'][which_op]}
+        return train_dict, train_summary_dict
 
     # ###########
     # Callbacks #
@@ -772,29 +877,34 @@ class Experiment(object):
             return_list=False,
             **self.cfg.dataset_params)
 
-        # Setup loop parameters
-        self.patience_counter = 0
-        self.estop = False
-        self.last_epoch = False
-        self.history_scores = []
-        # TODO add a config to select if we want to minimize or maximise
-        # the metric
-        self.best_score = 0
+        # Dump parameters and commit hash/diff to save path
+        # Do not overwrite by default
+        self._cfg_dump_dict['train_nbatches'] = self.train.nbatches
+        self._cfg_dump_dict['train_nsamples'] = self.train.nsamples
+        with open(self.cfg_dump_path, 'w') as f:
+            f.write(json.dumps(self._cfg_dump_dict, sort_keys=True, indent=4,
+                               separators=(',', ': ')))
 
         # Start the training loop
         self.start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
-        self.gstep_val = self.global_step.eval(self.sess)
+        self.global_step_val = self.global_step.eval(self.sess)
+
+        # If it's the first run, log the hyperparameters in TB
+        if (self.cfg.hyperparams_summaries is not None and
+                self.global_step_val == 0):
+            # write Hyper parameters text summaries
+            summary = self.sess.run(self.summary_text_op)
+            self.summary_writer.add_summary(summary, 0)
 
     def epoch_begin(self):
-        self.epoch_id = self.gstep_val // self.train.nbatches
+        self.epoch_id = self.global_step_val // self.train.nbatches
 
-        summary_val = tf.Summary.Value(tag='control_flow/Epoch',
+        summary_val = tf.Summary.Value(tag='T.control_flow/epoch',
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
-        self.sv.summary_computed(self.sess, summary,
-                                 global_step=self.epoch_id)
+        self.summary_writer.add_summary(summary, self.epoch_id)
         self.pbar = tqdm(total=self.train.nbatches,
                          bar_format='{n_fmt}/{total_fmt}{desc}'
                                     '{percentage:3.0f}%|{bar}| '
@@ -805,6 +915,38 @@ class Experiment(object):
         iter_start = time()
         self._minibatch = self.train.next()
         self._t_data_load = time() - iter_start
+        if self._t_data_load > 1:
+            tf.logging.info('Data preprocess and loading took {}'
+                            's. Consider increasing the '
+                            'data_queues_size parameter.'.format(
+                                self._t_data_load))
+
+    def get_feed_dict(self, n_splits):
+        # Get the per-device inputs
+        minibatch_chunks = split_in_chunks(self._minibatch, n_splits,
+                                           flatten_keys=['labels'])
+
+        # Associate each placeholder (of each device) with its input data. Note
+        # that the data is split in chunk, one per device. If this_n_splits is
+        # smaller than the number of devices, the placeholders of the "extra"
+        # devices are filled with the data of the first chunk. This is
+        # necessary to feed the graph with the expected number of inputs, but
+        # note that the extra outputs and loss will be ignored (see comment
+        # where placeholders are created)
+        feed_dict = {}
+        for p_dict, batch_dict in zip_longest(self.per_dev_placeholders[True],
+                                              minibatch_chunks,
+                                              fillvalue=minibatch_chunks[0]):
+            for p_name, p_obj in p_dict.iteritems():
+                feed_dict[p_obj] = batch_dict[p_name]
+
+        self._minibatch_chunks = minibatch_chunks
+        # Extend the user-defined placeholders with those needed by the
+        # main loop
+        feed_dict[self.sym_num_devs] = n_splits
+        feed_dict[self.sym_num_batches] = len(self._minibatch['data'])
+        feed_dict[self.sym_prev_err] = self.loss_value
+        return feed_dict
 
     def batch_do(self):
         cfg = self.cfg
@@ -825,151 +967,48 @@ class Experiment(object):
         if len(x_batch) % cfg.batch_size != 0:
             this_n_splits += 1
 
-        # Get the per-device inputs
-        minibatch_chunks = split_in_chunks(self._minibatch, this_n_splits,
-                                           flatten_keys=['labels'])
-
-        # Associate each placeholder (of each device) with its input data. Note
-        # that the data is split in chunk, one per device. If this_n_splits is
-        # smaller than the number of devices, the placeholders of the "extra"
-        # devices are filled with the data of the first chunk. This is
-        # necessary to feed the graph with the expected number of inputs, but
-        # note that the extra outputs and loss will be ignored (see comment
-        # where placeholders are created)
-        feed_dict = {}
-        for p_dict, batch_dict in zip_longest(self.placeholders[True],
-                                              minibatch_chunks,
-                                              fillvalue=minibatch_chunks[0]):
-            for p_name, p_obj in p_dict.iteritems():
-                feed_dict[p_obj] = batch_dict[p_name]
-
-        # Extend the user-defined placeholders with those needed by the
-        # main loop
-        feed_dict[self.num_splits] = this_n_splits
-        feed_dict[self.num_batches] = len(x_batch)
-        feed_dict[self.prev_err] = self.loss_value
-        self._feed_dict = feed_dict
+        self._feed_dict = self.get_feed_dict(this_n_splits)
 
         # Use the op for the number of devices the current batch can feed
-        num_devs = this_n_splits - 1
-        train_dict = {
-            'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][num_devs]}
-        train_summary_dict = {
-            'avg_loss': self.avg_loss[True]['train'],
-            'train_op': self.train_graph_outs['grad_ops'][num_devs],
-            'summary_op': self.train_graph_outs['summary_ops'][num_devs]}
+        which_op = this_n_splits - 1
+
+        train_dict, train_summary_dict = self.get_train_dicts(which_op)
 
         # Compute (summaries and) loss
-        if self.gstep_val % self.cfg.train_summary_freq == 0:
+        # TODO make this a hook
+        if self.global_step_val % self.cfg.train_summary_freq == 0:
             fetch_dict = self.sess.run(train_summary_dict,
-                                       feed_dict=feed_dict)
-            self.sv.summary_computed(self.sess,
-                                     fetch_dict['summary_op'])
+                                       feed_dict=self._feed_dict)
+            self.summary_writer.add_summary(fetch_dict['summary_op'],
+                                            self.global_step_val)
         else:
-            fetch_dict = self.sess.run(train_dict, feed_dict=feed_dict)
+            fetch_dict = self.sess.run(train_dict, feed_dict=self._feed_dict)
         self._fetch_dict = fetch_dict
 
-        # Update self.loss_value, used to decide the amount of gradient
-        # noise. Do not add noise if the loss is lower than a threshold
-        loss = fetch_dict['avg_loss']
-        self.loss_value = None if loss < self.cfg.thresh_loss else loss
+        # Update self.loss_value, potentially used to decide the amount
+        # of gradient noise in `process_gradients` via sym_prev_err.
+        self.loss_value = fetch_dict['avg_loss']
 
     def batch_end(self):
-        self.pbar.set_description('({:3d}) Ep {:d}'.format(self.gstep_val + 1,
-                                                           self.epoch_id + 1))
+        self.pbar.set_description('({:3d}) Ep {:d}'.format(
+            self.global_step_val + 1, self.epoch_id + 1))
         avg_loss = self._fetch_dict['avg_loss']
         self.pbar.set_postfix({'D': '{:.2f}s'.format(self._t_data_load),
                                'loss': '{:.3f}'.format(avg_loss)})
         self.pbar.update(1)
-
-        # Update step counter
-        self.gstep_val = self.global_step.eval(self.sess)
+        self.global_step_val += 1
 
     def epoch_end(self):
         self.pbar.close()
-        # TODO Add val_every_iter?
-        # valid_wait = 0 if valid_wait == 1 else valid_wait - 1
-
-        # Did we reach a break condition?
-        if self.sv.should_stop() or self.epoch_id == self.cfg.max_epochs - 1:
-            self.last_epoch = True
-
-        # Early stop if patience is over
-        self.patience_counter += 1
-        if (self.epoch_id >= self.cfg.min_epochs and
-                self.patience_counter >= self.cfg.patience):
-            self.estop = True
-
-        # Should we run validation?
-        metrics_val = {}
-        validate_fn = getattr(self, "validate_fn", None)
-        # Validate if last epoch, early stop or valid_every iterations passed
-        if callable(validate_fn) and (
-             self.last_epoch or self.estop or not self.val_skip):
-
-            for s in self.cfg.val_on_sets:
-                metrics_val[s] = validate_fn(
-                    self.val_graph_outs[s],
-                    which_set=s)
-
-            valid_score = metrics_val.get('valid')
-            # TODO improve history_scores
-            self.history_scores.append([valid_score])
-
-            # Did we improve *validation* metric?
-            if self.history_scores == [] or valid_score >= self.best_score:
-                self.best_score = valid_score
-                tf.logging.info('## New best model found! ##')
-                t_save = time()
-                # Save best model as a separate checkpoint
-                checkpoint_path = os.path.join(self.cfg.checkpoints_dir,
-                                               '{}_best.ckpt'.format(
-                                                   self.cfg.model_name))
-                self.saver.save(self.sess, checkpoint_path,
-                                global_step=self.global_step)
-                t_save = time() - t_save
-                tf.logging.info('Best checkpoint saved in {}s'.format(t_save))
-
-                self.patience_counter = 0
-                self.estop = False
-            # Start skipping again
-            self.val_skip = max(1, self.cfg.val_every_epochs) - 1
-        else:
-            # We skipped validation, decrease the counter
-            self.val_skip -= 1
-        self.metrics_val = metrics_val
+        for hook in self._hooks:
+            if getattr(hook, '__name__', '') == 'EarlyStopHook':
+                hook.val_skip -= 1
 
     def experiment_end(self):
-        best = self.best_score
-        tf.logging.info('\nBest: Mean Class iou - Valid {:.5f}\n'.format(best))
-
         end = time()
         m, s = divmod(end - self.start, 60)
         h, m = divmod(m, 60)
         tf.logging.info("Total time elapsed: %d:%02d:%02d" % (h, m, s))
 
-        self.return_val = best
-        # # Move complete models and stuff to shared fs
-        # tf.logging.info('\n\nEND OF TRAINING!!\n\n')
-
-        # def move_if_exist(filename, dest):
-        #     if not os.path.exists(os.path.dirname(dest)):
-        #         os.makedirs(os.path.dirname(dest))
-        #     try:
-        #         shutil.move(filename, dest)
-        #     except IOError:
-        #         tf.logging.error('Move error: {} does not exist.'.format(
-        #             filename))
-
-        # move_if_exist(tmp_path + save_name + "_best.w",
-        #               'models/' + save_name + '_best.w')
-        # move_if_exist(tmp_path + save_name + "_best_loss.w",
-        #               'models/' + save_name + '_best_loss.w')
-        # move_if_exist(tmp_path + save_name + "_latest.w",
-        #               'models/' + save_name + '_latest.w')
-        # move_if_exist(tmp_path + save_name + ".npy",
-        #               'models/' + save_name + '.npy')
-        # move_if_exist(tmp_path + save_name + ".svg",
-        #               'models/' + save_name + '.svg')
-        # validate = True  # Print the best model's test error
+    # Inherit the method defined in optimization.py
+    compute_and_process_grads = compute_and_process_grads

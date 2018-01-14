@@ -1,4 +1,5 @@
 import logging
+import os
 from subprocess import check_output
 import sys
 import tqdm
@@ -26,12 +27,13 @@ def split_in_chunks(minibatch, num_splits, flatten_keys=['labels']):
     device.
     '''
     # Split the value of each key into chunks
+    out = {}
     for k, v in minibatch.iteritems():
-        minibatch[k] = np.array_split(v, num_splits)
+        out[k] = np.array_split(v.copy(), num_splits)
         if any(k == v for v in flatten_keys):
-            minibatch[k] = [el.flatten() for el in minibatch[k]]
+            out[k] = [el.flatten() for el in out[k]]
     return map(dict, zip(*[[(k, v) for v in value]
-                           for k, value in minibatch.items()]))
+                           for k, value in out.items()]))
 
 
 def apply_loss(labels, net_out, loss_fn, weight_decay, is_training,
@@ -85,9 +87,10 @@ def apply_l2_penalty(loss, weight_decay):
 
 def save_repos_hash(params_dict, this_repo_name, packages=['theano']):
     # Repository hash and diff
-    params_dict[this_repo_name + '_hash'] = check_output('git rev-parse HEAD',
-                                                         shell=True)[:-1]
-    diff = check_output('git diff', shell=True)
+    cwd = os.path.dirname(os.path.realpath(__file__))
+    params_dict[this_repo_name + '_hash'] = check_output(
+        'git rev-parse HEAD', cwd=cwd, shell=True)[:-1]
+    diff = check_output('git diff', cwd=cwd, shell=True)
     if diff != '':
         params_dict[this_repo_name + '_diff'] = diff
     # packages
@@ -127,7 +130,7 @@ def squash_maybe(scope_str, var_name):
         # Squash the first two levels into the name_scope
         # to merge the summaries that belong to the same
         # part of the model together in tensorboard
-        scope_str = '_'.join([scope_str] + var_name.split('/')[:2])
+        scope_str = '.'.join([scope_str] + var_name.split('/')[:2])
         var_name = '/'.join(var_name.split('/')[2:])
     return scope_str, var_name
 
@@ -257,3 +260,92 @@ def makeColorwheel():
         255. * np.arange(0., MR) / MR)
     colorwheel[col+0:col+MR, 0] = 255.
     return colorwheel, ncols
+
+
+def recursive_dict_stack(a_dict, a_target_dict):
+    """Stack dictionaries values in lists
+
+    Stack all the values returned of the first dictionary in a list in
+    the second dictionary, so that the second dictionary contains the
+    same keys but has a list as associated value, where the values of
+    different calls are accumulated."""
+    for k, v in a_dict.iteritems():
+        if isinstance(v, dict):
+            recursive_dict_stack(
+                v, a_target_dict.setdefault(k, {}))
+        else:
+            a_target_dict.setdefault(k, []).append(v)
+
+
+def recursive_truncate_dict(a_dict, sym_max_len, parent_k=None,
+                            exact_len=None):
+    """Truncate lists in (nested) dictionaries
+
+    This function gets as an input a dictionary whose values are either
+    lists or a nested dictionaries with the same property. The leafes of this
+    structure are converted from from lists of tensors to concatenated tensors.
+    These are finally truncated to be at most `sym_max_len` long.
+
+    Parameters
+    ----------
+    a_dict: dictionary
+        The dictionary to be truncated
+    sym_max_len: Tensor or Placeholder or Variable
+        The index of the truncation
+    parent_k: string (optional)
+        A string to be prepended to the key of the dict in the name of the op
+    exact_len: int (optional)
+        The number of elements that each list should have. If provided,
+        the length of the lists will be checked.
+    """
+    ret_dict = {}
+    for k, v in a_dict.iteritems():
+        if isinstance(v, dict):
+            k_list = '_'.join([parent_k, str(k)]) if parent_k else k
+            ret_dict[k] = recursive_truncate_dict(v, sym_max_len, k_list,
+                                                  exact_len=exact_len)
+        else:
+            if not isinstance(v, list):
+                raise ValueError('The input should be a dictionary of lists')
+            if exact_len:
+                assert len(v) == exact_len, 'Key {} len: {}'.format(k, len(v))
+            if len(v) == 1:
+                # No need to concat if it's just one value
+                ret_dict[k] = v[0]
+            else:
+                try:
+                    tmp = tf.concat(v, axis=0, name='concat_%s' % str(k))
+                except ValueError:
+                    tmp = tf.stack(v, axis=0, name='stack_%s' % str(k))
+                ret_dict[k] = tmp[:sym_max_len]
+    return ret_dict
+
+
+def uniquify_path(path, extension=''):
+    """Adds an incremental suffix to the path until it's unique
+
+    Parameters
+    ----------
+        path: string
+            The path to be uniquified.
+        extension: string, optional
+            The extension of the file to be uniquified.
+
+    Returns
+    -------
+        last_existing_path: string
+            The existing path with the highest incremental suffix.
+        unique_path: string
+            A unique path generated adding an incremental suffix to the
+            input path if necessary.
+    """
+    if extension != '':
+        extension = '.' + extension
+    incr_num = 0
+    unique_path = path + extension
+    last_existing_path = path + extension
+    while(os.path.exists(unique_path)):
+        incr_num += 1
+        last_existing_path = unique_path
+        unique_path = path + '_' + str(incr_num) + extension
+    return last_existing_path, unique_path
