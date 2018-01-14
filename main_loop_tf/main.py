@@ -648,6 +648,7 @@ class Experiment(object):
                                                     self.sym_num_devs,
                                                     parent_k=ps + '/losses',
                                                     exact_len=cfg.num_devs)
+            self.loss_tensor = curr_loss_out['loss']
 
         # Plot the cumulative batch size of the aggregated predictions
         # for debugging purposes
@@ -778,6 +779,7 @@ class Experiment(object):
         # For more hooks see
         # https://www.tensorflow.org/api_guides/python/train#Training_Hooks
         cfg = self.cfg
+        hooks = []
 
         # Checkpoint saver hook
         save_secs = self.cfg.checkpoints_save_secs or None
@@ -791,10 +793,15 @@ class Experiment(object):
                                          save_secs=save_secs,
                                          save_steps=save_steps,
                                          checkpoint_basename='model.ckpt')
+        hooks.append(saver_hook)
 
         # Max epochs and early stopping
         early_stop_hook = EarlyStopHook(self)
-        return [saver_hook, early_stop_hook]
+        hooks.append(early_stop_hook)
+
+        if self.cfg.nan:
+            hooks.append(tf.train.NanTensorHook(self.loss_tensor))
+        return hooks
 
     def _init_sess(self):
         with self.graph.as_default():

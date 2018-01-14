@@ -3,6 +3,7 @@ import gflags
 
 # Main loop
 gflags.DEFINE_bool('help', False, 'If True, shows this message')
+gflags.DEFINE_bool('nan', False, 'If True, enable nan detection hook')
 gflags.DEFINE_bool('debug', False, 'If True, enable tensorflow debug')
 # Checkpoints
 gflags.DEFINE_integer('checkpoints_to_keep', 2, 'The number of checkpoints '
