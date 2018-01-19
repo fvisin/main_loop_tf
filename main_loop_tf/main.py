@@ -229,13 +229,19 @@ class Experiment(object):
 
         # Create temporary dataset object (training/validation) to get
         # dynamic class elements (e.g. data_shape)
+        tmp_dataset_params = deepcopy(cfg.dataset_params)
+        tmp_dataset_params['use_threads'] = False
+        tmp_dataset_params['queues_size'] = 1
         train_temp = Dataset(
             which_set='train',
             return_list=False,
-            **cfg.dataset_params)
+            **tmp_dataset_params)
+        tmp_dataset_params = deepcopy(cfg.valid_params)
+        tmp_dataset_params['use_threads'] = False
+        tmp_dataset_params['queues_size'] = 1
         valid_temp = Dataset(
             which_set='valid',
-            **cfg.valid_params)
+            **tmp_dataset_params)
 
         # TODO: check fvisin comment, this is not the correct behavior, but
         # it's done in order to work with movingMNST iirc
