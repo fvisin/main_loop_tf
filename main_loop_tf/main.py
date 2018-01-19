@@ -634,10 +634,10 @@ class Experiment(object):
                 grad_ops.append(grad_op)
 
             # Add the histograms of the gradients (all of them)
-            for grad, var in avg_grads_and_vars:
-                if grad is not None:
-                    tf.summary.histogram(var.op.name + '.grads',
-                                         grad, summaries)
+            # for grad, var in avg_grads_and_vars:
+            #     if grad is not None:
+            #         tf.summary.histogram(var.op.name + '.grads',
+            #                              grad, summaries)
 
         # Merge the towers on CPU
         # -----------------------
