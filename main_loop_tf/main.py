@@ -838,11 +838,11 @@ class Experiment(object):
     def _main_loop(self):
 
         self.experiment_begin()
-
         while not self.sess.should_stop():
             self.epoch_begin()
+            start_batch = self.global_step_val % self.train.nbatches
 
-            for batch_id in range(self.train.nbatches):
+            for batch_id in range(start_batch, self.train.nbatches):
                 self.batch_begin()
                 self.batch_do()
                 self.batch_end()
@@ -912,11 +912,12 @@ class Experiment(object):
                                        simple_value=self.epoch_id + 1)
         summary = tf.Summary(value=[summary_val])
         self.summary_writer.add_summary(summary, self.epoch_id)
+        bar_format = '{n_fmt}/{total_fmt}{desc}{percentage:3.0f}%|{bar}| '
+        bar_format += '[{elapsed}<{remaining},{rate_fmt}{postfix}]'
         self.pbar = tqdm(total=self.train.nbatches,
-                         bar_format='{n_fmt}/{total_fmt}{desc}'
-                                    '{percentage:3.0f}%|{bar}| '
-                                    '[{elapsed}<{remaining},'
-                                    '{rate_fmt}{postfix}]')
+                         initial=self.global_step_val % self.train.nbatches,
+                         dynamic_ncols=True,
+                         bar_format=bar_format)
 
     def batch_begin(self):
         iter_start = time()
