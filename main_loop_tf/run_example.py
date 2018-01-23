@@ -12,7 +12,6 @@ try:
     from itertools import izip_longest as zip_longest
 except:
     from itertools import zip_longest
-import numpy as np
 
 from main_loop_tf import Experiment
 from main_loop_tf.utils import split_in_chunks
@@ -158,7 +157,7 @@ class ExampleExperiment(Experiment):
         val_dict = {'pred': sym_pred}
 
         # Save one sample on disk
-        fetch_dict = self.sess.run(val_dict, feed_dict=feed_dict)
+        fetch_dict = self.unhookedsess.run(val_dict, feed_dict=feed_dict)
         import matplotlib as mpl
         import matplotlib.pyplot as plt
         cmap = mpl.colors.ListedColormap(dataset.cmap)

@@ -742,13 +742,14 @@ class Experiment(object):
 
     def run(self):
         with self._init_sess() as self.sess:
+            self.unhookedsess = self.sess._sess._sess._sess._sess
             if self.cfg.debug:
                 from tensorflow.python import debug as tf_debug
                 self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
                 self.sess.add_tensor_filter("has_inf_or_nan",
                                             tf_debug.has_inf_or_nan)
             else:
-                uninit_vars = self.sess.run(self._uninit_vars)
+                uninit_vars = self.unhookedsess.run(self._uninit_vars)
                 if len(uninit_vars) > 0:
                     raise RuntimeError('Uninitialized variables: {}'.format(
                         uninit_vars))
@@ -764,7 +765,7 @@ class Experiment(object):
                 self.sess.add_tensor_filter("has_inf_or_nan",
                                             tf_debug.has_inf_or_nan)
             else:
-                uninit_vars = self.sess.run(self._uninit_vars)
+                uninit_vars = self.unhookedsess.run(self._uninit_vars)
                 if len(uninit_vars) > 0:
                     raise RuntimeError('Uninitialized variables: {}'.format(
                         uninit_vars))
@@ -895,13 +896,13 @@ class Experiment(object):
         self.start = time()
         tf.logging.info("Beginning main loop...")
         self.loss_value = 0
-        self.global_step_val = self.global_step.eval(self.sess)
+        self.global_step_val = self.global_step.eval(self.unhookedsess)
 
         # If it's the first run, log the hyperparameters in TB
         if (self.cfg.hyperparams_summaries is not None and
                 self.global_step_val == 0):
             # write Hyper parameters text summaries
-            summary = self.sess.run(self.summary_text_op)
+            summary = self.unhookedsess.run(self.summary_text_op)
             self.summary_writer.add_summary(summary, 0)
 
     def epoch_begin(self):

@@ -15,7 +15,6 @@ class EarlyStopHook(SessionRunHook):
         self.best_score = 0
         self.metrics_history = {}
         self.validate_fn = getattr(experiment, "validate_fn", None)
-        self._disable = False
         self.saver = tf.train.Saver(
             name='BestSaver',
             save_relative_paths=True,
@@ -24,14 +23,6 @@ class EarlyStopHook(SessionRunHook):
     def after_run(self, run_context, run_values):
         last_epoch = False
         estop = False
-
-        # We are not calling session.run to run the model. We can skip this.
-        if not hasattr(self.exp, 'epoch_id'):
-            return
-
-        # We are calling session.run in validation. Skip.
-        if self._disable:
-            return
 
         # We hit the max number of epochs.
         if self.exp.epoch_id == self.cfg.max_epochs - 1:
@@ -48,7 +39,6 @@ class EarlyStopHook(SessionRunHook):
 
             # Run validate on each validation set
             metrics_val = {}
-            self._disable = True
             for s in self.cfg.val_on_sets:
                 metrics_val[s] = self.validate_fn(
                     self.exp.val_graph_outs[s],
@@ -79,7 +69,6 @@ class EarlyStopHook(SessionRunHook):
                     tf.logging.info('EARLY STOPPING!!!')
             # Start skipping again
             self.val_skip = max(1, self.cfg.val_every_epochs) - 1
-            self._disable = False
 
         if last_epoch:
             best = self.best_score
