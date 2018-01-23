@@ -1007,9 +1007,6 @@ class Experiment(object):
 
     def epoch_end(self):
         self.pbar.close()
-        for hook in self._hooks:
-            if getattr(hook, '__name__', '') == 'EarlyStopHook':
-                hook.val_skip -= 1
 
     def experiment_end(self):
         end = time()
