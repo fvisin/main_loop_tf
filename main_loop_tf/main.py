@@ -184,11 +184,7 @@ class Experiment(object):
         dataset_params = cfg.train_extra_params
         dataset_params['batch_size'] = cfg.batch_size * cfg.num_devs
         data_augm_kwargs = dataset_params['data_augm_kwargs'] = {}
-        if cfg.crop_mode == 'smart':
-            data_augm_kwargs['crop_mode'] = cfg.crop_mode
-            data_augm_kwargs['smart_crop_threshold'] = cfg.smart_crop_threshold
-            search_step = cfg.smart_crop_search_step
-            data_augm_kwargs['smart_crop_search_step'] = search_step
+        data_augm_kwargs['crop_mode'] = cfg.crop_mode
         dataset_params['data_augm_kwargs']['crop_size'] = cfg.crop_size
         dataset_params['data_augm_kwargs']['return_optical_flow'] = cfg.of
         dataset_params['return_one_hot'] = False
