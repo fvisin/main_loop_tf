@@ -195,7 +195,7 @@ if __name__ == '__main__':
     argv += ['--val_every_epochs', '1']
     argv += ['--nouse_threads']
     # argv += ['--devices', '/gpu:0,/gpu:1']
-    argv += ['--devices', '/cpu:0']
+    # argv += ['--devices', '/cpu:0']
 
     exp = ExampleExperiment(argv)
     if exp.cfg.validate:
