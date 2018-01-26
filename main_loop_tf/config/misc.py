@@ -38,7 +38,12 @@ gflags.DEFINE_list('devices', None, 'A list of devices to use. If None '
                    'environment variable')
 gflags.DEFINE_integer('random_seed', 8112017, 'Fixed random seed for '
                       'both tensorflow and numpy')
-
+gflags.DEFINE_string('log_file', '', 'Optional. If defined the logs will '
+                     'be saved in the specified log file.')
+gflags.DEFINE_string('log_verbosity', 'INFO', 'The verbosity of logging on '
+                     'console. See python logging levels.')
+gflags.DEFINE_string('disk_log_verbosity', 'NOTSET', 'The verbosity of '
+                     'logging on disk. See python logging levels.')
 # Other flags we might want to define (see also config/flow.py):
 # See https://www.tensorflow.org/versions/r0.10/tutorials/monitors/
 #                customizing_the_evaluation_metrics

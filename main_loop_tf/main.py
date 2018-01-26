@@ -78,6 +78,27 @@ class Experiment(object):
 
         self.process_cfg_flags()
 
+        # Add TqdmHandler
+        handler = TqdmHandler()
+        handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT, None))
+        logger = logging.getLogger('tensorflow')  # Get TF logger
+        del(logger.handlers[0])  # Remove the default handler
+        logger.addHandler(handler)
+
+        # Set console verbosity
+        logger.setLevel(getattr(logging, self.cfg.log_verbosity))
+
+        # Save logs on disk - from https://stackoverflow.com/questions/40559667
+        #                         /how-to-redirect-tensorflow-logging-to-a-file
+        if self.cfg.log_file != '':
+            formatter = logging.Formatter('%(asctime)s %(levelname)s: '
+                                          '%(message)s', '%Y-%m-%d %H:%M:%S')
+            fh = logging.FileHandler(self.cfg.log_file)
+            # Set disk logging verbosity
+            fh.setLevel(getattr(logging, self.cfg.disk_log_verbosity))
+            fh.setFormatter(formatter)
+            logger.addHandler(fh)
+
         # Init variables
         self._graph_built = False
         self.cum_grads_and_vars = {}
@@ -862,13 +883,6 @@ class Experiment(object):
     # Callbacks #
     # ###########
     def experiment_begin(self):
-        # Add TqdmHandler
-        handler = TqdmHandler()
-        handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT, None))
-        logger = logging.getLogger('tensorflow')
-        del(logger.handlers[0])  # Remove the default handler
-        logger.addHandler(handler)
-
         tf.logging.info('\nTrain dataset params:\n{}\n'.format(
             self.cfg.dataset_params))
         tf.logging.info('Validation dataset params:\n{}\n\n'.format(
