@@ -776,6 +776,7 @@ class Experiment(object):
 
     def validate(self):
         with self._init_sess() as self.sess:
+            self.unhookedsess = self.sess._sess._sess._sess._sess
             if self.cfg.debug:
                 from tensorflow.python import debug as tf_debug
                 self.sess = tf_debug.LocalCLIDebugWrapperSession(self.sess)
