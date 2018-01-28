@@ -36,6 +36,9 @@ gflags.DEFINE_string('restore_model', 'True', 'It can be the name of the '
 gflags.DEFINE_list('devices', None, 'A list of devices to use. If None '
                    'it will be inferred from the CUDA_VISIBLE_DEVICES '
                    'environment variable')
+gflags.DEFINE_list('val_num_devs', None, 'How many decides to use for '
+                   'validation. If None, defaults to the same as '
+                   'training.')
 gflags.DEFINE_integer('random_seed', 8112017, 'Fixed random seed for '
                       'both tensorflow and numpy')
 gflags.DEFINE_string('log_file', '', 'Optional. If defined the logs will '

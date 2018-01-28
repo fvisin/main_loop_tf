@@ -192,6 +192,8 @@ class Experiment(object):
         cfg.num_gpus = len([el for el in cfg.devices if 'gpu' in el])
         cfg.num_cpus = len([el for el in cfg.devices if 'cpu' in el])
         cfg.num_devs = cfg.num_gpus + cfg.num_cpus
+        if cfg.val_num_devs is None:
+            cfg.val_num_devs = cfg.num_devs
 
         # ============ Dataset init
         try:
@@ -232,7 +234,7 @@ class Experiment(object):
         cfg.dataset_params = dataset_params
         cfg.valid_params = deepcopy(cfg.dataset_params)
         cfg.valid_params.update({
-            'batch_size': cfg.val_batch_size * cfg.num_devs,
+            'batch_size': cfg.val_batch_size * cfg.val_num_devs,
             'seq_per_subset': 0,
             'overlap': cfg.val_overlap,
             'shuffle_at_each_epoch': (cfg.val_overlap is not None and
@@ -313,6 +315,13 @@ class Experiment(object):
             train_ins = tf.placeholder(dtype=cfg._FLOATX,
                                        shape=cfg.input_shape,
                                        name='train_inputs_per_gpu_%i' % i)
+            targets = tf.placeholder(dtype=np.int32,
+                                     shape=[None],  # flattened
+                                     name='targets_per_gpu_%i' % i)
+            # Note, the keys have to match those of the minibatch
+            train_placeholders.append({'data': train_ins,
+                                       'labels': targets})
+        for i, _ in enumerate(range(cfg.val_num_devs)):
             val_ins = tf.placeholder(dtype=cfg._FLOATX,
                                      shape=cfg.val_input_shape,
                                      name='val_inputs_per_gpu_%i' % i)
@@ -320,8 +329,6 @@ class Experiment(object):
                                      shape=[None],  # flattened
                                      name='targets_per_gpu_%i' % i)
             # Note, the keys have to match those of the minibatch
-            train_placeholders.append({'data': train_ins,
-                                       'labels': targets})
             val_placeholders.append({'data': val_ins,
                                      'labels': targets})
         return train_placeholders, val_placeholders
