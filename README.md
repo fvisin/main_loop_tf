@@ -88,6 +88,17 @@ and **restored** from:
 * PRs welcome!! Feel free to contribute to the code with a PR if you find bugs 
   or want to improve the existing code!
 
+### Acknowledgements
+The initial version of the "main loop" has been inspired by a simpler pipeline
+developed by Francesco Lattari (a.k.a. "*er latta*") and Marco Ciccone, based
+on the [Tensorflow multi-GPU example](https://github.com/tensorflow/models/blob/master/tutorials/image/cifar10/cifar10_multi_gpu_train.py).
+  
+I am thankful to both for being early adopters and *enthusiastic supporters* 
+of this framework, for their code contributions, but most of all for the 
+outstanding number of bugs and issues they found and raised.
+
+You guys really made my life miserable, thank you!! :)
+
  
 </br>
 </br>
