@@ -730,9 +730,9 @@ class Experiment(object):
                 for var in tf.trainable_variables():
                     var_name = var.op.name.replace('model/', '')
                     scope_str, var_name = squash_maybe('Train_var_act',
-                                                       var_name)
-                    tf.summary.histogram(scope_str + '_' + var_name, var,
-                                         summaries)
+                                                       var_name, 1)
+                    with tf.name_scope(scope_str + '/'):
+                        tf.summary.histogram(var_name, var, summaries)
 
         self.extra_summaries(curr_model_out, curr_loss_out,
                              is_training, stats_scope, these_s)

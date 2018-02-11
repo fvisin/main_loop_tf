@@ -214,29 +214,30 @@ def add_summaries(grads_and_vars, grad_noise_scale, phase_set_dev,
         tf.summary.scalar(phase_set_dev + "grad_noise", grad_noise_scale,
                           summaries)
 
-    # Add histograms for variables, grads and grad norms
-    # --------------------------------------------------
+    # Add histograms and graphs for variables, grads and grad norms
+    # -------------------------------------------------------------
     with tf.name_scope(None):
-        with tf.name_scope(phase_set_dev + 'grad_norms') as norm_scope:
-            with tf.name_scope(phase_set_dev + 'grad_hists') as hist_scope:
-                for grad, var in grads_and_vars:
-                    if isinstance(grad, tf.IndexedSlices):
-                        grad = grad.values
+        for grad, var in grads_and_vars:
+            if isinstance(grad, tf.IndexedSlices):
+                grad = grad.values
 
-                    if grad is not None:
-                        # Remove the implicit name_scope of the variable
-                        # scope
-                        var_name = var.op.name.replace('model/', '')
-                        _, var_name = squash_maybe('', var_name)
-                        # Write the summary
-                        with tf.name_scope(norm_scope):
-                            tf.summary.scalar(var_name,
-                                              tf.global_norm([grad]),
-                                              summaries)
-                        with tf.name_scope(hist_scope):
-                            tf.summary.histogram(var_name,
-                                                 grad,
-                                                 summaries)
+            if grad is not None:
+                var_name = var.op.name.replace('model/', '')
+                layer_name, var_name = squash_maybe('', var_name, 1)
+                # Write the summaries
+                norm_scope = phase_set_dev + 'grad_norms'
+                hist_scope = phase_set_dev + 'grad_hists'
+                if layer_name != '':
+                    norm_scope = '.'.join((norm_scope, layer_name))
+                    hist_scope = '.'.join((hist_scope, layer_name))
+                with tf.name_scope(norm_scope + '/'):  # make absolute to reuse
+                    tf.summary.scalar(var_name,
+                                      tf.global_norm([grad]),
+                                      summaries)
+                with tf.name_scope(hist_scope + '/'):  # make absolute to reuse
+                    tf.summary.histogram(var_name,
+                                         grad,
+                                         summaries)
 
 
 def average_gradients(grad_dict, phase_set_dev, up_to_dev=None):

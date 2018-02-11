@@ -124,14 +124,29 @@ def fig2array(fig):
     return buf
 
 
-def squash_maybe(scope_str, var_name):
+def squash_maybe(scope_str, var_name, up_to=2):
+    """Potentially squash name_scopes together.
+
+    Tensorboard groups together the graphs of the variables that start
+    with the same name, i.e., with the same initial substring,
+    considering '/' as a separator.
+
+    This function helps changing this aggregation by returning a list of
+    two elements:
+        * the first `up_to` elements of the variable name prepended by
+            `scope_str` and with all the '/' replaced by dots. This
+            comes handy to aggregate more finely the graphs visualized
+            by Tensorboard.
+        * The rest of the variable name, untouched.
+    If the variable name is composed by less than up_to elements, the
+    first element of the list will be empty and the second will contain
+    the original variable name.
+    """
     cfg = gflags.cfg
-    if cfg.group_summaries and var_name.count('/') >= 2:
-        # Squash the first two levels into the name_scope
-        # to merge the summaries that belong to the same
-        # part of the model together in tensorboard
-        scope_str = '.'.join([scope_str] + var_name.split('/')[:2])
-        var_name = '/'.join(var_name.split('/')[2:])
+    if cfg.group_summaries and var_name.count('/') >= up_to:
+        scope_str = '.'.join(filter(None,
+                                    [scope_str] + var_name.split('/')[:up_to]))
+        var_name = '/'.join(var_name.split('/')[up_to:])
     return scope_str, var_name
 
 
