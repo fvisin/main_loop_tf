@@ -454,7 +454,17 @@ class Experiment(object):
                             is_training, dev_stats_scope, phase_set_dev,
                             these_s):
         """Add user-defined per-device summaries"""
-        pass
+        with tf.name_scope(None):
+            for w in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES):
+                if 'weights' in w.name:
+                    # Remove the implicit name_scope of the variable scope
+                    var_name = w.op.name.replace('model/', '')
+                    scope_str, var_name = squash_maybe(phase_set_dev +
+                                                       'weights_norms',
+                                                       var_name, 1)
+                    with tf.name_scope(scope_str + '/'):
+                        tf.summary.scalar(var_name, tf.global_norm([w]),
+                                          these_s)
 
     def extra_summaries(self, stacked_model_outs, stacked_loss_outs,
                         is_training, stats_scope, these_s):
