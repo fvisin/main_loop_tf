@@ -17,7 +17,6 @@ import tensorflow as tf
 from tensorflow.python.training.training import CheckpointSaverHook
 from tensorflow.python.training.monitored_session import (MonitoredSession,
                                                           ChiefSessionCreator)
-from tensorflow.python.training.summary_io import SummaryWriterCache
 from tqdm import tqdm
 
 import gflags
@@ -849,7 +848,8 @@ class Experiment(object):
             # https://github.com/tensorflow/tensorflow/blob/
             #   a7e225350abeed719f634ef71cd9d908424877b2/tensorflow/python/
             #   training/basic_session_run_hooks.py#L337
-            self.summary_writer = SummaryWriterCache.get(self.cfg.save_path)
+            # TODO Use tf.contrib.summary
+            self.summary_writer = tf.summary.FileWriter(self.cfg.save_path)
             tf_config = tf.ConfigProto(allow_soft_placement=True)
             sess_creator = ChiefSessionCreator(
                 config=tf_config,
